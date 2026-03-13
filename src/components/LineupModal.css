@@ -1,0 +1,700 @@
+/* ========== Design tokens (spacing, radius, type) ========== */
+:root {
+  --lineup-space-xs: 0.375rem;
+  --lineup-space-sm: 0.5rem;
+  --lineup-space-md: 0.75rem;
+  --lineup-space-lg: 1rem;
+  --lineup-space-xl: 1.25rem;
+  --lineup-space-2xl: 1.5rem;
+  --lineup-radius-sm: 6px;
+  --lineup-radius-md: 8px;
+  --lineup-radius-lg: 10px;
+  --lineup-radius-xl: 12px;
+  --lineup-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --lineup-shadow-md: 0 2px 8px rgba(0, 0, 0, 0.06);
+  --lineup-border: 1px solid #e5e7eb;
+  --lineup-border-subtle: 1px solid #f3f4f6;
+}
+
+/* ========== Overlay & modal container ========== */
+/* Overlay is position: absolute so it only covers the content column (left), not the odds panel (right). */
+.lineup-modal__overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  z-index: 100;
+  padding: var(--lineup-space-lg);
+  box-sizing: border-box;
+}
+
+.lineup-modal {
+  background: #fff;
+  border: var(--lineup-border);
+  border-radius: var(--lineup-radius-xl);
+  box-shadow: var(--lineup-shadow-md);
+  max-width: 900px;
+  width: 100%;
+  margin-right: auto;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.lineup-modal__body {
+  padding: 0 1.5rem 1.5rem;
+  overflow-y: auto;
+}
+
+.lineup-modal__message {
+  margin: 0;
+  font-size: 0.9375rem;
+  color: #6b7280;
+  line-height: 1.5;
+}
+
+.lineup-modal__message--error {
+  color: #b91c1c;
+}
+
+/* ========== Lineup header ========== */
+.lineup-header {
+  position: relative;
+  padding: 1.25rem 1.5rem 1rem;
+  border-bottom: var(--lineup-border);
+}
+
+.lineup-header__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-height: 2.75rem;
+}
+
+.lineup-header__team {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  max-width: 42%;
+}
+
+.lineup-header__team--home {
+  flex: 1;
+  justify-content: flex-start;
+}
+
+.lineup-header__team--away {
+  flex: 1;
+  justify-content: flex-end;
+  flex-direction: row-reverse;
+}
+
+.lineup-header__logo {
+  width: 2rem;
+  height: 2rem;
+  object-fit: contain;
+  flex-shrink: 0;
+  display: block;
+}
+
+.lineup-header__team-name {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: #111827;
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.3;
+}
+
+.lineup-header__center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.375rem;
+  flex-shrink: 0;
+  padding: 0 0.25rem;
+}
+
+.lineup-header__kickoff {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: #6b7280;
+  letter-spacing: 0.02em;
+}
+
+.lineup-header__badge {
+  display: inline-block;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-radius: var(--lineup-radius-sm);
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.lineup-header__close {
+  position: absolute;
+  top: 1rem;
+  right: 1.25rem;
+  width: 2.25rem;
+  height: 2.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.375rem;
+  line-height: 1;
+  color: #6b7280;
+  background: transparent;
+  border: none;
+  border-radius: var(--lineup-radius-md);
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.lineup-header__close:hover {
+  color: #111827;
+  background: #f3f4f6;
+}
+
+.lineup-header__sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ========== Content wrapper – consistent section spacing ========== */
+.lineup-content--spaced {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.lineup-content--spaced .formation-header {
+  margin-top: 0;
+}
+
+.lineup-content--spaced .lineup-content__managers {
+  margin-top: 0;
+}
+
+.lineup-content--spaced .pitch-view {
+  margin-top: 0;
+}
+
+.lineup-content--spaced .lineup-content__teams-fallback {
+  margin-top: 0;
+}
+
+.lineup-content--spaced .bench-section {
+  margin-top: 0;
+  padding-top: 1.5rem;
+}
+
+/* ========== Formation header row – balanced comparison ========== */
+.formation-header {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.875rem 1rem;
+  background: #f9fafb;
+  border: var(--lineup-border-subtle);
+  border-radius: var(--lineup-radius-lg);
+}
+
+.formation-header__side {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.formation-header__side--away {
+  flex-direction: row-reverse;
+  justify-self: end;
+}
+
+.formation-header__side:first-child {
+  justify-self: start;
+}
+
+.formation-header__logo {
+  width: 1.5rem;
+  height: 1.5rem;
+  object-fit: contain;
+  flex-shrink: 0;
+  display: block;
+}
+
+.formation-header__name {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #374151;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.3;
+}
+
+.formation-header__formation {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #4b5563;
+  background: #fff;
+  border: var(--lineup-border);
+  padding: 0.25rem 0.5rem;
+  border-radius: var(--lineup-radius-sm);
+  flex-shrink: 0;
+  margin-left: 0.25rem;
+}
+
+.formation-header__side--away .formation-header__formation {
+  margin-left: 0;
+  margin-right: 0.25rem;
+}
+
+.formation-header__vs {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: #9ca3af;
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+
+/* ========== Manager row ========== */
+.lineup-content__managers {
+  display: flex;
+  align-items: stretch;
+  gap: 1rem;
+}
+
+.manager-card {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  background: #fff;
+  border: var(--lineup-border);
+  border-radius: var(--lineup-radius-lg);
+  box-shadow: var(--lineup-shadow-sm);
+  min-width: 0;
+}
+
+.manager-card__image-wrap {
+  flex-shrink: 0;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 50%;
+  overflow: hidden;
+  background: #f3f4f6;
+}
+
+.manager-card__image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.manager-card__placeholder {
+  width: 100%;
+  height: 100%;
+  background: #e5e7eb;
+}
+
+.manager-card__info {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.125rem;
+  min-width: 0;
+}
+
+.manager-card__label {
+  font-size: 0.625rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #9ca3af;
+  line-height: 1.2;
+}
+
+.manager-card__name {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #111827;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.3;
+}
+
+/* ========== Pitch section – two halves, row-based formation ========== */
+.pitch-view {
+  width: 100%;
+}
+
+.pitch-view__surface.pitch {
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(180deg, #d1fae5 0%, #a7f3d0 25%, #6ee7b7 50%, #a7f3d0 75%, #d1fae5 100%);
+  border: 1px solid #6ee7b7;
+  border-radius: var(--lineup-radius-lg);
+  overflow: hidden;
+  padding: 1rem 0.75rem;
+  min-height: 20rem;
+  box-shadow: inset 0 0 0 1px rgba(34, 197, 94, 0.12);
+}
+
+/* Top half = home, bottom half = away */
+.pitch-half {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  min-height: 8rem;
+  padding: 0.5rem 0;
+}
+
+/* Center line between the two halves */
+.pitch-view__divider {
+  height: 3px;
+  background: linear-gradient(90deg, transparent 0%, #059669 10%, #059669 90%, transparent 100%);
+  margin: 0.25rem 0;
+  flex-shrink: 0;
+  opacity: 0.9;
+}
+
+/* Each formation row: flex row, centered */
+.pitch-half__formation-row {
+  display: flex;
+  flex-direction: row;
+  justify-content: center;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.pitch-half__player-cell {
+  flex: 0 0 auto;
+}
+
+.pitch-half__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  padding: 0.5rem 0;
+  justify-content: center;
+}
+
+.pitch-half__list-item {
+  flex: 0 0 auto;
+}
+
+/* ========== Player card (on pitch) – readable size ========== */
+.player-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.5rem 0.5rem 0.4rem;
+  background: #fff;
+  border: var(--lineup-border);
+  border-radius: var(--lineup-radius-md);
+  box-shadow: var(--lineup-shadow-sm);
+  width: 5rem;
+  min-width: 5rem;
+  max-width: 5rem;
+  position: relative;
+  transition: box-shadow 0.15s ease;
+  box-sizing: border-box;
+}
+
+.player-card:hover {
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+}
+
+.player-card__image-wrap {
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 50%;
+  overflow: hidden;
+  background: #f3f4f6;
+  flex-shrink: 0;
+}
+
+.player-card__image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.player-card__placeholder {
+  width: 100%;
+  height: 100%;
+  background: #e5e7eb;
+}
+
+.player-card__number {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: #111827;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+
+.player-card__name {
+  font-size: 0.6875rem;
+  font-weight: 500;
+  color: #4b5563;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  line-height: 1.25;
+}
+
+.player-card__role {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  font-size: 0.5rem;
+  font-weight: 700;
+  padding: 0.1rem 0.25rem;
+  border-radius: 3px;
+  line-height: 1;
+}
+
+.player-card__role--goalkeeper {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.player-card__role--captain {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.player-card--clickable {
+  cursor: pointer;
+  font: inherit;
+  text-align: center;
+}
+
+.player-card--clickable:hover {
+  border-color: #22c55e;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+/* ========== Fallback team blocks ========== */
+.lineup-content__teams-fallback {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.25rem;
+}
+
+.lineup-content__team-block {
+  background: #f9fafb;
+  border: var(--lineup-border);
+  border-radius: var(--lineup-radius-lg);
+  padding: 1rem;
+}
+
+.lineup-content__team-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.lineup-content__team-logo {
+  width: 1.5rem;
+  height: 1.5rem;
+  object-fit: contain;
+  flex-shrink: 0;
+  display: block;
+}
+
+.lineup-content__team-name {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #374151;
+  line-height: 1.3;
+}
+
+.lineup-content__player-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.lineup-content__player-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.375rem 0;
+  font-size: 0.8125rem;
+  border-bottom: var(--lineup-border-subtle);
+  line-height: 1.3;
+}
+
+.lineup-content__player-row:last-child {
+  border-bottom: none;
+}
+
+.lineup-content__jersey {
+  min-width: 1.75rem;
+  font-weight: 600;
+  color: #6b7280;
+  font-variant-numeric: tabular-nums;
+}
+
+.lineup-content__name {
+  color: #374151;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ========== Bench / substitutes – clear hierarchy ========== */
+.bench-section {
+  border-top: var(--lineup-border);
+}
+
+.bench-section__heading {
+  margin: 0 0 0.875rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #374151;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+}
+
+.bench-section__columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.25rem;
+  align-items: start;
+}
+
+.bench-column__title {
+  margin: 0 0 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #6b7280;
+  letter-spacing: 0.02em;
+  line-height: 1.3;
+}
+
+.bench-column__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.bench-column__item {
+  flex: 0 0 auto;
+}
+
+/* Bench player cards – compact but readable, override pitch fixed width */
+.bench-column__item .player-card {
+  width: auto;
+  min-width: 3.75rem;
+  max-width: 4.25rem;
+  padding: 0.35rem 0.4rem 0.3rem;
+}
+
+.bench-column__item .player-card__image-wrap {
+  width: 1.75rem;
+  height: 1.75rem;
+}
+
+.bench-column__item .player-card__number {
+  font-size: 0.75rem;
+}
+
+.bench-column__item .player-card__name {
+  font-size: 0.5625rem;
+  max-width: 4rem;
+}
+
+/* ========== Match Results odds (isolated section) ========== */
+.match-results-odds {
+  margin-top: var(--lineup-space-xl);
+  padding-top: var(--lineup-space-lg);
+  border-top: var(--lineup-border-subtle);
+}
+
+.match-results-odds__title {
+  margin: 0 0 var(--lineup-space-sm);
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #374151;
+}
+
+.match-results-odds__title--section {
+  margin-top: var(--lineup-space-lg);
+}
+
+.match-results-odds__message {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: #6b7280;
+}
+
+.match-results-odds__message--error {
+  color: #b91c1c;
+}
+
+.match-results-odds__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--lineup-space-md);
+}
+
+.match-results-odds__bookmaker {
+  padding: var(--lineup-space-sm) var(--lineup-space-md);
+  background: #f9fafb;
+  border-radius: var(--lineup-radius-sm);
+  border: var(--lineup-border-subtle);
+}
+
+.match-results-odds__bookmaker-name {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #374151;
+  margin-bottom: 0.25rem;
+}
+
+.match-results-odds__selections {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 1rem;
+}
+
+.match-results-odds__row {
+  font-size: 0.8125rem;
+  color: #4b5563;
+}
+
+.match-results-odds__label {
+  margin-right: 0.25rem;
+}
+
+.match-results-odds__value {
+  font-weight: 500;
+}

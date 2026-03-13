@@ -1,0 +1,47 @@
+.app-layout {
+  display: flex;
+  min-height: 100vh;
+}
+
+.app-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  width: 8rem;
+  padding: 1rem 0.5rem;
+  background: #fff;
+  border-right: 1px solid #e5e7eb;
+}
+
+.app-nav__tab {
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #4b5563;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.app-nav__tab:hover {
+  background: #f3f4f6;
+  color: #111827;
+}
+
+.app-nav__tab--active {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.app-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.app-main .calendar-page,
+.app-main .odds-page {
+  min-height: 100%;
+}

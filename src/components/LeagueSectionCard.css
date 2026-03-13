@@ -1,0 +1,137 @@
+.league-card {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  margin-bottom: 1rem;
+  overflow: hidden;
+}
+
+.league-card:last-child {
+  margin-bottom: 0;
+}
+
+.league-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  cursor: pointer;
+  border-bottom: none;
+  transition: background 0.15s;
+}
+
+.league-card__header:hover {
+  background: #f9fafb;
+}
+
+.league-card__header-main {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.league-card__logo {
+  width: 1.5rem;
+  height: 1.5rem;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.league-card__logo-placeholder {
+  width: 1.5rem;
+  height: 1.5rem;
+  flex-shrink: 0;
+  background: #f3f4f6;
+  border-radius: 4px;
+}
+
+.league-card__title {
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #374151;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.league-card__count {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  color: #6b7280;
+  font-variant-numeric: tabular-nums;
+}
+
+.league-card__header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-shrink: 0;
+}
+
+.league-card__favourite {
+  width: 1.75rem;
+  height: 1.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  color: #9ca3af;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+
+.league-card__favourite:hover {
+  color: #f59e0b;
+  background: #fffbeb;
+}
+
+.league-card__favourite--on {
+  color: #f59e0b;
+}
+
+.league-card__chevron {
+  font-size: 0.5rem;
+  color: #9ca3af;
+  transition: transform 0.2s;
+  line-height: 1;
+}
+
+.league-card__chevron--expanded {
+  transform: rotate(180deg);
+}
+
+.league-card__body {
+  padding: 0 1rem 1rem;
+  border-top: 1px solid #f3f4f6;
+}
+
+.league-card__body[hidden] {
+  display: none;
+}
+
+.league-card__grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.5rem;
+  padding-top: 0.75rem;
+}
+
+@media (min-width: 640px) {
+  .league-card__grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (min-width: 900px) {
+  .league-card__grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}

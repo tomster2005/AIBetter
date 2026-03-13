@@ -1,0 +1,49 @@
+.calendar-page {
+  max-width: 56rem;
+  margin: 0 auto;
+  padding: 1.5rem 1.25rem 2rem;
+  background: #f0f1f3;
+  min-height: 100vh;
+}
+
+.calendar-page__label {
+  margin: 0 0 1rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: #6b7280;
+  letter-spacing: 0.02em;
+}
+
+.calendar-page__main {
+  display: flex;
+  gap: 1.5rem;
+  align-items: flex-start;
+  margin-top: 1.25rem;
+}
+
+.calendar-page__content {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 6rem;
+}
+
+.calendar-page__content--modal-open {
+  min-height: 80vh;
+}
+
+.calendar-page__message {
+  margin: 0;
+  font-size: 0.875rem;
+  color: #6b7280;
+}
+
+.calendar-page__message--error {
+  color: #b91c1c;
+}
+
+.calendar-page__league-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
