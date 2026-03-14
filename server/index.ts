@@ -6,12 +6,20 @@
 import "dotenv/config";
 import express from "express";
 import { getFixturesBetween } from "../src/api/sportmonks.js";
+
+const token = process.env.SPORTMONKS_API_TOKEN ?? process.env.SPORTMONKS_TOKEN;
+if (!token || typeof token !== "string") {
+  console.warn(
+    "\n⚠️  SPORTMONKS_API_TOKEN is not set. Create a .env file (see .env.example) and add your token.\n   Requests to /api/fixtures will fail until this is set.\n"
+  );
+}
 import { getFixtureDetails } from "../src/api/fixtureDetails.js";
 import { getOddsByFixtureId } from "../src/api/odds.js";
 import { getPlayerOddsForFixture } from "../src/api/playerOdds.js";
 import { getPlayerDetails } from "../src/api/playerDetails.js";
 import { getLeagueCurrentSeason } from "../src/api/leagueSearch.js";
 import { getStatsContext } from "../src/api/statsContext.js";
+import { getPlayerSeasonStatsForProps } from "../src/api/playerSeasonStats.js";
 import * as cache from "./cache.js";
 
 const app = express();
@@ -202,6 +210,60 @@ app.get("/api/players/:id", async (req, res) => {
       console.error("[player] GET /api/players/:id failed", { playerId: id, statusCode: status, errorMessage: message });
     }
     res.status(status).json({ error: message });
+  }
+});
+
+app.get("/api/player-stats/:playerId", async (req, res) => {
+  const playerIdParam = req.params.playerId;
+  const seasonParam = req.query.season as string | undefined;
+  const playerId = parseInt(playerIdParam, 10);
+  const seasonId = seasonParam != null ? parseInt(seasonParam, 10) : NaN;
+  if (Number.isNaN(playerId) || playerId <= 0) {
+    res.status(400).json({ error: "Invalid player ID." });
+    return;
+  }
+  if (Number.isNaN(seasonId) || seasonId <= 0) {
+    res.status(400).json({ error: "Query param 'season' (season ID) is required and must be a positive number." });
+    return;
+  }
+  try {
+    const stats = await getPlayerSeasonStatsForProps(playerId, seasonId);
+    if (stats == null) {
+      return res.status(404).json({ error: "No season statistics found for this player." });
+    }
+    res.json(stats);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to fetch player statistics.";
+    const status = (err as Error & { status?: number }).status ?? 500;
+    if (process.env.NODE_ENV !== "production") {
+      console.error("[player-stats] GET /api/player-stats/:playerId failed", { playerId, seasonId, errorMessage: message });
+    }
+    res.status(status).json({ error: message });
+  }
+});
+
+app.get("/api/league-current-season", async (req, res) => {
+  const leagueParam = req.query.league as string | undefined;
+  if (!leagueParam || typeof leagueParam !== "string" || !leagueParam.trim()) {
+    res.status(400).json({ error: "Query param 'league' is required." });
+    return;
+  }
+  try {
+    const result = await getLeagueCurrentSeason(leagueParam.trim());
+    if (result == null) {
+      return res.status(404).json({ error: "League or current season not found." });
+    }
+    res.json({
+      currentSeasonId: result.currentSeasonId,
+      leagueName: result.leagueName,
+      currentSeasonName: result.currentSeasonName,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to resolve league season.";
+    if (process.env.NODE_ENV !== "production") {
+      console.error("[league-current-season] GET /api/league-current-season failed", { errorMessage: message });
+    }
+    res.status(500).json({ error: message });
   }
 });
 

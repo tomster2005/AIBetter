@@ -88,9 +88,13 @@ export function CalendarPage() {
     setLoading(true);
     setError(null);
     fetch(`/api/fixtures?start=${start}&end=${end}`)
-      .then((res) => {
-        if (!res.ok) throw new Error(res.statusText);
-        return res.json() as Promise<Fixture[]>;
+      .then(async (res) => {
+        const data = await res.json();
+        if (!res.ok) {
+          const msg = typeof (data as { error?: string })?.error === "string" ? (data as { error: string }).error : res.statusText;
+          throw new Error(msg);
+        }
+        return data as Fixture[];
       })
       .then((fixtures) => {
         /* Temporary debug: FA Cup West Ham vs Brentford 2026-03-09 */

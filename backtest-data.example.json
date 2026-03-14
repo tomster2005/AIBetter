@@ -1,0 +1,48 @@
+{
+  "contexts": [
+    {
+      "fixtureId": 1,
+      "matchDate": "2025-01-15",
+      "leagueName": "Premier League",
+      "homeTeamId": 1,
+      "awayTeamId": 2,
+      "lineupConfirmed": true,
+      "selections": [
+        {
+          "playerId": 100,
+          "playerName": "Player A",
+          "marketId": 334,
+          "marketName": "Player Shots",
+          "line": 1.5,
+          "outcome": "Over",
+          "odds": 1.85,
+          "stats": {
+            "shots": 25,
+            "shotsOnTarget": 12,
+            "minutesPlayed": 1800,
+            "appearances": 20
+          },
+          "positionId": 9,
+          "isHome": true,
+          "lineupConfirmed": true,
+          "matchedById": true
+        }
+      ]
+    }
+  ],
+  "outcomes": [
+    {
+      "fixtureId": 1,
+      "matchDate": "2025-01-15",
+      "leagueName": "Premier League",
+      "playerResults": [
+        {
+          "playerId": 100,
+          "playerName": "Player A",
+          "shots": 2,
+          "shotsOnTarget": 1
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,111 @@
+/**
+ * Player season statistics for value-bet model (shots, shots on target, minutes, appearances).
+ * Uses Sportmonks GET /v3/football/players/{id}?include=statistics.details.type&filters=playerStatisticSeasons:{seasonId}
+ */
+
+import { getPlayerDetails } from "./playerDetails.js";
+
+export interface PlayerSeasonStatsForProps {
+  playerId: number;
+  seasonId: number;
+  shots: number;
+  shotsOnTarget: number;
+  minutesPlayed: number;
+  appearances: number;
+}
+
+function toNum(v: unknown): number {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "object" && v != null && "total" in v) {
+    const t = (v as { total?: unknown }).total;
+    return typeof t === "number" && Number.isFinite(t) ? t : 0;
+  }
+  return 0;
+}
+
+/** Flatten statistics into list of { name, value }. Supports statistics[].details[] (Sportmonks) or flat statistics[] with type/value. */
+function flattenStatEntries(raw: { statistics?: unknown[]; data?: { statistics?: unknown[] } }): Array<{ name: string; value: number }> {
+  const stats = raw?.statistics ?? (raw as { data?: { statistics?: unknown[] } })?.data?.statistics;
+  if (!Array.isArray(stats) || stats.length === 0) return [];
+
+  const out: Array<{ name: string; value: number }> = [];
+  for (const stat of stats) {
+    const s = stat as { type?: { name?: string; code?: string; developer_name?: string }; value?: unknown; details?: Array<{ type?: { name?: string; code?: string; developer_name?: string }; value?: unknown }> };
+    const details = s?.details ?? [];
+    if (details.length > 0) {
+      for (const d of details) {
+        const t = (d as { type?: { name?: string; code?: string; developer_name?: string }; value?: unknown }).type;
+        const v = (d as { value?: unknown }).value;
+        const n = String(t?.name ?? t?.code ?? t?.developer_name ?? "").trim().toLowerCase().replace(/-/g, " ").replace(/_/g, " ");
+        if (n) out.push({ name: n, value: toNum(v) });
+      }
+    } else if (s?.type) {
+      const name = String(s.type?.name ?? s.type?.code ?? s.type?.developer_name ?? "").trim().toLowerCase().replace(/-/g, " ").replace(/_/g, " ");
+      if (name) out.push({ name, value: toNum(s?.value) });
+    }
+  }
+  return out;
+}
+
+/**
+ * Fetches player stats for a season and extracts shots, shots on target, minutes, appearances.
+ * Supports Sportmonks structures: statistics[].details[].type.name / value.total or flat statistics[].type.name / value.total.
+ */
+export async function getPlayerSeasonStatsForProps(
+  playerId: number,
+  seasonId: number
+): Promise<PlayerSeasonStatsForProps | null> {
+  const raw = await getPlayerDetails(playerId, { seasonId });
+
+  if (process.env.NODE_ENV !== "production") {
+    try {
+      console.log("[sportmonks raw player]", JSON.stringify(raw, null, 2));
+    } catch {
+      console.log("[sportmonks raw player] (serialization skipped)");
+    }
+  }
+
+  const entries = flattenStatEntries(raw as Parameters<typeof flattenStatEntries>[0]);
+  let shots = 0;
+  let shotsOnTarget = 0;
+  let minutesPlayed = 0;
+  let appearances = 0;
+
+  for (const stat of entries) {
+    const name = stat.name;
+    const value = stat.value;
+    if (!name) continue;
+
+    if (name.includes("shot") && !name.includes("target")) {
+      shots = value;
+    }
+    if (name.includes("target")) {
+      shotsOnTarget = value;
+    }
+    if (name.includes("minute")) {
+      minutesPlayed = value;
+    }
+    if (name.includes("appearance")) {
+      appearances = value;
+    }
+  }
+
+  if (process.env.NODE_ENV !== "production") {
+    console.log("[parsed player stats]", {
+      playerId,
+      shots,
+      shotsOnTarget,
+      minutesPlayed,
+      appearances,
+    });
+  }
+
+  return {
+    playerId,
+    seasonId,
+    shots,
+    shotsOnTarget,
+    minutesPlayed,
+    appearances,
+  };
+}

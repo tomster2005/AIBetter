@@ -16,6 +16,7 @@ import {
   MARKET_ID_TEAM_TOTAL_GOALS,
   TEAM_PROP_MARKET_IDS,
 } from "../constants/marketIds.js";
+import { loadPlayerPropsForFixture } from "../services/playerPropsService.js";
 import "./OddsPage.css";
 
 const LONDON = "Europe/London";
@@ -306,13 +307,6 @@ function getOddsApiUrl(fixtureId: number): string {
   return `${origin}/api/fixtures/${fixtureId}/odds`;
 }
 
-function getPlayerOddsApiUrl(fixtureId: number): string {
-  const base =
-    typeof import.meta.env !== "undefined" && import.meta.env?.VITE_API_ORIGIN;
-  const origin = typeof base === "string" && base !== "" ? base.replace(/\/$/, "") : "";
-  return `${origin}/api/fixtures/${fixtureId}/player-odds`;
-}
-
 function isCoreMarket(marketId: number): boolean {
   return (CORE_MARKET_IDS as readonly number[]).includes(marketId);
 }
@@ -431,9 +425,13 @@ export function OddsPage() {
     setLoading(true);
     setError(null);
     fetch(`/api/fixtures?start=${start}&end=${end}`)
-      .then((res) => {
-        if (!res.ok) throw new Error(res.statusText);
-        return res.json() as Promise<Fixture[]>;
+      .then(async (res) => {
+        const data = await res.json();
+        if (!res.ok) {
+          const msg = typeof (data as { error?: string })?.error === "string" ? (data as { error: string }).error : res.statusText;
+          throw new Error(msg);
+        }
+        return data as Fixture[];
       })
       .then((fixtures) => {
         setByDate(groupFixturesByDate(fixtures));
@@ -524,42 +522,17 @@ export function OddsPage() {
     setPlayerOddsLoading(true);
     setPlayerOddsError(null);
     setPlayerOddsData(null);
-    const url = getPlayerOddsApiUrl(id);
-    if (import.meta.env.DEV) console.log("[player-props] request started", { url, fixtureId: id });
-    fetch(url)
-      .then(async (res) => {
-        if (import.meta.env.DEV) console.log("[player-props] response received", { ok: res.ok, status: res.status });
-        if (!res.ok) throw new Error("Player odds unavailable");
-        return res.json() as Promise<{ data?: PlayerOddsResponse }>;
-      })
-      .then((json) => {
-        const data = json?.data ?? json;
-        const resp = data as PlayerOddsResponse;
+    loadPlayerPropsForFixture(id)
+      .then((data) => {
         if (import.meta.env.DEV) {
           console.log("[player-props] parsed response", {
             hasData: !!data,
-            marketsLength: resp?.markets?.length,
-            lineupSource: resp?.lineupSource,
-            playerCount: resp?.playerCount,
+            marketsLength: data?.markets?.length,
+            lineupSource: data?.lineupSource,
+            playerCount: data?.playerCount,
           });
-          if (resp?.markets?.length === 0) {
-            if (resp?.lineupSource === "none" || resp?.playerCount === 0) {
-              console.log("[player-props] empty: no lineup available");
-            } else {
-              console.log("[player-props] empty: lineup exists, zero player prop markets returned");
-            }
-          }
         }
-        if (data && typeof data === "object" && Array.isArray(resp?.markets)) {
-          setPlayerOddsData({
-            fixtureId: id,
-            markets: resp.markets,
-            lineupSource: resp?.lineupSource,
-            playerCount: resp?.playerCount,
-          });
-        } else {
-          setPlayerOddsData({ fixtureId: id, markets: [], lineupSource: "none", playerCount: 0 });
-        }
+        setPlayerOddsData(data);
       })
       .catch((err) => {
         if (import.meta.env.DEV) console.log("[player-props] error caught", err);

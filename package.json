@@ -7,7 +7,8 @@
     "dev": "concurrently -k \"npm run dev:api\" \"vite\"",
     "dev:api": "tsx server/index.ts",
     "build": "vite build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "backtest": "tsx scripts/runBacktest.ts"
   },
   "dependencies": {
     "dotenv": "^17.3.1",

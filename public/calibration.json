@@ -1,0 +1,116 @@
+{
+  "calibrationTable": [
+    {
+      "bucketKey": "0-5",
+      "minProb": 0,
+      "maxProb": 0.05,
+      "count": 0,
+      "hitRate": 0,
+      "avgRawModelProbability": 0
+    },
+    {
+      "bucketKey": "5-10",
+      "minProb": 0.05,
+      "maxProb": 0.1,
+      "count": 0,
+      "hitRate": 0,
+      "avgRawModelProbability": 0
+    },
+    {
+      "bucketKey": "10-15",
+      "minProb": 0.1,
+      "maxProb": 0.15,
+      "count": 0,
+      "hitRate": 0,
+      "avgRawModelProbability": 0
+    },
+    {
+      "bucketKey": "15-20",
+      "minProb": 0.15,
+      "maxProb": 0.2,
+      "count": 0,
+      "hitRate": 0,
+      "avgRawModelProbability": 0
+    },
+    {
+      "bucketKey": "20-30",
+      "minProb": 0.2,
+      "maxProb": 0.3,
+      "count": 0,
+      "hitRate": 0,
+      "avgRawModelProbability": 0
+    },
+    {
+      "bucketKey": "30-40",
+      "minProb": 0.3,
+      "maxProb": 0.4,
+      "count": 1,
+      "hitRate": 1,
+      "avgRawModelProbability": 0.3775990685626816
+    },
+    {
+      "bucketKey": "40-50",
+      "minProb": 0.4,
+      "maxProb": 0.5,
+      "count": 0,
+      "hitRate": 0,
+      "avgRawModelProbability": 0
+    },
+    {
+      "bucketKey": "50-60",
+      "minProb": 0.5,
+      "maxProb": 0.6,
+      "count": 0,
+      "hitRate": 0,
+      "avgRawModelProbability": 0
+    },
+    {
+      "bucketKey": "60-70",
+      "minProb": 0.6,
+      "maxProb": 0.7,
+      "count": 0,
+      "hitRate": 0,
+      "avgRawModelProbability": 0
+    },
+    {
+      "bucketKey": "70+",
+      "minProb": 0.7,
+      "maxProb": 1.01,
+      "count": 0,
+      "hitRate": 0,
+      "avgRawModelProbability": 0
+    }
+  ],
+  "summary": {
+    "totalBets": 1,
+    "hits": 1,
+    "hitRate": 1,
+    "avgBookmakerProbability": 0.5405405405405405,
+    "avgRawModelProbability": 0.3775990685626816,
+    "avgCalibratedProbability": 0.3775990685626816,
+    "brierScoreRaw": 0.3873829194540416,
+    "brierScoreCalibrated": 0.3873829194540416,
+    "logLossRaw": 0.9739223114440203,
+    "logLossCalibrated": 0.9739223114440203,
+    "roiPositiveEdge": 0,
+    "roiByEdgeBucket": {
+      "0-0.02": 0,
+      "0.02-0.05": 0,
+      "0.05-0.10": 0,
+      "0.10+": 0
+    },
+    "roiByConfidence": {
+      "low": 0,
+      "medium": 0,
+      "high": 0.8500000000000001
+    },
+    "hitRateByMarket": {
+      "334": 1
+    },
+    "hitRateByConfidence": {
+      "low": 0,
+      "medium": 0,
+      "high": 1
+    }
+  }
+}
