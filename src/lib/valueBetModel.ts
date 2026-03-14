@@ -4,7 +4,12 @@
  */
 
 import { calculatePer90, probabilityOverLine, probabilityUnderLine } from "./playerPropProbability.js";
-import { MARKET_ID_PLAYER_SHOTS, MARKET_ID_PLAYER_SHOTS_ON_TARGET } from "../constants/marketIds.js";
+import {
+  MARKET_ID_PLAYER_SHOTS,
+  MARKET_ID_PLAYER_SHOTS_ON_TARGET,
+  MARKET_ID_PLAYER_FOULS_COMMITTED,
+  MARKET_ID_PLAYER_FOULS_WON,
+} from "../constants/marketIds.js";
 
 export type ConfidenceLevel = "low" | "medium" | "high";
 /** Same as ConfidenceLevel; used for bet quality to avoid confusion with data confidence. */
@@ -232,9 +237,17 @@ export function computeBetQualityScore(params: BetQualityParams): number {
   const marketId = params.marketId;
   const lineReasonable =
     (marketId === MARKET_ID_PLAYER_SHOTS && line >= 0.5 && line <= 5.5) ||
-    (marketId === MARKET_ID_PLAYER_SHOTS_ON_TARGET && line >= 0.5 && line <= 3.5);
+    (marketId === MARKET_ID_PLAYER_SHOTS_ON_TARGET && line >= 0.5 && line <= 3.5) ||
+    (marketId === MARKET_ID_PLAYER_FOULS_COMMITTED && line >= 0.5 && line <= 4.5) ||
+    (marketId === MARKET_ID_PLAYER_FOULS_WON && line >= 0.5 && line <= 3.5);
   if (lineReasonable) score += 15;
-  else if ((marketId === MARKET_ID_PLAYER_SHOTS && line > 6) || (marketId === MARKET_ID_PLAYER_SHOTS_ON_TARGET && line > 4)) score -= 20;
+  else if (
+    (marketId === MARKET_ID_PLAYER_SHOTS && line > 6) ||
+    (marketId === MARKET_ID_PLAYER_SHOTS_ON_TARGET && line > 4) ||
+    (marketId === MARKET_ID_PLAYER_FOULS_COMMITTED && line > 5) ||
+    (marketId === MARKET_ID_PLAYER_FOULS_WON && line > 4)
+  )
+    score -= 20;
 
   if (params.dataConfidence === "high") score += 10;
   else if (params.dataConfidence === "medium") score += 5;
@@ -246,6 +259,8 @@ export function computeBetQualityScore(params: BetQualityParams): number {
 export interface ValueBetModelInputs {
   shots: number;
   shotsOnTarget: number;
+  foulsCommitted?: number;
+  foulsWon?: number;
   minutesPlayed: number;
   appearances: number;
   expectedMinutes: number;
@@ -264,8 +279,33 @@ export interface ValueBetModelInputs {
 export interface StatsForModel {
   shots: number;
   shotsOnTarget: number;
+  foulsCommitted?: number;
+  foulsWon?: number;
   minutesPlayed: number;
   appearances: number;
+}
+
+/**
+ * Return the relevant stat value for a given player-prop market ID.
+ * Used for per-90 and probability calculation.
+ */
+export function getRelevantStatForMarket(
+  stats: StatsForModel,
+  marketId: number,
+  _minutesPlayed: number
+): number | null {
+  switch (marketId) {
+    case MARKET_ID_PLAYER_SHOTS:
+      return stats.shots;
+    case MARKET_ID_PLAYER_SHOTS_ON_TARGET:
+      return stats.shotsOnTarget;
+    case MARKET_ID_PLAYER_FOULS_COMMITTED:
+      return stats.foulsCommitted ?? 0;
+    case MARKET_ID_PLAYER_FOULS_WON:
+      return stats.foulsWon ?? 0;
+    default:
+      return null;
+  }
 }
 
 /**
@@ -282,12 +322,8 @@ export function computeRawModelProbability(
 ): number {
   const { minutesPlayed, appearances } = stats;
   const expectedMinutes = computeExpectedMinutes(minutesPlayed, appearances);
-  const per90 =
-    marketId === 334 /* PLAYER_SHOTS */
-      ? calculatePer90(stats.shots, minutesPlayed)
-      : marketId === 336 /* PLAYER_SHOTS_ON_TARGET */
-        ? calculatePer90(stats.shotsOnTarget, minutesPlayed)
-        : 0;
+  const statValue = getRelevantStatForMarket(stats, marketId, minutesPlayed);
+  const per90 = statValue != null ? calculatePer90(statValue, minutesPlayed) : 0;
   const lambda = lambdaFromPer90AndMinutes(per90, expectedMinutes);
   const positionMultiplier = getPositionMultiplier(positionId);
   const { teamAttackFactor, opponentDefenceFactor } = getTeamOpponentFactors({

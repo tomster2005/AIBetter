@@ -19,6 +19,8 @@
           "stats": {
             "shots": 25,
             "shotsOnTarget": 12,
+            "foulsCommitted": 0,
+            "foulsWon": 0,
             "minutesPlayed": 1800,
             "appearances": 20
           },
@@ -40,7 +42,9 @@
           "playerId": 100,
           "playerName": "Player A",
           "shots": 2,
-          "shotsOnTarget": 1
+          "shotsOnTarget": 1,
+          "foulsCommitted": 0,
+          "foulsWon": 0
         }
       ]
     }

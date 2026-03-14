@@ -7,6 +7,8 @@ export interface PlayerSeasonStats {
   seasonId: number;
   shots: number;
   shotsOnTarget: number;
+  foulsCommitted?: number;
+  foulsWon?: number;
   minutesPlayed: number;
   appearances: number;
 }

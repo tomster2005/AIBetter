@@ -109,6 +109,8 @@ app.get("/api/fixtures/:id/player-odds", async (req, res) => {
         markets: [
           { marketId: 336, marketName: "Player Shots", players: [] },
           { marketId: 334, marketName: "Player Shots On Target", players: [] },
+          { marketId: 338, marketName: "Player Fouls Committed", players: [] },
+          { marketId: 339, marketName: "Player Fouls Won", players: [] },
         ],
         lineupSource: "none",
         playerCount: 0,

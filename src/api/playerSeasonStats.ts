@@ -1,5 +1,5 @@
 /**
- * Player season statistics for value-bet model (shots, shots on target, minutes, appearances).
+ * Player season statistics for value-bet model (shots, shots on target, fouls, minutes, appearances).
  * Uses Sportmonks GET /v3/football/players/{id}?include=statistics.details.type&filters=playerStatisticSeasons:{seasonId}
  */
 
@@ -10,6 +10,9 @@ export interface PlayerSeasonStatsForProps {
   seasonId: number;
   shots: number;
   shotsOnTarget: number;
+  /** Omit or set undefined when not parsed from API (do not default to 0 for missing). */
+  foulsCommitted?: number;
+  foulsWon?: number;
   minutesPlayed: number;
   appearances: number;
 }
@@ -66,13 +69,21 @@ export async function getPlayerSeasonStatsForProps(
   }
 
   const entries = flattenStatEntries(raw as Parameters<typeof flattenStatEntries>[0]);
+
+  if (process.env.NODE_ENV !== "production") {
+    const foulRelated = entries.filter((e) => e.name.includes("foul"));
+    console.log("[player-stats backend] foul-related flattened entries", foulRelated);
+  }
+
   let shots = 0;
   let shotsOnTarget = 0;
+  let foulsCommitted: number | undefined = undefined;
+  let foulsWon: number | undefined = undefined;
   let minutesPlayed = 0;
   let appearances = 0;
 
   for (const stat of entries) {
-    const name = stat.name;
+    const name = (stat.name ?? "").toLowerCase().trim();
     const value = stat.value;
     if (!name) continue;
 
@@ -81,6 +92,17 @@ export async function getPlayerSeasonStatsForProps(
     }
     if (name.includes("target")) {
       shotsOnTarget = value;
+    }
+    if (
+      name.includes("foul") &&
+      (name.includes("commit") || name === "fouls" || name.includes("committed"))
+    ) {
+      foulsCommitted = value;
+    } else if (
+      name.includes("foul") &&
+      (name.includes("won") || name.includes("drawn") || name.includes("suffered"))
+    ) {
+      foulsWon = value;
     }
     if (name.includes("minute")) {
       minutesPlayed = value;
@@ -91,10 +113,17 @@ export async function getPlayerSeasonStatsForProps(
   }
 
   if (process.env.NODE_ENV !== "production") {
+    console.log("[player-stats backend] parsed fouls", {
+      playerId,
+      foulsCommitted,
+      foulsWon,
+    });
     console.log("[parsed player stats]", {
       playerId,
       shots,
       shotsOnTarget,
+      foulsCommitted,
+      foulsWon,
       minutesPlayed,
       appearances,
     });
@@ -105,6 +134,8 @@ export async function getPlayerSeasonStatsForProps(
     seasonId,
     shots,
     shotsOnTarget,
+    ...(foulsCommitted !== undefined && { foulsCommitted }),
+    ...(foulsWon !== undefined && { foulsWon }),
     minutesPlayed,
     appearances,
   };

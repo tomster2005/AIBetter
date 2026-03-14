@@ -7,6 +7,10 @@ export const MARKET_ID_ALTERNATIVE_TOTAL_GOALS = 81;
 export const MARKET_ID_PLAYER_SHOTS = 334;
 /** Sportmonks: Player Shots On Target (player props). */
 export const MARKET_ID_PLAYER_SHOTS_ON_TARGET = 336;
+/** Sportmonks: Player Fouls Committed (player props). */
+export const MARKET_ID_PLAYER_FOULS_COMMITTED = 338;
+/** Sportmonks: Player Fouls Won (player props). */
+export const MARKET_ID_PLAYER_FOULS_WON = 339;
 
 export const MARKET_ID_TEAM_SHOTS = 285;
 export const MARKET_ID_TEAM_SHOTS_ON_TARGET = 284;
@@ -55,4 +59,6 @@ export const ACTIVE_ODDS_MARKET_IDS: readonly number[] = [
 export const PLAYER_PROP_MARKET_IDS = [
   MARKET_ID_PLAYER_SHOTS_ON_TARGET,
   MARKET_ID_PLAYER_SHOTS,
+  MARKET_ID_PLAYER_FOULS_COMMITTED,
+  MARKET_ID_PLAYER_FOULS_WON,
 ];

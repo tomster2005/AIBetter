@@ -247,12 +247,40 @@
   line-height: 1.4;
 }
 
+.lineup-content__value-fouls-note {
+  margin: 0 0 0.75rem;
+  font-size: 0.75rem;
+  color: #9ca3af;
+  line-height: 1.4;
+}
+
 .lineup-content__value-controls {
   display: flex;
   align-items: center;
   gap: 1rem;
   margin-bottom: 0.75rem;
   flex-wrap: wrap;
+}
+
+.lineup-content__value-controls-select {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  color: #374151;
+}
+
+.lineup-content__value-controls-label {
+  white-space: nowrap;
+}
+
+.lineup-content__value-controls-bookmaker-select {
+  font-size: 0.8125rem;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid #e5e7eb;
+  border-radius: var(--lineup-radius-sm);
+  background: #fff;
+  min-width: 10rem;
 }
 
 .lineup-content__value-controls-toggle {

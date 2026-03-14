@@ -4,7 +4,12 @@
  * Produces calibration data so calibrated probability can replace raw in edge calculation.
  */
 
-import { MARKET_ID_PLAYER_SHOTS, MARKET_ID_PLAYER_SHOTS_ON_TARGET } from "../constants/marketIds.js";
+import {
+  MARKET_ID_PLAYER_SHOTS,
+  MARKET_ID_PLAYER_SHOTS_ON_TARGET,
+  MARKET_ID_PLAYER_FOULS_COMMITTED,
+  MARKET_ID_PLAYER_FOULS_WON,
+} from "../constants/marketIds.js";
 import {
   computeRawModelProbability,
   computeExpectedMinutes,
@@ -61,6 +66,8 @@ export interface PlayerMatchStats {
   playerName: string;
   shots: number;
   shotsOnTarget: number;
+  foulsCommitted?: number;
+  foulsWon?: number;
 }
 
 /** Historical fixture outcome: actual stats per player for one match. */
@@ -109,14 +116,28 @@ export function resolveHistoricalPropResult(params: {
   outcome: PropOutcome;
   actualShots: number;
   actualShotsOnTarget: number;
+  actualFoulsCommitted: number;
+  actualFoulsWon: number;
 }): 0 | 1 {
-  const { marketId, line, outcome, actualShots, actualShotsOnTarget } = params;
+  const {
+    marketId,
+    line,
+    outcome,
+    actualShots,
+    actualShotsOnTarget,
+    actualFoulsCommitted,
+    actualFoulsWon,
+  } = params;
   const actual =
     marketId === MARKET_ID_PLAYER_SHOTS
       ? actualShots
       : marketId === MARKET_ID_PLAYER_SHOTS_ON_TARGET
         ? actualShotsOnTarget
-        : 0;
+        : marketId === MARKET_ID_PLAYER_FOULS_COMMITTED
+          ? actualFoulsCommitted
+          : marketId === MARKET_ID_PLAYER_FOULS_WON
+            ? actualFoulsWon
+            : 0;
 
   if (outcome === "Over") {
     const threshold = Math.ceil(line);
@@ -177,6 +198,8 @@ export function generateBacktestRows(
             outcome: sel.outcome,
             actualShots: actual.shots,
             actualShotsOnTarget: actual.shotsOnTarget,
+            actualFoulsCommitted: actual.foulsCommitted ?? 0,
+            actualFoulsWon: actual.foulsWon ?? 0,
           });
         }
       }
