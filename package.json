@@ -9,7 +9,8 @@
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "backtest": "tsx scripts/runBacktest.ts",
-    "settle": "tsx scripts/settleBacktestRows.ts"
+    "settle": "tsx scripts/settleBacktestRows.ts",
+    "outcomes:generate": "tsx scripts/generateFixtureOutcomes.ts"
   },
   "dependencies": {
     "cors": "^2.8.5",
