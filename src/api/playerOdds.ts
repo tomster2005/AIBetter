@@ -96,6 +96,37 @@ interface PlayerOddRow {
 
 const isDev = (): boolean => process.env.NODE_ENV !== "production";
 
+/** Known bookmaker IDs → display name when API does not include bookmaker name. */
+const BOOKMAKER_ID_TO_NAME: Record<number, string> = {
+  1: "Bet365",
+  2: "Bet365",
+  3: "1xBet",
+  4: "William Hill",
+  5: "Pinnacle",
+  6: "Marathonbet",
+  7: "Unibet",
+  8: "Betfair",
+  9: "Bwin",
+  10: "888sport",
+  14: "Betway",
+  34: "Betsson",
+};
+
+function resolveBookmakerName(
+  bookmakerId: number,
+  row: PlayerOddRow
+): string {
+  const fromRow =
+    (row.bookmaker as { name?: string })?.name ??
+    (row.bookmaker as { data?: { name?: string } })?.data?.name ??
+    (row as { bookmaker_name?: string }).bookmaker_name ??
+    (row as { bookmakerName?: string }).bookmakerName;
+  if (typeof fromRow === "string" && fromRow.trim()) return fromRow.trim();
+  const fromMap = bookmakerId > 0 ? BOOKMAKER_ID_TO_NAME[bookmakerId] : undefined;
+  if (typeof fromMap === "string") return fromMap;
+  return `Bookmaker ${bookmakerId}`;
+}
+
 /**
  * Single request to Sportmonks odds for fixture (markets 336, 334 only).
  * URL: https://api.sportmonks.com/v3/football/odds/pre-match/fixtures/{fixtureId}
@@ -118,12 +149,6 @@ async function fetchPlayerPropOdds(
       : Array.isArray((json?.data as { data?: PlayerOddRow[] })?.data)
         ? (json.data as { data: PlayerOddRow[] }).data
         : [];
-    if (isDev()) {
-      console.log("[player-odds] final URL:", url);
-      console.log("[player-odds] final filters string:", filters);
-      console.log("[player-odds] response status:", res.status);
-      console.log("[player-odds] raw row count (response.data / response.data.data):", rawOdds.length);
-    }
     return { rows: rawOdds, status: res.status, url, filters };
   } catch (err) {
     if (isDev()) console.log("[player-odds] fetch error", err);
@@ -205,13 +230,21 @@ function parseOddsValue(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-/** For 334/336/338/339, line comes from row.label (e.g. "0.5"). Otherwise total, handicap, or label. */
+/** For 334/336/338/339, line comes from row.label. Fouls (338/339) use numeric-only labels e.g. "1.5", "2.5". */
 function getLineFromRow(row: PlayerOddRow, marketId?: number): number | null {
   if (marketId === 334 || marketId === 336 || marketId === 338 || marketId === 339) {
     const label = String(row.label ?? "").trim();
     if (label) {
-      const n = parseFloat(label.replace(/,/g, "."));
+      const normalized = label.replace(/,/g, ".");
+      let n = parseFloat(normalized);
       if (Number.isFinite(n)) return n;
+      if (marketId === 338 || marketId === 339) {
+        const digitsOnly = normalized.replace(/[^\d.]/g, "").replace(/\.+$/, "");
+        if (digitsOnly) {
+          n = parseFloat(digitsOnly);
+          if (Number.isFinite(n)) return n;
+        }
+      }
     }
   }
   if (row.total != null) {
@@ -371,15 +404,32 @@ export async function getPlayerOddsForFixture(
   const normalized338 = rows338.map((r) => toFoulsRow(r, 338));
   const normalized339 = rows339.map((r) => toFoulsRow(r, 339));
 
-  if (isDev()) {
-    console.log("[player-odds backend] fetched explicit fouls markets", {
-      fixtureId,
-      market338Count: normalized338.length,
-      market339Count: normalized339.length,
-    });
-  }
+  /** For 334/336, row.name may be outcome (e.g. "Over 2.5"); use participant name when so. */
+  const toShotsRow = (r: PlayerOddRow): PlayerOddRow => {
+    const rawMid = r.market_id ?? r.market?.id ?? (r.market as { data?: { id?: number } })?.data?.id;
+    const mid = typeof rawMid === "number" ? rawMid : parseInt(String(rawMid), 10);
+    if (mid !== 334 && mid !== 336) return r;
+    const currentName = String(r.name ?? "").trim();
+    const looksLikeOutcome = /^(over|under)\s/i.test(currentName) || /^\d+\.?\d*$/.test(currentName.replace(/,/g, "."));
+    if (!looksLikeOutcome && currentName !== "") return r;
+    const fromParticipant =
+      (r.participant as { name?: string })?.name ??
+      (r.participant as { data?: { name?: string } })?.data?.name;
+    const fromParts = Array.isArray(r.participants) && r.participants.length > 0
+      ? (r.participants[0] as { name?: string; data?: { name?: string } })?.name ?? (r.participants[0] as { data?: { name?: string } })?.data?.name
+      : undefined;
+    const playerName = typeof fromParticipant === "string" && fromParticipant.trim()
+      ? fromParticipant.trim()
+      : typeof fromParts === "string" && fromParts.trim()
+        ? fromParts.trim()
+        : currentName || "Unknown";
+    const out = { ...r };
+    (out as { name: string }).name = playerName;
+    return out;
+  };
+  const normalizedMainRows = mainRows.map(toShotsRow);
 
-  const rows = [...mainRows, ...normalized338, ...normalized339];
+  const rows = [...normalizedMainRows, ...normalized338, ...normalized339];
 
   type PlayerEntry = {
     playerName: string;
@@ -393,100 +443,35 @@ export async function getPlayerOddsForFixture(
     byMarketId.set(marketId, { marketName: getMarketName(marketId), byPlayer: new Map() });
   }
 
-  let rowsAccepted = 0;
-  let rowsRejected = 0;
-  const rejectReasons: Record<string, number> = {};
-  const sampleLoggedForMarket = new Set<number>();
-
   for (const row of rows) {
-    if (row.suspended === true || row.stopped === true) {
-      rowsRejected++;
-      rejectReasons["suspended_or_stopped"] = (rejectReasons["suspended_or_stopped"] ?? 0) + 1;
-      continue;
-    }
+    if (row.suspended === true || row.stopped === true) continue;
     const rawMarketId = row.market_id ?? row.market?.id ?? (row.market as { data?: { id?: number } })?.data?.id;
     const marketId = typeof rawMarketId === "number" ? rawMarketId : parseInt(String(rawMarketId), 10);
-    if (marketId !== 334 && marketId !== 336 && marketId !== 338 && marketId !== 339) {
-      rowsRejected++;
-      rejectReasons["market_not_supported"] = (rejectReasons["market_not_supported"] ?? 0) + 1;
-      continue;
-    }
-    // Markets 334/336: accept only when name, label, value exist. Do NOT require participant_id, participants, or total.
+    if (marketId !== 334 && marketId !== 336 && marketId !== 338 && marketId !== 339) continue;
     const hasName = row.name != null && String(row.name).trim() !== "";
     const hasLabel = row.label != null && String(row.label).trim() !== "";
     const hasValue = row.value != null;
-    if (!hasName) {
-      rowsRejected++;
-      rejectReasons["no_name"] = (rejectReasons["no_name"] ?? 0) + 1;
-      continue;
-    }
-    if (!hasLabel) {
-      rowsRejected++;
-      rejectReasons["no_label"] = (rejectReasons["no_label"] ?? 0) + 1;
-      continue;
-    }
-    if (!hasValue) {
-      rowsRejected++;
-      rejectReasons["no_value"] = (rejectReasons["no_value"] ?? 0) + 1;
-      continue;
-    }
+    if (!hasName || !hasLabel || !hasValue) continue;
     const playerName = String(row.name).trim();
     const playerKey = normalizePlayerKey(String(row.name));
-    if (!playerKey) {
-      rowsRejected++;
-      rejectReasons["empty_player_key"] = (rejectReasons["empty_player_key"] ?? 0) + 1;
-      continue;
-    }
+    if (!playerKey) continue;
     const line = getLineFromRow(row, marketId);
-    if (line == null) {
-      rowsRejected++;
-      rejectReasons["no_line"] = (rejectReasons["no_line"] ?? 0) + 1;
-      continue;
-    }
+    if (line == null) continue;
     const odds = parseOddsValue(row.value);
-    if (odds == null) {
-      rowsRejected++;
-      rejectReasons["no_odds"] = (rejectReasons["no_odds"] ?? 0) + 1;
-      continue;
-    }
+    if (odds == null) continue;
     const bookmakerId = row.bookmaker_id ?? row.bookmaker?.id ?? (row.bookmaker as { data?: { id?: number } })?.data?.id ?? 0;
-    const bookmakerName =
-      (row.bookmaker as { name?: string })?.name ?? (row.bookmaker as { data?: { name?: string } })?.data?.name ?? `Bookmaker ${bookmakerId}`;
+    const bookmakerName = resolveBookmakerName(bookmakerId, row);
 
     const marketEntry = byMarketId.get(marketId);
-    if (!marketEntry) {
-      rowsRejected++;
-      rejectReasons["no_market_entry"] = (rejectReasons["no_market_entry"] ?? 0) + 1;
-      continue;
-    }
-    const outcome = isOver(String(row.label ?? "")) ? "Over" : "Under";
-    if (isDev() && !sampleLoggedForMarket.has(marketId)) {
-      sampleLoggedForMarket.add(marketId);
-      console.log("[player-odds backend] normalized row sample", {
-        marketId,
-        playerName,
-        label: row.label,
-        line,
-        outcome,
-        odds,
-        bookmakerId,
-        bookmakerName,
-      });
-    }
-    if (isDev() && (marketId === 338 || marketId === 339)) {
-      console.log("[player-odds backend] normalized fouls row", {
-        fixtureId,
-        marketId,
-        playerName,
-        label: row.label,
-        line,
-        outcome,
-        odds,
-        bookmakerId,
-        bookmakerName,
-      });
-    }
-    rowsAccepted++;
+    if (!marketEntry) continue;
+    const labelStr = String(row.label ?? "").trim();
+    const isNumericOnly = /^\d+\.?\d*$/.test(labelStr.replace(/,/g, "."));
+    const outcome =
+      (marketId === 334 || marketId === 336 || marketId === 338 || marketId === 339) && isNumericOnly
+        ? "Over"
+        : isOver(labelStr)
+          ? "Over"
+          : "Under";
     let playerEntry = marketEntry.byPlayer.get(playerKey);
     if (!playerEntry) {
       playerEntry = {
@@ -515,11 +500,6 @@ export async function getPlayerOddsForFixture(
     }
   }
 
-  if (isDev()) {
-    console.log("[player-odds] rows accepted:", rowsAccepted);
-    console.log("[player-odds] rows rejected:", rowsRejected, rejectReasons);
-  }
-
   const markets: PlayerOddsMarket[] = [];
   for (const marketId of PLAYER_PROP_MARKET_IDS) {
     const marketEntry = byMarketId.get(marketId)!;
@@ -542,20 +522,23 @@ export async function getPlayerOddsForFixture(
   }
 
   if (isDev()) {
-    console.log("[player-odds] players per market:", markets.map((m) => ({ marketId: m.marketId, marketName: m.marketName, playersCount: m.players.length })));
-    console.log("[player-odds] selections per market:", markets.map((m) => ({
-      marketId: m.marketId,
-      totalSelections: m.players.reduce((sum, p) => sum + (p.selections?.length ?? 0), 0),
-    })));
-    console.log("[player-odds backend] merged player markets ids", markets.map((m) => m.marketId));
+    const m334 = markets.find((m) => m.marketId === 334);
+    const m336 = markets.find((m) => m.marketId === 336);
     const m338 = markets.find((m) => m.marketId === 338);
     const m339 = markets.find((m) => m.marketId === 339);
-    console.log("[player-odds backend] final fouls markets summary", {
+    const players = (m: { players?: unknown[] } | undefined) => m?.players?.length ?? 0;
+    const selections = (m: { players?: Array<{ selections?: unknown[] }> } | undefined) =>
+      m?.players?.reduce((sum, p) => sum + (p.selections?.length ?? 0), 0) ?? 0;
+    console.log("[player-odds backend] final player markets summary", {
       fixtureId,
-      market338Players: m338?.players?.length ?? 0,
-      market339Players: m339?.players?.length ?? 0,
-      market338Selections: m338?.players?.reduce((sum, p) => sum + (p.selections?.length ?? 0), 0) ?? 0,
-      market339Selections: m339?.players?.reduce((sum, p) => sum + (p.selections?.length ?? 0), 0) ?? 0,
+      market334Players: players(m334),
+      market336Players: players(m336),
+      market338Players: players(m338),
+      market339Players: players(m339),
+      market334Selections: selections(m334),
+      market336Selections: selections(m336),
+      market338Selections: selections(m338),
+      market339Selections: selections(m339),
     });
   }
 

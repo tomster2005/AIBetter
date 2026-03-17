@@ -122,6 +122,13 @@ export const VALUE_BET_HARD_FILTER = {
   minExpectedMinutes: 35,
 } as const;
 
+/** Slightly relaxed thresholds for fouls markets (338/339) only; keep valid rows. */
+export const VALUE_BET_HARD_FILTER_FOULS = {
+  minAppearances: 3,
+  minMinutesPlayed: 180,
+  minExpectedMinutes: 28,
+} as const;
+
 export function shouldRejectByHardFilter(
   appearances: number,
   minutesPlayed: number,
@@ -131,6 +138,24 @@ export function shouldRejectByHardFilter(
     appearances < VALUE_BET_HARD_FILTER.minAppearances ||
     minutesPlayed < VALUE_BET_HARD_FILTER.minMinutesPlayed ||
     expectedMinutes < VALUE_BET_HARD_FILTER.minExpectedMinutes
+  );
+}
+
+/** Hard filter with market-specific thresholds: fouls (338/339) use slightly relaxed limits. */
+export function shouldRejectByHardFilterForMarket(
+  appearances: number,
+  minutesPlayed: number,
+  expectedMinutes: number,
+  marketId: number
+): boolean {
+  const filter =
+    marketId === MARKET_ID_PLAYER_FOULS_COMMITTED || marketId === MARKET_ID_PLAYER_FOULS_WON
+      ? VALUE_BET_HARD_FILTER_FOULS
+      : VALUE_BET_HARD_FILTER;
+  return (
+    appearances < filter.minAppearances ||
+    minutesPlayed < filter.minMinutesPlayed ||
+    expectedMinutes < filter.minExpectedMinutes
   );
 }
 
@@ -217,15 +242,19 @@ export interface BetQualityParams {
 
 /**
  * Compute bet quality score 0–100 from edge, probability, odds, line, data confidence.
+ * Negative edge is penalized strongly; caps ensure negative-edge rows cannot be "high".
  */
 export function computeBetQualityScore(params: BetQualityParams): number {
   let score = 50;
   const edge = params.modelEdge ?? 0;
   const prob = params.calibratedProbability ?? 0;
 
-  if (edge >= 0.05) score += 30;
-  else if (edge >= 0.03) score += 20;
-  else if (edge < 0) score -= 20;
+  if (edge >= 0.08) score += 35;
+  else if (edge >= 0.05) score += 28;
+  else if (edge >= 0.03) score += 18;
+  else if (edge < -0.08) score -= 45;
+  else if (edge < -0.03) score -= 35;
+  else if (edge < 0) score -= 25;
 
   if (prob >= 0.08 && prob <= 0.65) score += 20;
   else if (prob < 0.02) score -= 25;
@@ -252,7 +281,10 @@ export function computeBetQualityScore(params: BetQualityParams): number {
   if (params.dataConfidence === "high") score += 10;
   else if (params.dataConfidence === "medium") score += 5;
 
-  return Math.max(0, Math.min(100, score));
+  let capped = Math.max(0, Math.min(100, score));
+  if (edge < 0) capped = Math.min(capped, 69);
+  if (edge < -0.05) capped = Math.min(capped, 39);
+  return capped;
 }
 
 /** Model inputs for auditability (stored on each row). */
@@ -288,6 +320,12 @@ export interface StatsForModel {
 /**
  * Return the relevant stat value for a given player-prop market ID.
  * Used for per-90 and probability calculation.
+ *
+ * Canonical market → stat mapping (single source of truth):
+ * • 336 (Player Shots)           → stats.shots
+ * • 334 (Player Shots On Target) → stats.shotsOnTarget
+ * • 338 (Player Fouls Committed) → stats.foulsCommitted
+ * • 339 (Player Fouls Won)       → stats.foulsWon
  */
 export function getRelevantStatForMarket(
   stats: StatsForModel,
@@ -300,9 +338,9 @@ export function getRelevantStatForMarket(
     case MARKET_ID_PLAYER_SHOTS_ON_TARGET:
       return stats.shotsOnTarget;
     case MARKET_ID_PLAYER_FOULS_COMMITTED:
-      return stats.foulsCommitted ?? 0;
+      return stats.foulsCommitted != null ? stats.foulsCommitted : null;
     case MARKET_ID_PLAYER_FOULS_WON:
-      return stats.foulsWon ?? 0;
+      return stats.foulsWon != null ? stats.foulsWon : null;
     default:
       return null;
   }

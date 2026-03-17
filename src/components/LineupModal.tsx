@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import type { Fixture } from "../types/fixture.js";
 import type { FixtureLineup } from "../api/fixture-details-types.js";
 import type { RawLineupEntry } from "../api/fixture-details-types.js";
@@ -12,10 +12,14 @@ import {
 import type { PitchPlayer } from "./lineup/index.js";
 import type { BenchPlayer } from "./lineup/index.js";
 import { PlayerProfileModal } from "./player-profile/index.js";
+import { FixtureOddsPanel } from "./FixtureOddsPanel.js";
+import { BuildValueBetsModal } from "./BuildValueBetsModal.js";
+import type { LineupContext } from "../lib/valueBetBuilder.js";
 import {
   loadPlayerPropsForFixture,
   type PlayerOddsResponse as ServicePlayerOddsResponse,
 } from "../services/playerPropsService.js";
+import { appendBacktestSnapshots } from "../services/backtestSnapshotService.js";
 import {
   loadPlayerSeasonStats,
   fetchLeagueCurrentSeason,
@@ -34,7 +38,7 @@ import {
   getTeamOpponentFactors,
   homeAwayFactor,
   adjustLambda,
-  shouldRejectByHardFilter,
+  shouldRejectByHardFilterForMarket,
   isOddsSane,
   bookmakerProbability as sanitizedBookmakerProbability,
   computeDataConfidenceScore,
@@ -182,6 +186,29 @@ function hasPositionalData(entries: RawLineupEntry[]): boolean {
   });
 }
 
+/** Build lineup context for Build Value Bets matchup boosts (home/away starters with position). */
+function buildLineupContextForBuild(
+  lineup: FixtureLineup | null,
+  fixture: { homeTeam: { id: number }; awayTeam: { id: number } } | null
+): LineupContext | null {
+  if (!lineup?.data || !fixture) return null;
+  const entries = lineup.data as RawLineupEntry[];
+  if (!Array.isArray(entries) || entries.length === 0) return null;
+  const homeId = fixture.homeTeam.id;
+  const awayId = fixture.awayTeam.id;
+  const homeStarters: LineupContext["homeStarters"] = [];
+  const awayStarters: LineupContext["awayStarters"] = [];
+  for (const e of entries) {
+    const isStarter = e.type_id === TYPE_ID_STARTER || e.type_id == null;
+    if (!isStarter) continue;
+    const tid = e.team_id ?? 0;
+    const info = { playerName: e.player_name ?? "", positionId: e.position_id };
+    if (tid === homeId) homeStarters.push(info);
+    else if (tid === awayId) awayStarters.push(info);
+  }
+  return { homeStarters, awayStarters };
+}
+
 type ValueSortKey = "odds" | "probability" | "edge";
 
 function LineupContent({
@@ -193,6 +220,7 @@ function LineupContent({
   coaches,
   onPlayerClick,
   onFindValueBets,
+  onBuildValueBets,
   loadingValueBets,
   valueBetRows,
   valueBetStartingCount,
@@ -212,6 +240,7 @@ function LineupContent({
   coaches?: LineupModalProps["coaches"];
   onPlayerClick?: (playerId: number, teamName?: string) => void;
   onFindValueBets?: () => void;
+  onBuildValueBets?: () => void;
   loadingValueBets?: boolean;
   valueBetRows?: ValueBetRow[] | null;
   valueBetStartingCount?: number | null;
@@ -223,6 +252,8 @@ function LineupContent({
   selectedBookmaker?: string;
   onSelectedBookmakerChange?: (value: string) => void;
 }) {
+  const [matchOddsExpanded, setMatchOddsExpanded] = useState(false);
+
   const displayRows = useMemo(() => {
     const rows = valueBetRows ?? [];
     if (rows.length === 0) return [];
@@ -263,6 +294,48 @@ function LineupContent({
     return Array.from(names).sort((a, b) => a.localeCompare(b));
   }, [valueBetRows]);
 
+  const displayRowsByMarket = useMemo(() => {
+    const rows = valueBetRows ?? [];
+    if (rows.length === 0) return { shots: 0, shotsOnTarget: 0, foulsCommitted: 0, foulsWon: 0, total: 0 };
+    let filtered = [...rows];
+    if (selectedBookmaker != null && selectedBookmaker !== "all") {
+      filtered = filtered.filter((row) => (row.bookmakerName ?? "Unknown bookmaker") === selectedBookmaker);
+    }
+    if (hideNegativeEdge) {
+      filtered = filtered.filter((row) => typeof row.modelEdge === "number" && row.modelEdge >= 0);
+    }
+    const byMarket = { shots: 0, shotsOnTarget: 0, foulsCommitted: 0, foulsWon: 0, total: filtered.length };
+    for (const row of filtered) {
+      const name = row.marketName ?? "";
+      if (name.includes("Fouls Won")) byMarket.foulsWon += 1;
+      else if (name.includes("Fouls Committed")) byMarket.foulsCommitted += 1;
+      else if (name.includes("Shots On Target")) byMarket.shotsOnTarget += 1;
+      else if (name.includes("Shots")) byMarket.shots += 1;
+    }
+    return byMarket;
+  }, [valueBetRows, selectedBookmaker, hideNegativeEdge]);
+
+  useEffect(() => {
+    if (import.meta.env.DEV && valueBetRows != null && valueBetRows.length > 0) {
+      console.log("[value-bets] display rows by market", displayRowsByMarket);
+      const firstWithEdge = valueBetRows.find((r) => r.modelEdge != null || r.edge != null);
+      if (firstWithEdge) {
+        const modelProb = firstWithEdge.calibratedProbability ?? firstWithEdge.modelProbability ?? 0;
+        const bookProb = firstWithEdge.bookmakerProbability ?? 0;
+        const displayedEdge = firstWithEdge.modelEdge ?? firstWithEdge.edge ?? 0;
+        console.log("[value-bets] edge check", {
+          playerName: firstWithEdge.playerName,
+          marketName: firstWithEdge.marketName,
+          odds: firstWithEdge.odds,
+          bookmakerProbability: bookProb,
+          modelProbability: modelProb,
+          displayedEdge,
+          expectedEdge: modelProb - bookProb,
+        });
+      }
+    }
+  }, [valueBetRows, displayRowsByMarket]);
+
   if (loading) return <p className="lineup-modal__message">Loading…</p>;
   if (error) return <p className="lineup-modal__message lineup-modal__message--error">{error}</p>;
   // Only show "not released" when there is no lineup data at all (no entries to render).
@@ -279,22 +352,34 @@ function LineupContent({
   );
   const usePitch = hasPositionalData(entries) && (homeStarters.length > 0 || awayStarters.length > 0);
   const showFindValueBets = onFindValueBets != null && fixture != null;
+  const showBuildValueBets = onBuildValueBets != null && fixture != null;
 
   return (
     <div className="lineup-content lineup-content--spaced">
       <div className="lineup-content__find-value-section">
         <h3 className="lineup-content__starting-title">Starting Lineups</h3>
-        {showFindValueBets && (
-          <button
-            type="button"
-            className="lineup-content__find-value-btn"
-            onClick={onFindValueBets}
-            disabled={loadingValueBets}
-            aria-busy={loadingValueBets}
-          >
-            {loadingValueBets ? "Scanning player markets…" : "Find Value Bets"}
-          </button>
-        )}
+        <div className="lineup-content__value-bet-buttons">
+          {showFindValueBets && (
+            <button
+              type="button"
+              className="lineup-content__find-value-btn"
+              onClick={onFindValueBets}
+              disabled={loadingValueBets}
+              aria-busy={loadingValueBets}
+            >
+              {loadingValueBets ? "Scanning player markets…" : "Find Value Bets"}
+            </button>
+          )}
+          {showBuildValueBets && (
+            <button
+              type="button"
+              className="lineup-content__find-value-btn lineup-content__build-value-btn"
+              onClick={onBuildValueBets}
+            >
+              Build Value Bets
+            </button>
+          )}
+        </div>
       </div>
       <TeamFormationHeader
         fixture={fixture}
@@ -364,6 +449,33 @@ function LineupContent({
         awayTeamName={fixture?.awayTeam.name ?? "Away"}
         onPlayerClick={onPlayerClick}
       />
+
+      {fixture != null && (
+        <section className="lineup-content__match-odds" aria-label="Match odds">
+          <button
+            type="button"
+            className="lineup-content__match-odds-toggle"
+            onClick={() => setMatchOddsExpanded((prev) => !prev)}
+            aria-expanded={matchOddsExpanded}
+            aria-controls="lineup-content__match-odds-body"
+            id="lineup-content__match-odds-heading"
+          >
+            <span className="lineup-content__match-odds-toggle-icon" aria-hidden>
+              {matchOddsExpanded ? "▼" : "▶"}
+            </span>
+            <span className="lineup-content__match-odds-toggle-title">Match Odds</span>
+          </button>
+          {matchOddsExpanded && (
+            <div
+              id="lineup-content__match-odds-body"
+              className="lineup-content__match-odds-body"
+              aria-labelledby="lineup-content__match-odds-heading"
+            >
+              <FixtureOddsPanel fixtureId={fixture.id} fixtureLabel={null} hidePlayerPropsSection />
+            </div>
+          )}
+        </section>
+      )}
 
       {/* Value Bet Analysis: only show section when button exists (lineups loaded) */}
       {showFindValueBets && (
@@ -575,9 +687,18 @@ function getStartingPlayerIds(entries: RawLineupEntry[]): Set<number> {
   return ids;
 }
 
-/** Normalize player name for matching (same as backend: trim, lower, single spaces). */
+/**
+ * Normalize player name for lineup/market matching: lowercase, trim, collapse spaces,
+ * remove accents/diacritics, remove punctuation, normalize apostrophes and hyphens.
+ * Ensures "Virgil van Dijk", "Virgil Van Dijk", "Virgil van-Dijk" all match.
+ */
 function normalizePlayerName(name: string): string {
-  return String(name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+  let s = String(name ?? "").trim().toLowerCase();
+  s = s.normalize("NFD").replace(/\p{Diacritic}/gu, "");
+  s = s.replace(/[\s\u00A0]+/g, " ");
+  s = s.replace(/['′ʼʻˈ՚]/g, "'").replace(/[-‐‑‒–—―]/g, "-");
+  s = s.replace(/[^\p{L}\p{N}\s'-]/gu, "").replace(/\s+/g, " ").trim();
+  return s || "";
 }
 
 /** Set of normalized player names from lineup entries (for name-based fallback when API uses name-derived IDs). */
@@ -693,6 +814,10 @@ function buildValueBetRowFields(
   edgePct: string;
   rawModelProbability: number;
   calibratedProbability: number;
+  /** For DEV diagnostics: calibrated probability before any 0.5-line blending. */
+  originalCalibratedProbability: number;
+  /** For DEV diagnostics: empirical baseline proxy for ">=1 event" (line 0.5 only). */
+  empiricalAtLeastOneApprox?: number;
   modelEdge: number;
   bookmakerProbability: number;
   modelInputs: ValueBetModelInputs;
@@ -703,101 +828,36 @@ function buildValueBetRowFields(
   const minutesPlayed = stats.minutesPlayed ?? 0;
   const expectedMinutes = computeExpectedMinutes(minutesPlayed, appearances);
 
-  if (import.meta.env.DEV && (marketId === MARKET_ID_PLAYER_FOULS_COMMITTED || marketId === MARKET_ID_PLAYER_FOULS_WON)) {
-    const rejected = shouldRejectByHardFilter(appearances, minutesPlayed, expectedMinutes);
-    console.log("[value-bets] fouls hard filter check", {
-      playerName,
-      marketId,
-      appearances,
-      minutesPlayed,
-      expectedMinutes,
-      rejected,
-    });
-  }
-
-  if (shouldRejectByHardFilter(appearances, minutesPlayed, expectedMinutes)) {
-    if (import.meta.env.DEV && (marketId === MARKET_ID_PLAYER_FOULS_COMMITTED || marketId === MARKET_ID_PLAYER_FOULS_WON)) {
-      const bookmakerProb = sanitizedBookmakerProbability(odds);
-      const relevantStat = getRelevantStatForMarket(stats, marketId, minutesPlayed);
-      console.log("[value-bets] fouls model precheck", {
-        playerName,
-        marketId,
-        line,
-        odds,
-        relevantStat,
-        appearances,
-        minutesPlayed,
-        expectedMinutes,
-        bookmakerProb,
-        reasonIfRejecting: "hard filter rejection",
-      });
-      onFoulsReject?.("hardFilter");
-    }
+  if (shouldRejectByHardFilterForMarket(appearances, minutesPlayed, expectedMinutes, marketId)) {
+    onFoulsReject?.("hardFilter");
     return null;
   }
   if (!isOddsSane(odds) || !Number.isFinite(line)) {
-    if (import.meta.env.DEV && (marketId === MARKET_ID_PLAYER_FOULS_COMMITTED || marketId === MARKET_ID_PLAYER_FOULS_WON)) {
-      const bookmakerProb = sanitizedBookmakerProbability(odds);
-      const relevantStat = getRelevantStatForMarket(stats, marketId, minutesPlayed);
-      console.log("[value-bets] fouls model precheck", {
-        playerName,
-        marketId,
-        line,
-        odds,
-        relevantStat,
-        appearances,
-        minutesPlayed,
-        expectedMinutes,
-        bookmakerProb,
-        reasonIfRejecting: "invalid odds or line",
-      });
-      onFoulsReject?.("invalidOddsOrLine");
-    }
+    onFoulsReject?.("invalidOddsOrLine");
     return null;
   }
 
   const bookmakerProb = sanitizedBookmakerProbability(odds);
   if (bookmakerProb <= 0) {
-    if (import.meta.env.DEV && (marketId === MARKET_ID_PLAYER_FOULS_COMMITTED || marketId === MARKET_ID_PLAYER_FOULS_WON)) {
-      const relevantStat = getRelevantStatForMarket(stats, marketId, minutesPlayed);
-      console.log("[value-bets] fouls model precheck", {
-        playerName,
-        marketId,
-        line,
-        odds,
-        relevantStat,
-        appearances,
-        minutesPlayed,
-        expectedMinutes,
-        bookmakerProb,
-        reasonIfRejecting: "bookmakerProb <= 0",
-      });
-      onFoulsReject?.("bookmakerProbLte0");
-    }
+    onFoulsReject?.("bookmakerProbLte0");
     return null;
   }
 
   const statValue = getRelevantStatForMarket(stats, marketId, minutesPlayed);
   if (statValue == null) {
-    if (import.meta.env.DEV && (marketId === MARKET_ID_PLAYER_FOULS_COMMITTED || marketId === MARKET_ID_PLAYER_FOULS_WON)) {
-      console.log("[value-bets] fouls model precheck", {
-        playerName,
-        marketId,
-        line,
-        odds,
-        relevantStat: null,
-        appearances,
-        minutesPlayed,
-        expectedMinutes,
-        bookmakerProb,
-        reasonIfRejecting: "no relevant stat",
-      });
-      onFoulsReject?.("noRelevantStat");
-    }
+    onFoulsReject?.("noRelevantStat");
     return null;
   }
   const per90 = calculatePer90(statValue, minutesPlayed);
-  const lambda = lambdaFromPer90AndMinutes(per90, expectedMinutes);
+  const effectiveMinutesForShots =
+    marketId === MARKET_ID_PLAYER_SHOTS
+      ? Math.max(minutesPlayed, expectedMinutes * 8)
+      : minutesPlayed;
+  const per90ForLambda =
+    marketId === MARKET_ID_PLAYER_SHOTS && effectiveMinutesForShots > 0
+      ? (statValue / effectiveMinutesForShots) * 90
+      : per90;
+  const lambda = lambdaFromPer90AndMinutes(per90ForLambda, expectedMinutes);
   const positionMultiplier = getPositionMultiplier(lineupInfo?.positionId);
   const { teamAttackFactor, opponentDefenceFactor } = getTeamOpponentFactors({
     teamId: lineupInfo?.teamId,
@@ -825,11 +885,21 @@ function buildValueBetRowFields(
     lineupConfirmed,
   });
   const dataConfidence = dataConfidenceBucket(dataConfidenceScore);
-  const calibratedProbability = calibrateProbability(rawModelProbability, {
+  const originalCalibratedProbability = calibrateProbability(rawModelProbability, {
     marketId,
     positionId: lineupInfo?.positionId,
     dataConfidence,
   });
+  const clamp01 = (p: number) => Math.max(0, Math.min(1, p));
+  let calibratedProbability = originalCalibratedProbability;
+  let empiricalAtLeastOneApprox: number | undefined = undefined;
+  if (line === 0.5) {
+    const empiricalPerAppearance = appearances > 0 ? statValue / appearances : 0;
+    empiricalAtLeastOneApprox = Math.min(empiricalPerAppearance, 1);
+    calibratedProbability = clamp01(
+      originalCalibratedProbability * 0.65 + empiricalAtLeastOneApprox * 0.35
+    );
+  }
   const modelEdge = calculateEdge(calibratedProbability, bookmakerProb);
 
   const modelInputs: ValueBetModelInputs = {
@@ -840,7 +910,7 @@ function buildValueBetRowFields(
     minutesPlayed,
     appearances,
     expectedMinutes,
-    per90,
+    per90: per90ForLambda,
     lambda,
     positionMultiplier,
     adjustedLambda,
@@ -851,19 +921,12 @@ function buildValueBetRowFields(
     homeAwayFactor: homeAway,
   };
 
-  if (import.meta.env.DEV && (marketId === MARKET_ID_PLAYER_FOULS_COMMITTED || marketId === MARKET_ID_PLAYER_FOULS_WON)) {
-    console.log("[value-bets] fouls market row", {
-      player: playerName,
-      marketId,
-      line,
-      outcome,
-      odds,
-      probability: (rawModelProbability * 100).toFixed(1) + "%",
-      edge: (modelEdge * 100).toFixed(1) + "%",
-    });
-  }
-
-  const probabilityPct = (calibratedProbability * 100).toFixed(1) + "%";
+  const probabilityPct =
+    calibratedProbability === 0
+      ? "0.0%"
+      : calibratedProbability > 0 && calibratedProbability < 0.001
+        ? "<0.1%"
+        : (calibratedProbability * 100).toFixed(1) + "%";
   const pct = (modelEdge * 100).toFixed(1);
   const sign = modelEdge >= 0 ? "+" : "";
   return {
@@ -871,6 +934,8 @@ function buildValueBetRowFields(
     edgePct: `${sign}${pct}%`,
     rawModelProbability,
     calibratedProbability,
+    originalCalibratedProbability,
+    empiricalAtLeastOneApprox,
     modelEdge,
     bookmakerProbability: bookmakerProb,
     modelInputs,
@@ -916,7 +981,10 @@ function buildValueBetRows(
   nameToPlayerId: Map<string, number>
 ): { rows: ValueBetRow[]; foulStatsAvailable: boolean; foulMarketsSeen: number } {
   const rows: ValueBetRow[] = [];
-  const marketIdNum = (m: { marketId?: number }) => (typeof m.marketId === "number" ? m.marketId : 0);
+  const marketIdFromMarket = (m: { marketId?: number; market_id?: number; id?: number }): number => {
+    const id = (m as { marketId?: number }).marketId ?? (m as { market_id?: number }).market_id ?? (m as { id?: number }).id;
+    return typeof id === "number" && Number.isFinite(id) ? id : 0;
+  };
   const { byPlayerId: lineupByPlayerId, byNormalizedName: lineupByNormalizedName } =
     buildStarterLineupMaps(entries);
   const seen = new Set<string>();
@@ -942,44 +1010,161 @@ function buildValueBetRows(
     bookmakerProbLte0: 0,
     noRelevantStat: 0,
   };
+  const skipReasons: Record<string, number> = {
+    invalidOdds: 0,
+    invalidLine: 0,
+    probabilityInvalid: 0,
+    edgeInvalid: 0,
+    modelReturnedNull: 0,
+    statsMissing: 0,
+  };
+  let edgeMismatchCount = 0;
+  let lambdaInspectionLogCount = 0;
+  const LAMBDA_INSPECTION_CAP = 25;
+  let marketStatMappingLogCount = 0;
+  const MARKET_STAT_MAPPING_CAP = 12;
+  let lambdaAdjustmentAuditLogCount = 0;
+  const LAMBDA_ADJUSTMENT_AUDIT_CAP = 10;
+  let playerShotsRowsBuilt = 0;
+  let playerShotsPositiveEdgeRows = 0;
+  let playerShotsRowsWhereEffectiveMinutesChanged = 0;
+  let playerShotsRowsWhereEffectiveMinutesUnchanged = 0;
+  let shotsFloorValidationLogCount = 0;
+  const SHOTS_FLOOR_VALIDATION_CAP = 20;
+
+  const marketDiagnostics: {
+    [key: string]: {
+      rowCount: number;
+      positiveEdgeCount: number;
+      sumOdds: number;
+      sumBookProb: number;
+      sumModelProb: number;
+      sumEdge: number;
+      sumBaseLambda: number;
+      sumAdjustedLambda: number;
+      sumAdjustmentRatio: number;
+      countBaseLambda: number;
+      countAdjustmentRatio: number;
+    };
+    buckets: {
+      [bucket: string]: {
+        rowCount: number;
+        positiveEdgeCount: number;
+        sumOdds: number;
+        sumBookProb: number;
+        sumModelProb: number;
+        sumEdge: number;
+        sumAdjustedLambda: number;
+        countAdjustedLambda: number;
+      };
+    };
+  } = {
+    shots: {
+      rowCount: 0,
+      positiveEdgeCount: 0,
+      sumOdds: 0,
+      sumBookProb: 0,
+      sumModelProb: 0,
+      sumEdge: 0,
+      sumBaseLambda: 0,
+      sumAdjustedLambda: 0,
+      sumAdjustmentRatio: 0,
+      countBaseLambda: 0,
+      countAdjustmentRatio: 0,
+      buckets: {},
+    },
+    shotsOnTarget: {
+      rowCount: 0,
+      positiveEdgeCount: 0,
+      sumOdds: 0,
+      sumBookProb: 0,
+      sumModelProb: 0,
+      sumEdge: 0,
+      sumBaseLambda: 0,
+      sumAdjustedLambda: 0,
+      sumAdjustmentRatio: 0,
+      countBaseLambda: 0,
+      countAdjustmentRatio: 0,
+      buckets: {},
+    },
+    foulsCommitted: {
+      rowCount: 0,
+      positiveEdgeCount: 0,
+      sumOdds: 0,
+      sumBookProb: 0,
+      sumModelProb: 0,
+      sumEdge: 0,
+      sumBaseLambda: 0,
+      sumAdjustedLambda: 0,
+      sumAdjustmentRatio: 0,
+      countBaseLambda: 0,
+      countAdjustmentRatio: 0,
+      buckets: {},
+    },
+    foulsWon: {
+      rowCount: 0,
+      positiveEdgeCount: 0,
+      sumOdds: 0,
+      sumBookProb: 0,
+      sumModelProb: 0,
+      sumEdge: 0,
+      sumBaseLambda: 0,
+      sumAdjustedLambda: 0,
+      sumAdjustmentRatio: 0,
+      countBaseLambda: 0,
+      countAdjustmentRatio: 0,
+      buckets: {},
+    },
+  };
+  let rawShotStatAuditLogCount = 0;
+  const RAW_SHOT_STAT_AUDIT_CAP = 12;
+
+  /** DEV-only: 0.5-line baseline audit (per-row sample cap and per-market summary). */
+  const LOW_LINE_BASELINE_AUDIT_CAP = 16;
+  let lowLineBaselineAuditLogCount = 0;
+  const lowLineByMarket: {
+    [key: string]: {
+      rowCount: number;
+      sumModelProbability: number;
+      sumBookmakerProbability: number;
+      sumEmpiricalAtLeastOneApprox: number;
+      sumExpectedMinutes: number;
+      sumAdjustedLambda: number;
+    };
+  } = {
+    shots: { rowCount: 0, sumModelProbability: 0, sumBookmakerProbability: 0, sumEmpiricalAtLeastOneApprox: 0, sumExpectedMinutes: 0, sumAdjustedLambda: 0 },
+    shotsOnTarget: { rowCount: 0, sumModelProbability: 0, sumBookmakerProbability: 0, sumEmpiricalAtLeastOneApprox: 0, sumExpectedMinutes: 0, sumAdjustedLambda: 0 },
+    foulsCommitted: { rowCount: 0, sumModelProbability: 0, sumBookmakerProbability: 0, sumEmpiricalAtLeastOneApprox: 0, sumExpectedMinutes: 0, sumAdjustedLambda: 0 },
+    foulsWon: { rowCount: 0, sumModelProbability: 0, sumBookmakerProbability: 0, sumEmpiricalAtLeastOneApprox: 0, sumExpectedMinutes: 0, sumAdjustedLambda: 0 },
+  };
+  const lowLineBlendByMarket: {
+    [key: string]: {
+      rowCount: number;
+      sumOriginalModelProbability: number;
+      sumEmpiricalAtLeastOneApprox: number;
+      sumBlendedProbability: number;
+      sumBookmakerProbability: number;
+      positiveEdgeCountAfterBlend: number;
+    };
+  } = {
+    shots: { rowCount: 0, sumOriginalModelProbability: 0, sumEmpiricalAtLeastOneApprox: 0, sumBlendedProbability: 0, sumBookmakerProbability: 0, positiveEdgeCountAfterBlend: 0 },
+    shotsOnTarget: { rowCount: 0, sumOriginalModelProbability: 0, sumEmpiricalAtLeastOneApprox: 0, sumBlendedProbability: 0, sumBookmakerProbability: 0, positiveEdgeCountAfterBlend: 0 },
+    foulsCommitted: { rowCount: 0, sumOriginalModelProbability: 0, sumEmpiricalAtLeastOneApprox: 0, sumBlendedProbability: 0, sumBookmakerProbability: 0, positiveEdgeCountAfterBlend: 0 },
+    foulsWon: { rowCount: 0, sumOriginalModelProbability: 0, sumEmpiricalAtLeastOneApprox: 0, sumBlendedProbability: 0, sumBookmakerProbability: 0, positiveEdgeCountAfterBlend: 0 },
+  };
 
   const markets = data.markets ?? [];
   for (const market of markets) {
-    const marketId = marketIdNum(market);
+    const marketId = marketIdFromMarket(market as { marketId?: number; market_id?: number; id?: number });
     const rawMarketId = (market as { marketId?: number }).marketId ?? (market as { market_id?: number }).market_id ?? (market as { id?: number }).id;
     const isFoulsMarket = rawMarketId === 338 || rawMarketId === 339;
 
-    if (import.meta.env.DEV && isFoulsMarket) {
-      foulMarketsSeen += 1;
-      console.log("[value-bets] processing fouls market", {
-        marketId,
-        rawMarketId,
-        marketName: (market as { marketName?: string }).marketName ?? (market as { market_name?: string }).market_name,
-        playerCount: (market as { players?: unknown[] }).players?.length ?? 0,
-      });
-    }
+    if (import.meta.env.DEV && isFoulsMarket) foulMarketsSeen += 1;
 
     if (!SUPPORTED_VALUE_BET_MARKET_IDS.has(marketId)) {
       if (import.meta.env.DEV && isFoulsMarket) {
         foulRowsSkipped += 1;
         skipReasonsBreakdown.marketNotSupported += 1;
-        console.log("[value-bets] skipped fouls row", {
-          marketId,
-          marketName: (market as { marketName?: string }).marketName ?? (market as { market_name?: string }).market_name,
-          playerName: "N/A",
-          line: "N/A",
-          outcome: "N/A",
-          odds: "N/A",
-          bookmakerName: "N/A",
-          inLineupById: "N/A",
-          inLineupByName: "N/A",
-          resolvedLineupPlayerId: "N/A",
-          hasStats: "N/A",
-          appearances: "N/A",
-          minutesPlayed: "N/A",
-          expectedMinutes: "N/A",
-          reason: "market not supported (marketId resolved to " + marketId + ")",
-        });
       }
       continue;
     }
@@ -995,45 +1180,12 @@ function buildValueBetRows(
       const inLineupById = playerIdFromProps != null && startingPlayerIds.has(playerIdFromProps);
       const inLineupByName = startingPlayerNames.has(normalizedName);
 
-      if (import.meta.env.DEV && isFoulsMarket) {
-        foulPlayersSeen += 1;
-        console.log("[value-bets] fouls market player", {
-          marketId,
-          playerId: playerIdFromProps,
-          playerName,
-          inLineupById,
-          inLineupByName,
-        });
-      }
+      if (import.meta.env.DEV && isFoulsMarket) foulPlayersSeen += 1;
 
       if (!inLineupById && !inLineupByName) {
         if (import.meta.env.DEV && isFoulsMarket) {
           foulRowsSkipped += 1;
           skipReasonsBreakdown.playerNotInLineup += 1;
-          console.log("[value-bets] skipped fouls row", {
-            marketId,
-            marketName,
-            playerName,
-            line: "N/A",
-            outcome: "N/A",
-            odds: "N/A",
-            bookmakerName: "N/A",
-            inLineupById,
-            inLineupByName,
-            resolvedLineupPlayerId: null,
-            hasStats: false,
-            appearances: undefined,
-            minutesPlayed: undefined,
-            expectedMinutes: undefined,
-            reason: "player not in lineup",
-          });
-          if (!inLineupByName) {
-            console.log("[value-bets] fouls lineup name mismatch", {
-              marketPlayerName: playerName,
-              normalizedMarketPlayerName: normalizedName,
-              startingNamesSample: Array.from(startingPlayerNames).slice(0, 10),
-            });
-          }
         }
         continue;
       }
@@ -1054,114 +1206,47 @@ function buildValueBetRows(
       if (import.meta.env.DEV && isFoulsMarket && selections.length === 0) {
         foulRowsSkipped += 1;
         skipReasonsBreakdown.noSelections += 1;
-        const appearances = stats?.appearances;
-        const minutesPlayed = stats?.minutesPlayed ?? 0;
-        const expectedMinutes = stats ? computeExpectedMinutes(minutesPlayed, stats.appearances ?? 0) : undefined;
-        console.log("[value-bets] skipped fouls row", {
-          marketId,
-          marketName,
-          playerName,
-          line: "N/A",
-          outcome: "N/A",
-          odds: "N/A",
-          bookmakerName: "N/A",
-          inLineupById,
-          inLineupByName,
-          resolvedLineupPlayerId: lineupPlayerId ?? undefined,
-          hasStats: !!stats,
-          appearances,
-          minutesPlayed,
-          expectedMinutes,
-          reason: "no selections",
-        });
       }
       for (const sel of selections) {
         const line = sel.line ?? 0;
-        const overOdds = (sel as { overOdds?: number | null }).overOdds ?? (sel as { over_odds?: number | null }).over_odds;
+        const overOddsRaw = (sel as { overOdds?: number | null }).overOdds ?? (sel as { over_odds?: number | null }).over_odds;
+        const overOdds = typeof overOddsRaw === "number" ? overOddsRaw : Number(overOddsRaw);
         const bookmakerId = (sel as { bookmakerId?: number }).bookmakerId ?? (sel as { bookmaker_id?: number }).bookmaker_id ?? null;
         const bookmakerName = (sel as { bookmakerName?: string }).bookmakerName ?? (sel as { bookmaker_name?: string }).bookmaker_name ?? "Unknown bookmaker";
 
         const addRow = (outcome: "Over" | "Under", odds: number) => {
           if (outcome !== "Over") return;
-          const dedupeKey = `${playerName}|${marketId}|${line}|${outcome}|${bookmakerName}|${odds}`;
+          const oddsNum = Number(odds);
+          if (typeof oddsNum !== "number" || !Number.isFinite(oddsNum) || oddsNum <= 1.01) {
+            skipReasons.invalidOdds += 1;
+            if (import.meta.env.DEV && isFoulsMarket) {
+              foulRowsSkipped += 1;
+              skipReasonsBreakdown.invalidOdds += 1;
+            }
+            return;
+          }
+          const bookmakerProbability = 1 / oddsNum;
+          if (!Number.isFinite(bookmakerProbability)) {
+            skipReasons.invalidOdds += 1;
+            if (import.meta.env.DEV && isFoulsMarket) {
+              foulRowsSkipped += 1;
+              skipReasonsBreakdown.invalidOdds += 1;
+            }
+            return;
+          }
+          const dedupeKey = `${playerName}|${marketId}|${line}|${outcome}|${bookmakerName}|${oddsNum}`;
           if (seen.has(dedupeKey)) {
             if (import.meta.env.DEV && isFoulsMarket) {
               foulRowsSkipped += 1;
               skipReasonsBreakdown.duplicate += 1;
-              const appearances = stats?.appearances;
-              const minutesPlayed = stats?.minutesPlayed ?? 0;
-              const expectedMinutes = stats ? computeExpectedMinutes(minutesPlayed, stats.appearances ?? 0) : undefined;
-              console.log("[value-bets] skipped fouls row", {
-                marketId,
-                marketName,
-                playerName,
-                line,
-                outcome,
-                odds,
-                bookmakerName,
-                inLineupById,
-                inLineupByName,
-                resolvedLineupPlayerId: lineupPlayerId ?? undefined,
-                hasStats: !!stats,
-                appearances,
-                minutesPlayed,
-                expectedMinutes,
-                reason: "duplicate selection",
-              });
-            }
-            return;
-          }
-          if (odds <= 1.01 || !Number.isFinite(odds)) {
-            if (import.meta.env.DEV && isFoulsMarket) {
-              foulRowsSkipped += 1;
-              skipReasonsBreakdown.invalidOdds += 1;
-              const appearances = stats?.appearances;
-              const minutesPlayed = stats?.minutesPlayed ?? 0;
-              const expectedMinutes = stats ? computeExpectedMinutes(minutesPlayed, stats.appearances ?? 0) : undefined;
-              console.log("[value-bets] skipped fouls row", {
-                marketId,
-                marketName,
-                playerName,
-                line,
-                outcome,
-                odds,
-                bookmakerName,
-                inLineupById,
-                inLineupByName,
-                resolvedLineupPlayerId: lineupPlayerId ?? undefined,
-                hasStats: !!stats,
-                appearances,
-                minutesPlayed,
-                expectedMinutes,
-                reason: "odds invalid",
-              });
             }
             return;
           }
           if (!Number.isFinite(line)) {
+            skipReasons.invalidLine += 1;
             if (import.meta.env.DEV && isFoulsMarket) {
               foulRowsSkipped += 1;
               skipReasonsBreakdown.invalidLine += 1;
-              const appearances = stats?.appearances;
-              const minutesPlayed = stats?.minutesPlayed ?? 0;
-              const expectedMinutes = stats ? computeExpectedMinutes(minutesPlayed, stats.appearances ?? 0) : undefined;
-              console.log("[value-bets] skipped fouls row", {
-                marketId,
-                marketName,
-                playerName,
-                line,
-                outcome,
-                odds,
-                bookmakerName,
-                inLineupById,
-                inLineupByName,
-                resolvedLineupPlayerId: lineupPlayerId ?? undefined,
-                hasStats: !!stats,
-                appearances,
-                minutesPlayed,
-                expectedMinutes,
-                reason: "line invalid",
-              });
             }
             return;
           }
@@ -1179,7 +1264,7 @@ function buildValueBetRows(
               marketId,
               line,
               outcome,
-              odds,
+              oddsNum,
               lineupInfoFinal,
               fixture,
               lineupConfirmed,
@@ -1188,83 +1273,141 @@ function buildValueBetRows(
               onFoulsReject
             );
             if (!built) {
-              if (import.meta.env.DEV && isFoulsMarket) {
-                const appearances = stats?.appearances;
-                const minutesPlayed = stats?.minutesPlayed ?? 0;
-                const expectedMinutes = computeExpectedMinutes(minutesPlayed, stats?.appearances ?? 0);
-                console.log("[value-bets] fouls model returned null", {
-                  playerName,
-                  marketId,
-                  line,
-                  odds,
-                  bookmakerName,
-                  appearances,
-                  minutesPlayed,
-                  expectedMinutes,
-                });
-              }
+              skipReasons.modelReturnedNull += 1;
               return;
             }
+            const modelProb = built.calibratedProbability;
+            const modelEdgeVal = built.modelEdge;
+            const probValid = typeof modelProb === "number" && Number.isFinite(modelProb);
+            const edgeValid = typeof modelEdgeVal === "number" && Number.isFinite(modelEdgeVal);
+            if (!probValid) skipReasons.probabilityInvalid += 1;
+            if (!edgeValid) skipReasons.edgeInvalid += 1;
+            if (!probValid || !edgeValid) return;
             const dataConfidence = built.dataConfidence;
             const dataConfidenceScore = built.dataConfidenceScore;
             const betQualityScore = computeBetQualityScore({
-              modelEdge: built.modelEdge,
-              calibratedProbability: built.calibratedProbability,
-              odds,
+              modelEdge: modelEdgeVal,
+              calibratedProbability: modelProb,
+              odds: oddsNum,
               line,
               marketId,
               dataConfidence,
             });
             const betQuality = betQualityBucket(betQualityScore);
-            const modelEdge = built.modelEdge ?? 0;
+            const modelEdge = modelEdgeVal;
             const bookmakerProb = built.bookmakerProbability;
-            const modelProb = built.calibratedProbability ?? 0;
             if (bookmakerProb < 0 || bookmakerProb > 1 || modelProb < 0 || modelProb > 1 || modelEdge < -1 || modelEdge > 1) {
               if (import.meta.env.DEV && isFoulsMarket) {
                 foulRowsSkipped += 1;
                 skipReasonsBreakdown.probabilityOrEdgeOutOfRange += 1;
-                const appearances = stats?.appearances;
-                const minutesPlayed = stats?.minutesPlayed ?? 0;
-                const expectedMinutes = computeExpectedMinutes(minutesPlayed, stats?.appearances ?? 0);
-                console.log("[value-bets] skipped fouls row", {
-                  marketId,
-                  marketName,
-                  playerName,
-                  line,
-                  outcome,
-                  odds,
-                  bookmakerName,
-                  inLineupById,
-                  inLineupByName,
-                  resolvedLineupPlayerId: lineupPlayerId ?? undefined,
-                  hasStats: true,
-                  appearances,
-                  minutesPlayed,
-                  expectedMinutes,
-                  reason: "probability or edge out of range",
-                  bookmakerProb,
-                  modelProb,
-                  modelEdge,
-                });
               }
               return;
+            }
+            const edgeCheck = modelProb - bookmakerProb;
+            if (import.meta.env.DEV && Math.abs(edgeCheck - modelEdge) > 0.0001) {
+              edgeMismatchCount += 1;
+            }
+            if (
+              import.meta.env.DEV &&
+              lambdaInspectionLogCount < LAMBDA_INSPECTION_CAP &&
+              (modelProb < 0.01 || modelEdge > 0)
+            ) {
+              const lambda = built.modelInputs?.adjustedLambda ?? built.modelInputs?.lambda ?? null;
+              console.log("[value-bets] lambda inspection", {
+                playerName,
+                marketName,
+                line,
+                odds: oddsNum,
+                lambda,
+                rawProbability: built.rawModelProbability,
+                calibratedProbability: modelProb,
+              });
+              lambdaInspectionLogCount += 1;
+            }
+            if (
+              import.meta.env.DEV &&
+              (marketId === MARKET_ID_PLAYER_SHOTS || marketId === MARKET_ID_PLAYER_SHOTS_ON_TARGET) &&
+              marketStatMappingLogCount < MARKET_STAT_MAPPING_CAP
+            ) {
+              const mi = built.modelInputs;
+              const statUsed = marketId === MARKET_ID_PLAYER_SHOTS ? "shots" : "shotsOnTarget";
+              const statValue = marketId === MARKET_ID_PLAYER_SHOTS ? mi?.shots : mi?.shotsOnTarget;
+              console.log("[value-bets] market stat mapping check", {
+                playerName,
+                marketId,
+                marketName,
+                statUsed,
+                statValue,
+                minutesPlayed: mi?.minutesPlayed,
+                per90: mi?.per90,
+                adjustedLambda: mi?.adjustedLambda,
+              });
+              marketStatMappingLogCount += 1;
+            }
+            if (
+              import.meta.env.DEV &&
+              (marketId === MARKET_ID_PLAYER_SHOTS || marketId === MARKET_ID_PLAYER_SHOTS_ON_TARGET) &&
+              lambdaAdjustmentAuditLogCount < LAMBDA_ADJUSTMENT_AUDIT_CAP
+            ) {
+              const mi = built.modelInputs;
+              const baseLambda = mi?.lambda ?? 0;
+              const adjustedLambda = mi?.adjustedLambda ?? 0;
+              const adjustmentRatio =
+                typeof baseLambda === "number" && baseLambda > 0 ? adjustedLambda / baseLambda : null;
+              console.log("[value-bets] lambda adjustment audit", {
+                playerName,
+                marketId,
+                marketName,
+                per90: mi?.per90,
+                expectedMinutes: mi?.expectedMinutes,
+                baseLambda,
+                positionMultiplier: mi?.positionMultiplier,
+                teamAttackFactor: mi?.teamAttackFactor,
+                opponentDefenceFactor: mi?.opponentDefenceFactor,
+                homeAwayFactor: mi?.homeAwayFactor,
+                adjustedLambda,
+                adjustmentRatio,
+              });
+              lambdaAdjustmentAuditLogCount += 1;
+            }
+            if (
+              import.meta.env.DEV &&
+              (marketId === MARKET_ID_PLAYER_SHOTS || marketId === MARKET_ID_PLAYER_SHOTS_ON_TARGET) &&
+              rawShotStatAuditLogCount < RAW_SHOT_STAT_AUDIT_CAP
+            ) {
+              const mi = built.modelInputs;
+              const statsShots = mi?.shots ?? 0;
+              const statsShotsOnTarget = mi?.shotsOnTarget ?? 0;
+              const statValueUsed =
+                marketId === MARKET_ID_PLAYER_SHOTS ? statsShots : statsShotsOnTarget;
+              console.log("[value-bets] raw shot stat audit", {
+                playerName,
+                marketId,
+                marketName,
+                statsShots,
+                statsShotsOnTarget,
+                minutesPlayed: mi?.minutesPlayed,
+                statValueUsed,
+                per90Used: mi?.per90,
+              });
+              rawShotStatAuditLogCount += 1;
             }
             const row: ValueBetRow = {
               playerName,
               marketName,
               line,
               outcome,
-              odds,
+              odds: oddsNum,
               bookmakerId,
               bookmakerName,
               bookmakerProbability: built.bookmakerProbability,
-              modelProbability: built.calibratedProbability,
+              modelProbability: modelProb,
               rawModelProbability: built.rawModelProbability,
-              calibratedProbability: built.calibratedProbability,
+              calibratedProbability: modelProb,
               probabilityPct: built.probabilityPct,
               edgePct: built.edgePct,
-              modelEdge: built.modelEdge,
-              edge: built.modelEdge,
+              modelEdge,
+              edge: modelEdge,
               dataConfidence,
               dataConfidenceScore,
               betQuality,
@@ -1275,115 +1418,334 @@ function buildValueBetRows(
             row.calibrationBucketValid = isBucketCalibrated(built.rawModelProbability);
             row.isStrongBet = isStrongBetCandidate(row);
             if (import.meta.env.DEV) {
-              console.log("[value-bets] row source", {
-                bookmakerId,
-                bookmakerName,
-                playerName,
-                marketId,
-                line,
-                outcome,
-                odds,
-              });
+              const cat =
+                row.marketName?.includes("Shots On Target")
+                  ? "shotsOnTarget"
+                  : row.marketName?.includes("Shots")
+                    ? "shots"
+                    : row.marketName?.includes("Fouls Committed")
+                      ? "foulsCommitted"
+                      : row.marketName?.includes("Fouls Won")
+                        ? "foulsWon"
+                        : null;
+              if (cat && marketDiagnostics[cat]) {
+                const d = marketDiagnostics[cat];
+                d.rowCount += 1;
+                if (modelEdge > 0) d.positiveEdgeCount += 1;
+                d.sumOdds += oddsNum;
+                d.sumBookProb += bookmakerProb;
+                d.sumModelProb += modelProb;
+                d.sumEdge += modelEdge;
+                const mi = built.modelInputs;
+                const baseLambda = mi?.lambda;
+                const adjustedLambdaDiag = mi?.adjustedLambda;
+                if (typeof baseLambda === "number" && baseLambda > 0) {
+                  d.sumBaseLambda += baseLambda;
+                  d.countBaseLambda += 1;
+                  if (typeof adjustedLambdaDiag === "number") {
+                    d.sumAdjustedLambda += adjustedLambdaDiag;
+                    d.countAdjustmentRatio += 1;
+                    d.sumAdjustmentRatio += adjustedLambdaDiag / baseLambda;
+                  }
+                }
+                // Line-bucket diagnostics
+                let bucket: string | null = null;
+                if (line === 0.5) bucket = "0.5";
+                else if (line === 1.5) bucket = "1.5";
+                else if (line === 2.5) bucket = "2.5";
+                else if (line >= 3.5) bucket = "3.5plus";
+                if (bucket) {
+                  const b =
+                    d.buckets[bucket] ??
+                    (d.buckets[bucket] = {
+                      rowCount: 0,
+                      positiveEdgeCount: 0,
+                      sumOdds: 0,
+                      sumBookProb: 0,
+                      sumModelProb: 0,
+                      sumEdge: 0,
+                      sumAdjustedLambda: 0,
+                      countAdjustedLambda: 0,
+                    });
+                  b.rowCount += 1;
+                  if (modelEdge > 0) b.positiveEdgeCount += 1;
+                  b.sumOdds += oddsNum;
+                  b.sumBookProb += bookmakerProb;
+                  b.sumModelProb += modelProb;
+                  b.sumEdge += modelEdge;
+                  const adjL = built.modelInputs?.adjustedLambda;
+                  if (typeof adjL === "number") {
+                    b.sumAdjustedLambda += adjL;
+                    b.countAdjustedLambda += 1;
+                  }
+                }
+              }
+            }
+            if (import.meta.env.DEV && line === 0.5) {
+              const lowCat =
+                row.marketName?.includes("Shots On Target")
+                  ? "shotsOnTarget"
+                  : row.marketName?.includes("Shots")
+                    ? "shots"
+                    : row.marketName?.includes("Fouls Committed")
+                      ? "foulsCommitted"
+                      : row.marketName?.includes("Fouls Won")
+                        ? "foulsWon"
+                        : null;
+              if (lowCat && lowLineByMarket[lowCat]) {
+                const minutesPlayedVal = stats.minutesPlayed ?? built.modelInputs?.minutesPlayed ?? 0;
+                const statValue = getRelevantStatForMarket(stats, marketId, minutesPlayedVal);
+                const appearances = stats.appearances ?? 0;
+                const empiricalPerAppearance =
+                  appearances > 0 && statValue != null ? statValue / appearances : 0;
+                const empiricalAtLeastOneApprox =
+                  built.empiricalAtLeastOneApprox ?? Math.min(empiricalPerAppearance, 1);
+                const originalModelProbability = built.originalCalibratedProbability;
+                const blendedProbability = modelProb;
+                const low = lowLineByMarket[lowCat];
+                low.rowCount += 1;
+                // Keep baseline logs comparing against the original (pre-blend) model probability.
+                low.sumModelProbability += originalModelProbability;
+                low.sumBookmakerProbability += bookmakerProb;
+                low.sumEmpiricalAtLeastOneApprox += empiricalAtLeastOneApprox;
+                low.sumExpectedMinutes += built.modelInputs?.expectedMinutes ?? 0;
+                low.sumAdjustedLambda += built.modelInputs?.adjustedLambda ?? 0;
+                const blend = lowLineBlendByMarket[lowCat];
+                blend.rowCount += 1;
+                blend.sumOriginalModelProbability += originalModelProbability;
+                blend.sumEmpiricalAtLeastOneApprox += empiricalAtLeastOneApprox;
+                blend.sumBlendedProbability += blendedProbability;
+                blend.sumBookmakerProbability += bookmakerProb;
+                if (modelEdge > 0) blend.positiveEdgeCountAfterBlend += 1;
+                if (lowLineBaselineAuditLogCount < LOW_LINE_BASELINE_AUDIT_CAP) {
+                  console.log("[value-bets] low-line baseline audit", {
+                    playerName,
+                    marketName,
+                    statValue: statValue ?? 0,
+                    minutesPlayed: minutesPlayedVal,
+                    appearances,
+                    expectedMinutes: built.modelInputs?.expectedMinutes,
+                    per90Used: built.modelInputs?.per90,
+                    baseLambda: built.modelInputs?.lambda,
+                    adjustedLambda: built.modelInputs?.adjustedLambda,
+                    modelProbability: originalModelProbability,
+                    bookmakerProbability: bookmakerProb,
+                    empiricalAtLeastOneApprox,
+                  });
+                  lowLineBaselineAuditLogCount += 1;
+                }
+              }
+            }
+            if (marketId === MARKET_ID_PLAYER_SHOTS) {
+              const mi = built.modelInputs;
+              const minutesPlayedForShots = mi?.minutesPlayed ?? 0;
+              const expectedMinutesForShots = mi?.expectedMinutes ?? 0;
+              const effectiveMinutesForShots =
+                Math.max(minutesPlayedForShots, expectedMinutesForShots * 8);
+              const rawPer90 =
+                minutesPlayedForShots > 0 && typeof mi?.shots === "number"
+                  ? (mi.shots / minutesPlayedForShots) * 90
+                  : 0;
+              const per90Used = mi?.per90 ?? rawPer90;
+              const effectiveChanged =
+                minutesPlayedForShots > 0 &&
+                expectedMinutesForShots > 0 &&
+                effectiveMinutesForShots !== minutesPlayedForShots;
+
+              playerShotsRowsBuilt += 1;
+              if (modelEdge > 0) playerShotsPositiveEdgeRows += 1;
+              if (effectiveChanged) {
+                playerShotsRowsWhereEffectiveMinutesChanged += 1;
+              } else {
+                playerShotsRowsWhereEffectiveMinutesUnchanged += 1;
+              }
+
+              if (
+                import.meta.env.DEV &&
+                shotsFloorValidationLogCount < SHOTS_FLOOR_VALIDATION_CAP &&
+                (modelEdge > 0 || shotsFloorValidationLogCount < 15)
+              ) {
+                console.log("[value-bets] shots floor validation", {
+                  playerName,
+                  marketName,
+                  line,
+                  odds: oddsNum,
+                  minutesPlayed: minutesPlayedForShots,
+                  effectiveMinutesForShots,
+                  rawPer90,
+                  per90Used,
+                  expectedMinutes: expectedMinutesForShots,
+                  baseLambda: mi?.lambda,
+                  adjustedLambda: mi?.adjustedLambda,
+                  rawProbability: built.rawModelProbability,
+                  calibratedProbability: modelProb,
+                  modelEdge,
+                });
+                shotsFloorValidationLogCount += 1;
+              }
             }
             rows.push(row);
             if (import.meta.env.DEV && isFoulsMarket) {
               foulRowsCreated += 1;
             }
           } else {
-            if (!isOddsSane(odds) || !Number.isFinite(line)) {
+            if (!Number.isFinite(line)) {
+              skipReasons.invalidLine += 1;
               if (import.meta.env.DEV && isFoulsMarket) {
                 foulRowsSkipped += 1;
                 skipReasonsBreakdown.noStatsAndInvalidOdds += 1;
-                console.log("[value-bets] skipped fouls row", {
-                  marketId,
-                  marketName,
-                  playerName,
-                  line,
-                  outcome,
-                  odds,
-                  bookmakerName,
-                  inLineupById,
-                  inLineupByName,
-                  resolvedLineupPlayerId: lineupPlayerId ?? undefined,
-                  hasStats: false,
-                  appearances: undefined,
-                  minutesPlayed: undefined,
-                  expectedMinutes: undefined,
-                  reason: "no stats and invalid odds or line",
-                });
               }
               return;
             }
+            skipReasons.statsMissing += 1;
             if (import.meta.env.DEV && isFoulsMarket) {
               foulRowsSkipped += 1;
               skipReasonsBreakdown.statsMissing += 1;
-              console.log("[value-bets] skipped fouls row", {
-                marketId,
-                marketName,
-                playerName,
-                line,
-                outcome,
-                odds,
-                bookmakerName,
-                inLineupById,
-                inLineupByName,
-                resolvedLineupPlayerId: lineupPlayerId ?? undefined,
-                hasStats: false,
-                appearances: undefined,
-                minutesPlayed: undefined,
-                expectedMinutes: undefined,
-                reason: "stats missing",
-              });
             }
-            const noModel = buildNoModelRow(line, "Over", odds, bookmakerName);
-            rows.push({
-              playerName,
-              marketName,
-              line,
-              outcome: "Over",
-              odds,
-              bookmakerId,
-              bookmakerName,
-              bookmakerProbability: noModel.bookmakerProbability ?? 0,
-              probabilityPct: noModel.probabilityPct ?? "—",
-              edgePct: noModel.edgePct ?? "—",
-              dataConfidence: noModel.dataConfidence ?? "low",
-              dataConfidenceScore: noModel.dataConfidenceScore ?? 0,
-              betQuality: noModel.betQuality ?? "low",
-              betQualityScore: noModel.betQualityScore ?? 0,
-              isStrongBet: false,
-              ...noModel,
-            });
           }
         };
 
-        if (overOdds != null && Number.isFinite(overOdds)) addRow("Over", overOdds);
+        if (overOdds != null) addRow("Over", overOdds);
       }
     }
   }
 
   if (import.meta.env.DEV) {
-    console.log("[value-bets] rows created", rows.length);
-    console.log("[value-bets] fouls summary", {
-      foulMarketsSeen,
-      foulPlayersSeen,
-      foulRowsCreated,
-      foulRowsSkipped,
+    const byMarket = { shots: 0, shotsOnTarget: 0, foulsCommitted: 0, foulsWon: 0 };
+    for (const row of rows) {
+      const name = row.marketName ?? "";
+      if (name.includes("Fouls Won")) byMarket.foulsWon += 1;
+      else if (name.includes("Fouls Committed")) byMarket.foulsCommitted += 1;
+      else if (name.includes("Shots On Target")) byMarket.shotsOnTarget += 1;
+      else if (name.includes("Shots")) byMarket.shots += 1;
+    }
+    console.log("[value-bets] row counts by market", byMarket);
+    const totalRowsSkipped = Object.values(skipReasons).reduce((a, b) => a + b, 0);
+    console.log("[value-bets] skipped rows summary", {
+      skipReasons,
+      totalRowsBuilt: rows.length,
+      totalRowsSkipped,
+      edgeMismatchCount,
     });
-    console.log("[fouls-markets] status", {
-      foulStatsAvailable,
-      foulMarketsSeen,
-      message:
-        foulMarketsSeen === 0
-          ? "Foul stats exist, but no bookmaker foul markets (338/339) are available for this fixture."
-          : "Bookmaker foul markets found.",
+    if (playerShotsRowsBuilt > 0) {
+      console.log("[value-bets] shots effective-minutes summary", {
+        playerShotsRowsBuilt,
+        playerShotsPositiveEdgeRows,
+        playerShotsRowsWhereEffectiveMinutesChanged,
+        playerShotsRowsWhereEffectiveMinutesUnchanged,
+      });
+    }
+    const diagSummary = (key: keyof typeof marketDiagnostics) => {
+      const d = marketDiagnostics[key];
+      if (!d.rowCount) return null;
+      const avg = (sum: number, count: number) => (count > 0 ? sum / count : 0);
+      return {
+        rowCount: d.rowCount,
+        positiveEdgeCount: d.positiveEdgeCount,
+        averageOdds: avg(d.sumOdds, d.rowCount),
+        averageBookmakerProbability: avg(d.sumBookProb, d.rowCount),
+        averageModelProbability: avg(d.sumModelProb, d.rowCount),
+        averageEdge: avg(d.sumEdge, d.rowCount),
+        averageBaseLambda: avg(d.sumBaseLambda, d.countBaseLambda),
+        averageAdjustedLambda: avg(d.sumAdjustedLambda, d.countBaseLambda),
+        averageAdjustmentRatio: avg(d.sumAdjustmentRatio, d.countAdjustmentRatio),
+        buckets: (() => {
+          const out: Record<string, unknown> = {};
+          const avgBucket = (sum: number, count: number) => (count > 0 ? sum / count : 0);
+          for (const [bucketKey, b] of Object.entries(d.buckets)) {
+            if (!b.rowCount) continue;
+            out[bucketKey] = {
+              rowCount: b.rowCount,
+              positiveEdgeCount: b.positiveEdgeCount,
+              averageOdds: avgBucket(b.sumOdds, b.rowCount),
+              averageBookmakerProbability: avgBucket(b.sumBookProb, b.rowCount),
+              averageModelProbability: avgBucket(b.sumModelProb, b.rowCount),
+              averageEdge: avgBucket(b.sumEdge, b.rowCount),
+              averageAdjustedLambda: avgBucket(b.sumAdjustedLambda, b.countAdjustedLambda),
+            };
+          }
+          return out;
+        })(),
+      };
+    };
+    console.log("[value-bets] market diagnostics summary", {
+      shots: diagSummary("shots"),
+      shotsOnTarget: diagSummary("shotsOnTarget"),
+      foulsCommitted: diagSummary("foulsCommitted"),
+      foulsWon: diagSummary("foulsWon"),
     });
-    console.log("[value-bets] final fouls pipeline summary", {
-      foulMarketsSeen,
-      foulPlayersSeen,
-      foulRowsCreated,
-      foulRowsSkipped,
-      skipReasonsBreakdown,
+    const bucketDiagSummary = (key: keyof typeof marketDiagnostics) => {
+      const d = marketDiagnostics[key];
+      const avg = (sum: number, count: number) => (count > 0 ? sum / count : 0);
+      const out: Record<
+        string,
+        {
+          rowCount: number;
+          positiveEdgeCount: number;
+          averageOdds: number;
+          averageBookmakerProbability: number;
+          averageModelProbability: number;
+          averageEdge: number;
+          averageAdjustedLambda: number;
+        }
+      > = {};
+      for (const [bucketKey, b] of Object.entries(d.buckets)) {
+        if (!b.rowCount) continue;
+        out[bucketKey] = {
+          rowCount: b.rowCount,
+          positiveEdgeCount: b.positiveEdgeCount,
+          averageOdds: avg(b.sumOdds, b.rowCount),
+          averageBookmakerProbability: avg(b.sumBookProb, b.rowCount),
+          averageModelProbability: avg(b.sumModelProb, b.rowCount),
+          averageEdge: avg(b.sumEdge, b.rowCount),
+          averageAdjustedLambda: avg(b.sumAdjustedLambda, b.countAdjustedLambda),
+        };
+      }
+      return out;
+    };
+    console.log("[value-bets] market line-bucket diagnostics", {
+      shots: bucketDiagSummary("shots"),
+      shotsOnTarget: bucketDiagSummary("shotsOnTarget"),
+      foulsCommitted: bucketDiagSummary("foulsCommitted"),
+      foulsWon: bucketDiagSummary("foulsWon"),
+    });
+    const lowLineSummary = (key: keyof typeof lowLineByMarket) => {
+      const s = lowLineByMarket[key];
+      if (!s.rowCount) return null;
+      const avg = (sum: number, count: number) => (count > 0 ? sum / count : 0);
+      return {
+        rowCount: s.rowCount,
+        averageModelProbability: avg(s.sumModelProbability, s.rowCount),
+        averageBookmakerProbability: avg(s.sumBookmakerProbability, s.rowCount),
+        averageEmpiricalAtLeastOneApprox: avg(s.sumEmpiricalAtLeastOneApprox, s.rowCount),
+        averageExpectedMinutes: avg(s.sumExpectedMinutes, s.rowCount),
+        averageAdjustedLambda: avg(s.sumAdjustedLambda, s.rowCount),
+      };
+    };
+    console.log("[value-bets] low-line baseline summary", {
+      shots: lowLineSummary("shots"),
+      shotsOnTarget: lowLineSummary("shotsOnTarget"),
+      foulsCommitted: lowLineSummary("foulsCommitted"),
+      foulsWon: lowLineSummary("foulsWon"),
+    });
+    const lowLineBlendSummary = (key: keyof typeof lowLineBlendByMarket) => {
+      const s = lowLineBlendByMarket[key];
+      if (!s.rowCount) return null;
+      const avg = (sum: number, count: number) => (count > 0 ? sum / count : 0);
+      return {
+        rowCount: s.rowCount,
+        averageOriginalModelProbability: avg(s.sumOriginalModelProbability, s.rowCount),
+        averageEmpiricalAtLeastOneApprox: avg(s.sumEmpiricalAtLeastOneApprox, s.rowCount),
+        averageBlendedProbability: avg(s.sumBlendedProbability, s.rowCount),
+        averageBookmakerProbability: avg(s.sumBookmakerProbability, s.rowCount),
+        positiveEdgeCountAfterBlend: s.positiveEdgeCountAfterBlend,
+      };
+    };
+    console.log("[value-bets] low-line blend summary", {
+      shots: lowLineBlendSummary("shots"),
+      shotsOnTarget: lowLineBlendSummary("shotsOnTarget"),
+      foulsCommitted: lowLineBlendSummary("foulsCommitted"),
+      foulsWon: lowLineBlendSummary("foulsWon"),
     });
   }
   return { rows, foulStatsAvailable, foulMarketsSeen };
@@ -1414,6 +1776,7 @@ export function LineupModal({
   });
   const [hideNegativeEdge, setHideNegativeEdge] = useState(false);
   const [selectedBookmaker, setSelectedBookmaker] = useState<string>("all");
+  const [buildModalOpen, setBuildModalOpen] = useState(false);
 
   useEffect(() => {
     if (!open) {
@@ -1424,6 +1787,7 @@ export function LineupModal({
       setValueBetStartingCount(null);
       setFoulsMarketsStatus(null);
       setSelectedBookmaker("all");
+      setBuildModalOpen(false);
     }
   }, [open]);
 
@@ -1440,6 +1804,79 @@ export function LineupModal({
     setSelectedTeamName(teamName ?? null);
   };
 
+  const getValueBetRowsForFixture = useCallback(async (): Promise<{
+    rows: ValueBetRow[];
+    foulStatsAvailable: boolean;
+    foulMarketsSeen: number;
+  }> => {
+    if (fixture == null || lineup == null) return { rows: [], foulStatsAvailable: false, foulMarketsSeen: 0 };
+    const entries = lineup.data as RawLineupEntry[];
+    if (!Array.isArray(entries) || entries.length === 0) return { rows: [], foulStatsAvailable: false, foulMarketsSeen: 0 };
+    const [data, leagueSeason] = await Promise.all([
+      loadPlayerPropsForFixture(fixture.id),
+      fixture.league?.name ? fetchLeagueCurrentSeason(fixture.league.name).catch(() => null) : Promise.resolve(null),
+    ]);
+    if (import.meta.env.DEV) {
+      const allMarketsList = data.markets ?? [];
+      const getMid = (m: { marketId?: number; market_id?: number; id?: number }) => (m as { marketId?: number }).marketId ?? (m as { market_id?: number }).market_id ?? (m as { id?: number }).id;
+      const m334 = allMarketsList.find((m) => getMid(m as { marketId?: number; market_id?: number; id?: number }) === 334);
+      const m336 = allMarketsList.find((m) => getMid(m as { marketId?: number; market_id?: number; id?: number }) === 336);
+      const m338 = allMarketsList.find((m) => getMid(m as { marketId?: number; market_id?: number; id?: number }) === 338);
+      const m339 = allMarketsList.find((m) => getMid(m as { marketId?: number; market_id?: number; id?: number }) === 339);
+      const players = (mar: { players?: unknown[] } | undefined) => mar?.players?.length ?? 0;
+      const selections = (mar: { players?: Array<{ selections?: unknown[] }> } | undefined) =>
+        mar?.players?.reduce((sum, p) => sum + (p.selections?.length ?? 0), 0) ?? 0;
+      console.log("[player-props frontend] supported market summary", {
+        market334Players: players(m334),
+        market336Players: players(m336),
+        market338Players: players(m338),
+        market339Players: players(m339),
+        market334Selections: selections(m334),
+        market336Selections: selections(m336),
+        market338Selections: selections(m338),
+        market339Selections: selections(m339),
+      });
+    }
+    const startingPlayerIds = getStartingPlayerIds(entries);
+    const startingPlayerNames = getStartingPlayerNames(entries);
+    const nameToPlayerId = getNameToPlayerIdMap(entries);
+    const statsByPlayerId = new Map<number, PlayerSeasonStats>();
+    const seasonId = leagueSeason?.currentSeasonId;
+    if (seasonId != null && seasonId > 0) {
+      await Promise.all(
+        Array.from(startingPlayerIds).map(async (playerId) => {
+          try {
+            const stats = await loadPlayerSeasonStats(playerId, seasonId);
+            if (stats) statsByPlayerId.set(playerId, stats);
+          } catch {
+            // ignore
+          }
+        })
+      );
+    }
+    const result = buildValueBetRows(
+      data,
+      entries,
+      fixture,
+      lineup?.lineupConfirmed === true,
+      startingPlayerIds,
+      startingPlayerNames,
+      statsByPlayerId,
+      nameToPlayerId
+    );
+    if (import.meta.env.DEV) {
+      const candidateSelections = (data.markets ?? []).reduce(
+        (sum, m) => sum + ((m as { players?: Array<{ selections?: unknown[] }> }).players ?? []).reduce((s, p) => s + (p.selections?.length ?? 0), 0),
+        0
+      );
+      console.log("[player-props frontend] value bet row counts", {
+        candidateSelections,
+        finalValueBetRows: result.rows.length,
+      });
+    }
+    return { rows: result.rows, foulStatsAvailable: result.foulStatsAvailable, foulMarketsSeen: result.foulMarketsSeen };
+  }, [fixture, lineup]);
+
   const handleFindValueBets = async () => {
     if (fixture == null || lineup == null) return;
     const entries = lineup.data as RawLineupEntry[];
@@ -1448,102 +1885,25 @@ export function LineupModal({
     setValueBetRows(null);
     setValueBetStartingCount(null);
     try {
-      const [data, leagueSeason] = await Promise.all([
-        loadPlayerPropsForFixture(fixture.id),
-        fixture.league?.name ? fetchLeagueCurrentSeason(fixture.league.name).catch(() => null) : Promise.resolve(null),
-      ]);
-
-      if (import.meta.env.DEV) {
-        const allMarkets = data.markets ?? [];
-        console.log(
-          "[player-props] all market ids",
-          allMarkets.map((m: { marketId?: number; market_id?: number; id?: number; marketName?: string; market_name?: string; name?: string }) => ({
-            marketId: (m as { marketId?: number }).marketId ?? (m as { market_id?: number }).market_id ?? (m as { id?: number }).id,
-            marketName: (m as { marketName?: string }).marketName ?? (m as { market_name?: string }).market_name ?? (m as { name?: string }).name,
-          }))
-        );
-        const foulsMarkets = allMarkets.filter((m: { marketId?: number; market_id?: number; id?: number }) => {
-          const id = (m as { marketId?: number }).marketId ?? (m as { market_id?: number }).market_id ?? (m as { id?: number }).id;
-          return id === 338 || id === 339;
-        });
-        console.log("[player-props] fouls markets count", foulsMarkets.length);
-        console.log(
-          "[player-props] fouls markets ids",
-          foulsMarkets.map((m: { marketId?: number; market_id?: number; id?: number; marketName?: string; market_name?: string; name?: string }) => ({
-            marketId: (m as { marketId?: number }).marketId ?? (m as { market_id?: number }).market_id ?? (m as { id?: number }).id,
-            marketName: (m as { marketName?: string }).marketName ?? (m as { market_name?: string }).market_name ?? (m as { name?: string }).name,
-          }))
-        );
-        if (foulsMarkets.length > 0) {
-          console.log(
-            "[player-props] fouls market sample",
-            JSON.stringify(foulsMarkets[0], null, 2)
-          );
-        }
-        console.log("[player-props frontend] fouls market summary", {
-          foulMarketsSeen: foulsMarkets.length,
-          markets: foulsMarkets.map((m: { marketId?: number; market_id?: number; id?: number; marketName?: string; market_name?: string; name?: string; players?: Array<{ playerName?: string; player_name?: string; name?: string; selections?: unknown[] }> }) => ({
-            marketId: (m as { marketId?: number }).marketId ?? (m as { market_id?: number }).market_id ?? (m as { id?: number }).id,
-            marketName: (m as { marketName?: string }).marketName ?? (m as { market_name?: string }).market_name ?? (m as { name?: string }).name,
-            players: (m as { players?: unknown[] }).players?.length ?? 0,
-            selectionsPerPlayerSample: (m as { players?: Array<{ playerName?: string; player_name?: string; name?: string; selections?: unknown[] }> }).players?.slice(0, 3).map((p) => ({
-              playerName: p.playerName ?? p.player_name ?? p.name,
-              selectionCount: p.selections?.length ?? 0,
-            })),
-          })),
-        });
-      }
-
+      const { rows, foulStatsAvailable, foulMarketsSeen } = await getValueBetRowsForFixture();
       const startingPlayerIds = getStartingPlayerIds(entries);
-      const startingPlayerNames = getStartingPlayerNames(entries);
-      const nameToPlayerId = getNameToPlayerIdMap(entries);
-      if (import.meta.env.DEV) {
-        console.log("[value-bets] lineup entries", entries.length);
-        console.log("[value-bets] starting player ids", startingPlayerIds.size, Array.from(startingPlayerIds));
-      }
-
-      const statsByPlayerId = new Map<number, PlayerSeasonStats>();
-      const seasonId = leagueSeason?.currentSeasonId;
-      if (seasonId != null && seasonId > 0) {
-        await Promise.all(
-          Array.from(startingPlayerIds).map(async (playerId) => {
-            try {
-              const stats = await loadPlayerSeasonStats(playerId, seasonId);
-              if (import.meta.env.DEV) {
-                console.log("[player-stats] loaded", { playerId, stats });
-                console.log("[player-stats] fouls fields", {
-                  playerId,
-                  foulsCommitted: stats?.foulsCommitted,
-                  foulsWon: stats?.foulsWon,
-                  foulsCommittedMissing: stats?.foulsCommitted == null,
-                  foulsWonMissing: stats?.foulsWon == null,
-                });
-              }
-              if (stats) statsByPlayerId.set(playerId, stats);
-            } catch {
-              // ignore per-player failures
-            }
-          })
-        );
-      }
-
-      if (import.meta.env.DEV) {
-        console.log("[player-stats] statsByPlayerId size", statsByPlayerId.size);
-      }
-
-      const result = buildValueBetRows(
-        data,
-        entries,
-        fixture,
-        lineup?.lineupConfirmed === true,
-        startingPlayerIds,
-        startingPlayerNames,
-        statsByPlayerId,
-        nameToPlayerId
-      );
-      setValueBetRows(result.rows);
+      setValueBetRows(rows);
       setValueBetStartingCount(startingPlayerIds.size);
-      setFoulsMarketsStatus({ foulStatsAvailable: result.foulStatsAvailable, foulMarketsSeen: result.foulMarketsSeen });
+      setFoulsMarketsStatus({ foulStatsAvailable, foulMarketsSeen });
+      if (rows.length > 0) {
+        if (import.meta.env.DEV) {
+          console.log("[snapshot frontend] before POST /api/backtest-snapshots", {
+            fixtureId: fixture.id,
+            rowCount: rows.length,
+            firstRowPreview: rows[0] ? { playerName: rows[0].playerName, marketName: rows[0].marketName, line: rows[0].line } : null,
+          });
+        }
+        try {
+          await appendBacktestSnapshots(fixture.id, fixture.startingAt, rows);
+        } catch (snapshotErr) {
+          if (import.meta.env.DEV) console.error("[snapshot frontend] POST backtest-snapshots failed", snapshotErr);
+        }
+      }
     } catch (err) {
       if (import.meta.env.DEV) console.error("Failed to load player props", err);
       setValueBetRows([]);
@@ -1569,18 +1929,6 @@ export function LineupModal({
         : lineup.lineupConfirmed === false
           ? "Unconfirmed lineup data"
           : "Lineups available";
-
-  if (import.meta.env.DEV && fixture) {
-    const lineupExists = lineup != null && Array.isArray(lineup.data) && lineup.data.length > 0;
-    console.log("[lineup] modal status", {
-      fixtureId: fixture.id,
-      lineupExists,
-      lineupCount: lineup?.data?.length ?? 0,
-      lineupConfirmed: lineup?.lineupConfirmed,
-      finalBadgeShown: lineupStatusBadge,
-      pitchRendered: lineupExists && !loading && !error,
-    });
-  }
 
   return (
     <>
@@ -1608,6 +1956,7 @@ export function LineupModal({
               coaches={coaches}
               onPlayerClick={handlePlayerClick}
               onFindValueBets={handleFindValueBets}
+              onBuildValueBets={fixture != null && lineup != null ? () => setBuildModalOpen(true) : undefined}
               loadingValueBets={loadingValueBets}
               valueBetRows={valueBetRows}
               valueBetStartingCount={valueBetStartingCount}
@@ -1631,6 +1980,16 @@ export function LineupModal({
         }}
         leagueName={fixture?.league.name}
         teamName={selectedTeamName}
+      />
+      <BuildValueBetsModal
+        open={buildModalOpen}
+        onClose={() => setBuildModalOpen(false)}
+        fixture={fixture}
+        getCandidates={async () => {
+          const { rows } = await getValueBetRowsForFixture();
+          return rows;
+        }}
+        lineupContext={buildLineupContextForBuild(lineup, fixture)}
       />
     </>
   );

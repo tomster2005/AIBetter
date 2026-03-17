@@ -147,3 +147,48 @@
 .fixture-odds-panel__value {
   font-weight: 500;
 }
+
+/* Alternative Goals / Corners: grouped by line with Over/Under paired */
+.fixture-odds-panel__market-body--by-line .fixture-odds-panel__line-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+}
+
+.fixture-odds-panel__line-group {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.fixture-odds-panel__line-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #4b5563;
+  min-width: 2rem;
+}
+
+.fixture-odds-panel__line-pair {
+  display: inline-flex;
+  gap: 0.25rem;
+}
+
+.fixture-odds-panel__chip {
+  font-size: 0.75rem;
+  padding: 0.2rem 0.4rem;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+.fixture-odds-panel__chip--over {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+}
+
+.fixture-odds-panel__chip--under {
+  background: #f0fdf4;
+  color: #15803d;
+  border: 1px solid #bbf7d0;
+}

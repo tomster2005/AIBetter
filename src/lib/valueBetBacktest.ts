@@ -454,3 +454,112 @@ export function runBacktest(
   const summary = buildBacktestSummary(rows, calibrationTable);
   return { rows, summary, calibrationTable };
 }
+
+/** Probability buckets for 0.5-line calibration evaluation (model prob vs actual hit rate). */
+export const LOW_LINE_PROB_BUCKETS: Array<{ key: string; min: number; max: number }> = [
+  { key: "0.00–0.20", min: 0, max: 0.2 },
+  { key: "0.20–0.40", min: 0.2, max: 0.4 },
+  { key: "0.40–0.60", min: 0.4, max: 0.6 },
+  { key: "0.60–0.80", min: 0.6, max: 0.8 },
+  { key: "0.80–1.00", min: 0.8, max: 1.01 },
+];
+
+/** Per-market evaluation for 0.5 lines only: model vs actual outcomes (truth-based). */
+export interface LowLineMarketEval {
+  marketId: number;
+  marketName: string;
+  rowCount: number;
+  averageModelProbability: number;
+  actualHitRate: number;
+  averageBookmakerProbability: number;
+  calibrationGap: number;
+}
+
+/** Per–probability-bucket evaluation for 0.5 lines (optional diagnostic). */
+export interface LowLineProbBucketEval {
+  bucketKey: string;
+  rowCount: number;
+  averageModelProbability: number;
+  actualHitRate: number;
+  averageBookmakerProbability: number;
+  calibrationGap: number;
+}
+
+/** Full 0.5-line evaluation summary: by market and optionally by probability bucket. */
+export interface LowLineEvalSummary {
+  totalRowCount: number;
+  byMarket: Record<number, LowLineMarketEval>;
+  byProbabilityBucket: Record<string, LowLineProbBucketEval>;
+}
+
+function getLowLineProbBucketKey(prob: number): string {
+  for (const b of LOW_LINE_PROB_BUCKETS) {
+    if (prob >= b.min && prob < b.max) return b.key;
+  }
+  return "0.80–1.00";
+}
+
+/**
+ * Build truth-based evaluation for 0.5 lines only.
+ * Compares model probability to actual hit rate (not bookmaker). Use to validate whether
+ * the model is systematically underestimating "at least one" outcomes.
+ */
+export function buildLowLineEvaluation(rows: BacktestRow[]): LowLineEvalSummary | null {
+  const lowRows = rows.filter((r) => r.line === 0.5);
+  if (lowRows.length === 0) return null;
+
+  const byMarket: Record<number, LowLineMarketEval> = {};
+  const marketIds = [...new Set(lowRows.map((r) => r.marketId))];
+  for (const marketId of marketIds) {
+    const sub = lowRows.filter((r) => r.marketId === marketId);
+    const n = sub.length;
+    const hits = sub.filter((r) => r.actualResult === 1).length;
+    const avgModel =
+      n > 0
+        ? sub.reduce((s, r) => s + (r.calibratedProbability ?? r.rawModelProbability), 0) / n
+        : 0;
+    const avgBook = n > 0 ? sub.reduce((s, r) => s + r.bookmakerProbability, 0) / n : 0;
+    const actualHitRate = n > 0 ? hits / n : 0;
+    const marketName = sub[0]?.marketName ?? `Market ${marketId}`;
+    byMarket[marketId] = {
+      marketId,
+      marketName,
+      rowCount: n,
+      averageModelProbability: avgModel,
+      actualHitRate,
+      averageBookmakerProbability: avgBook,
+      calibrationGap: actualHitRate - avgModel,
+    };
+  }
+
+  const byProbabilityBucket: Record<string, LowLineProbBucketEval> = {};
+  for (const b of LOW_LINE_PROB_BUCKETS) {
+    const sub = lowRows.filter((r) => {
+      const p = r.calibratedProbability ?? r.rawModelProbability;
+      return p >= b.min && p < b.max;
+    });
+    const n = sub.length;
+    if (n === 0) continue;
+    const hits = sub.filter((r) => r.actualResult === 1).length;
+    const avgModel =
+      n > 0
+        ? sub.reduce((s, r) => s + (r.calibratedProbability ?? r.rawModelProbability), 0) / n
+        : 0;
+    const avgBook = n > 0 ? sub.reduce((s, r) => s + r.bookmakerProbability, 0) / n : 0;
+    const actualHitRate = n > 0 ? hits / n : 0;
+    byProbabilityBucket[b.key] = {
+      bucketKey: b.key,
+      rowCount: n,
+      averageModelProbability: avgModel,
+      actualHitRate,
+      averageBookmakerProbability: avgBook,
+      calibrationGap: actualHitRate - avgModel,
+    };
+  }
+
+  return {
+    totalRowCount: lowRows.length,
+    byMarket,
+    byProbabilityBucket,
+  };
+}

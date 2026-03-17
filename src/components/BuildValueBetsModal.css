@@ -1,0 +1,233 @@
+/* Build Value Bets modal */
+
+.build-value-bets-modal__overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  z-index: 110;
+  padding: 4vh 2vw;
+  box-sizing: border-box;
+}
+
+.build-value-bets-modal {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12);
+  width: min(560px, 94vw);
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.build-value-bets-modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.build-value-bets-modal__title {
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: #111827;
+}
+
+.build-value-bets-modal__close {
+  margin: 0;
+  padding: 0.25rem 0.5rem;
+  font-size: 1.5rem;
+  line-height: 1;
+  color: #6b7280;
+  background: none;
+  border: none;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.build-value-bets-modal__close:hover {
+  color: #111827;
+  background: #f3f4f6;
+}
+
+.build-value-bets-modal__body {
+  padding: 1.25rem;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.build-value-bets-modal__fixture {
+  margin: 0 0 1rem;
+  font-size: 0.875rem;
+  color: #4b5563;
+}
+
+.build-value-bets-modal__input-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+}
+
+.build-value-bets-modal__label {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #374151;
+}
+
+.build-value-bets-modal__input {
+  width: 6rem;
+  padding: 0.4rem 0.5rem;
+  font-size: 0.875rem;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+}
+
+.build-value-bets-modal__input:focus {
+  outline: 2px solid #3b82f6;
+  outline-offset: 0;
+}
+
+.build-value-bets-modal__build-btn {
+  padding: 0.4rem 0.75rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #fff;
+  background: #2563eb;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.build-value-bets-modal__build-btn:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+
+.build-value-bets-modal__build-btn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.build-value-bets-modal__error {
+  margin: 0 0 1rem;
+  font-size: 0.875rem;
+  color: #b91c1c;
+}
+
+.build-value-bets-modal__results {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid #e5e7eb;
+}
+
+.build-value-bets-modal__results-meta {
+  margin: 0 0 0.75rem;
+  font-size: 0.8125rem;
+  color: #6b7280;
+}
+
+.build-value-bets-modal__empty {
+  margin: 0;
+  font-size: 0.875rem;
+  color: #6b7280;
+  font-style: italic;
+}
+
+.build-value-bets-modal__combo-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.build-value-bets-modal__combo-card {
+  padding: 0.75rem 1rem;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+
+.build-value-bets-modal__combo-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.build-value-bets-modal__combo-odds {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #111827;
+}
+
+.build-value-bets-modal__combo-distance {
+  font-size: 0.75rem;
+  color: #6b7280;
+}
+
+.build-value-bets-modal__leg-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.build-value-bets-modal__leg {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  font-size: 0.8125rem;
+  padding: 0.2rem 0;
+}
+
+.build-value-bets-modal__leg-label {
+  flex: 1 1 auto;
+  color: #374151;
+}
+
+.build-value-bets-modal__leg-odds {
+  font-weight: 500;
+  color: #111827;
+}
+
+.build-value-bets-modal__leg-reason {
+  font-size: 0.75rem;
+  color: #6b7280;
+}
+
+.build-value-bets-modal__why {
+  margin-top: 0.75rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid #e5e7eb;
+}
+
+.build-value-bets-modal__why-title {
+  margin: 0 0 0.35rem;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #6b7280;
+}
+
+.build-value-bets-modal__why-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.build-value-bets-modal__why-line {
+  font-size: 0.75rem;
+  color: #4b5563;
+  line-height: 1.4;
+  padding: 0.15rem 0;
+}

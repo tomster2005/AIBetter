@@ -4,6 +4,7 @@
  * Loads .env from project root if present (SPORTMONKS_API_TOKEN).
  */
 import "dotenv/config";
+import cors from "cors";
 import express from "express";
 import { getFixturesBetween } from "../src/api/sportmonks.js";
 
@@ -21,9 +22,92 @@ import { getLeagueCurrentSeason } from "../src/api/leagueSearch.js";
 import { getStatsContext } from "../src/api/statsContext.js";
 import { getPlayerSeasonStatsForProps } from "../src/api/playerSeasonStats.js";
 import * as cache from "./cache.js";
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
+import type { StoredBacktestRow, BacktestDataset } from "../src/lib/backtestDataset.js";
+import { makeBacktestRowKey } from "../src/lib/backtestDataset.js";
+import { getRecentPlayerStats } from "./recentPlayerStats.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const PROJECT_ROOT = join(__dirname, "..");
+const BACKTEST_DATASET_PATH = join(PROJECT_ROOT, "data", "backtestRows.json");
+
+function loadDataset(): BacktestDataset {
+  try {
+    const raw = readFileSync(BACKTEST_DATASET_PATH, "utf-8");
+    const data = JSON.parse(raw) as BacktestDataset;
+    const rows = Array.isArray(data?.rows) ? data.rows : [];
+    if (process.env.NODE_ENV !== "production") {
+      console.log("[snapshot write] loadDataset fileExists=true parsedExistingRowCount=" + rows.length);
+    }
+    return { rows };
+  } catch {
+    if (process.env.NODE_ENV !== "production") {
+      console.log("[snapshot write] loadDataset file missing or parse failed parsedExistingRowCount=0");
+    }
+    return { rows: [] };
+  }
+}
+
+function saveDataset(data: BacktestDataset): void {
+  const dir = join(PROJECT_ROOT, "data");
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(BACKTEST_DATASET_PATH, JSON.stringify(data, null, 2), "utf-8");
+  if (process.env.NODE_ENV !== "production") {
+    console.log("[snapshot write] saveDataset finalSavedRowCount=" + data.rows.length);
+  }
+}
+
+function appendBacktestRows(newRows: StoredBacktestRow[]): number {
+  const fileExists = existsSync(BACKTEST_DATASET_PATH);
+  const incomingRowCount = newRows.length;
+  if (process.env.NODE_ENV !== "production") {
+    console.log("[snapshot write] appendBacktestRows fileExists=" + fileExists + " incomingRowCount=" + incomingRowCount);
+    if (newRows.length > 0) {
+      console.log("[snapshot write] sample dedupe key (first row):", makeBacktestRowKey(newRows[0]));
+    }
+  }
+  const data = loadDataset();
+  const existingKeys = new Set(data.rows.map((r) => makeBacktestRowKey(r)));
+  let appended = 0;
+  for (const row of newRows) {
+    const key = makeBacktestRowKey(row);
+    if (!existingKeys.has(key)) {
+      existingKeys.add(key);
+      data.rows.push(row);
+      appended += 1;
+    }
+  }
+  const duplicateRowCountSkipped = incomingRowCount - appended;
+  const finalRowCountAfterMerge = data.rows.length;
+  if (process.env.NODE_ENV !== "production") {
+    console.log("[snapshot write] appendBacktestRows duplicateRowCountSkipped=" + duplicateRowCountSkipped + " appendedCount=" + appended + " finalRowCountAfterMerge=" + finalRowCountAfterMerge);
+  }
+  if (appended > 0) saveDataset(data);
+  if (process.env.NODE_ENV !== "production") {
+    console.log("[backtest-dataset] appended rows:", appended);
+  }
+  return appended;
+}
 
 const app = express();
 const PORT = Number(process.env.API_PORT) || 3001;
+
+const allowedOrigins =
+  process.env.NODE_ENV !== "production"
+    ? ["http://localhost:5173", "http://127.0.0.1:5173"]
+    : [];
+
+const JSON_LIMIT = "2mb";
+app.use(express.json({ limit: JSON_LIMIT }));
+if (allowedOrigins.length > 0) {
+  app.use(cors({ origin: allowedOrigins }));
+  if (process.env.NODE_ENV !== "production") {
+    console.log("[api] CORS allowed origins:", allowedOrigins.join(", "));
+    console.log("[api] express.json limit:", JSON_LIMIT);
+  }
+}
 
 app.get("/api/fixtures", async (req, res) => {
   const startParam = req.query.start as string | undefined;
@@ -297,6 +381,80 @@ app.get("/api/stats-context", async (req, res) => {
       console.error("[stats-context] GET /api/stats-context failed", { seasonId, teamId, errorMessage: message });
     }
     res.status(500).json({ error: message });
+  }
+});
+
+app.post("/api/backtest-snapshots", (req, res) => {
+  if (process.env.NODE_ENV !== "production") {
+    console.log("[snapshot backend] POST /api/backtest-snapshots hit", {
+      bodyKeys: req.body && typeof req.body === "object" ? Object.keys(req.body) : [],
+      rowCountReceived: Array.isArray((req.body as { rows?: unknown[] })?.rows) ? (req.body as { rows: unknown[] }).rows.length : 0,
+      firstRowPreview:
+        Array.isArray((req.body as { rows?: StoredBacktestRow[] })?.rows) && (req.body as { rows: StoredBacktestRow[] }).rows[0]
+          ? {
+              playerName: (req.body as { rows: StoredBacktestRow[] }).rows[0].playerName,
+              marketName: (req.body as { rows: StoredBacktestRow[] }).rows[0].marketName,
+              line: (req.body as { rows: StoredBacktestRow[] }).rows[0].line,
+            }
+          : null,
+      resolvedDatasetPath: BACKTEST_DATASET_PATH,
+    });
+  }
+  try {
+    const body = req.body as { rows?: StoredBacktestRow[] };
+    const rows = Array.isArray(body?.rows) ? body.rows : [];
+    if (rows.length === 0) {
+      res.status(204).end();
+      return;
+    }
+    if (process.env.NODE_ENV !== "production") {
+      console.log("[snapshot backend] rowCountBeforeWrite=" + rows.length);
+    }
+    const appended = appendBacktestRows(rows);
+    if (process.env.NODE_ENV !== "production") {
+      console.log("[snapshot backend] success appended=" + appended);
+    }
+    res.status(200).json({ appended });
+  } catch (err) {
+    if (process.env.NODE_ENV !== "production") {
+      console.error("[snapshot backend] caught error", err);
+    }
+    res.status(500).json({ error: "Failed to save backtest snapshots." });
+  }
+});
+
+app.get("/api/backtest-snapshots/debug", (_req, res) => {
+  if (process.env.NODE_ENV === "production") {
+    res.status(404).end();
+    return;
+  }
+  const fileExists = existsSync(BACKTEST_DATASET_PATH);
+  let rowCount = 0;
+  try {
+    const data = loadDataset();
+    rowCount = data.rows.length;
+  } catch {
+    // ignore
+  }
+  res.json({
+    debugOnly: true,
+    resolvedDatasetPath: BACKTEST_DATASET_PATH,
+    fileExists,
+    rowCount,
+  });
+});
+
+app.post("/api/recent-player-stats", (req, res) => {
+  try {
+    const body = req.body as { playerNames?: string[] };
+    const names = Array.isArray(body?.playerNames) ? body.playerNames : [];
+    const stats = getRecentPlayerStats(names);
+    res.json(stats);
+  } catch (err) {
+    if (process.env.NODE_ENV !== "production") {
+      console.error("[recent-player-stats] POST /api/recent-player-stats failed", err);
+    }
+    res.status(500).json({ error: "Failed to get recent player stats." });
   }
 });
 

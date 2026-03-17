@@ -20,9 +20,9 @@
       "bucketKey": "10-15",
       "minProb": 0.1,
       "maxProb": 0.15,
-      "count": 0,
+      "count": 1,
       "hitRate": 0,
-      "avgRawModelProbability": 0
+      "avgRawModelProbability": 0.1318753643587578
     },
     {
       "bucketKey": "15-20",
@@ -44,9 +44,9 @@
       "bucketKey": "30-40",
       "minProb": 0.3,
       "maxProb": 0.4,
-      "count": 1,
-      "hitRate": 1,
-      "avgRawModelProbability": 0.3775990685626816
+      "count": 0,
+      "hitRate": 0,
+      "avgRawModelProbability": 0
     },
     {
       "bucketKey": "40-50",
@@ -83,15 +83,15 @@
   ],
   "summary": {
     "totalBets": 1,
-    "hits": 1,
-    "hitRate": 1,
+    "hits": 0,
+    "hitRate": 0,
     "avgBookmakerProbability": 0.5405405405405405,
-    "avgRawModelProbability": 0.3775990685626816,
-    "avgCalibratedProbability": 0.3775990685626816,
-    "brierScoreRaw": 0.3873829194540416,
-    "brierScoreCalibrated": 0.3873829194540416,
-    "logLossRaw": 0.9739223114440203,
-    "logLossCalibrated": 0.9739223114440203,
+    "avgRawModelProbability": 0.1318753643587578,
+    "avgCalibratedProbability": 0.1318753643587578,
+    "brierScoreRaw": 0.017391111724755125,
+    "brierScoreCalibrated": 0.017391111724755125,
+    "logLossRaw": 0.14141998518132928,
+    "logLossCalibrated": 0.14141998518132928,
     "roiPositiveEdge": 0,
     "roiByEdgeBucket": {
       "0-0.02": 0,
@@ -102,15 +102,15 @@
     "roiByConfidence": {
       "low": 0,
       "medium": 0,
-      "high": 0.8500000000000001
+      "high": -1
     },
     "hitRateByMarket": {
-      "334": 1
+      "334": 0
     },
     "hitRateByConfidence": {
       "low": 0,
       "medium": 0,
-      "high": 1
+      "high": 0
     }
   }
 }

@@ -33,10 +33,14 @@ export interface PlayerOddsResponse {
   playerCount?: number;
 }
 
-function getPlayerOddsApiUrl(fixtureId: number): string {
+function getApiOrigin(): string {
   const base =
     typeof import.meta.env !== "undefined" && import.meta.env?.VITE_API_ORIGIN;
-  const origin = typeof base === "string" && base !== "" ? base.replace(/\/$/, "") : "";
+  return typeof base === "string" && base !== "" ? base.replace(/\/$/, "") : "";
+}
+
+function getPlayerOddsApiUrl(fixtureId: number): string {
+  const origin = getApiOrigin();
   return `${origin}/api/fixtures/${fixtureId}/player-odds`;
 }
 
@@ -44,19 +48,47 @@ function getPlayerOddsApiUrl(fixtureId: number): string {
  * Fetches player prop odds for a fixture. Same endpoint as OddsPage / LineupModal.
  */
 export async function loadPlayerPropsForFixture(fixtureId: number): Promise<PlayerOddsResponse> {
-  const url = getPlayerOddsApiUrl(fixtureId);
-  const res = await fetch(url);
-  if (!res.ok) throw new Error("Player odds unavailable");
-  const json = (await res.json()) as { data?: PlayerOddsResponse };
-  const data = json?.data ?? json;
-  const resp = data as PlayerOddsResponse;
-  if (data && typeof data === "object" && Array.isArray(resp?.markets)) {
-    return {
-      fixtureId,
-      markets: resp.markets,
-      lineupSource: resp?.lineupSource,
-      playerCount: resp?.playerCount,
-    };
+  const apiOrigin = getApiOrigin();
+  const finalUrl = getPlayerOddsApiUrl(fixtureId);
+  if (import.meta.env.DEV) {
+    if (!apiOrigin) {
+      console.warn("[player-props] missing VITE_API_ORIGIN");
+    }
+    console.log("[player-props] request debug", { fixtureId, apiOrigin: apiOrigin || "(empty)", finalUrl });
   }
-  return { fixtureId, markets: [], lineupSource: "none", playerCount: 0 };
+  try {
+    const res = await fetch(finalUrl);
+    if (!res.ok) throw new Error("Player odds unavailable");
+    const json = (await res.json()) as { data?: PlayerOddsResponse };
+    const data = json?.data ?? json;
+    const resp = data as PlayerOddsResponse;
+    if (data && typeof data === "object" && Array.isArray(resp?.markets)) {
+      if (import.meta.env.DEV) {
+        console.log("[player-props frontend] player-odds response received", {
+          fixtureId,
+          marketCount: resp.markets.length,
+        });
+      }
+      return {
+        fixtureId,
+        markets: resp.markets,
+        lineupSource: resp?.lineupSource,
+        playerCount: resp?.playerCount,
+      };
+    }
+    if (import.meta.env.DEV) {
+      console.log("[player-props frontend] player-odds response received (no markets)", { fixtureId, marketCount: 0 });
+    }
+    return { fixtureId, markets: [], lineupSource: "none", playerCount: 0 };
+  } catch (err) {
+    if (import.meta.env.DEV) {
+      console.error("[player-props] fetch failed", {
+        fixtureId,
+        apiOrigin: apiOrigin || "(empty)",
+        finalUrl,
+        errorMessage: err instanceof Error ? err.message : String(err),
+      });
+    }
+    throw err;
+  }
 }

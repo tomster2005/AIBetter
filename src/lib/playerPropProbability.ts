@@ -23,16 +23,11 @@ export function poissonProbability(lambda: number, k: number): number {
   return (Math.pow(lambda, k) * Math.exp(-lambda)) / factorial(k);
 }
 
-/** P(X >= line) for Over line (line is e.g. 1.5 → Over means X >= 2). Sum from ceil(line) to a reasonable upper bound. */
+/** P(X >= line) for Over line (line is e.g. 1.5 → Over means X >= 2). Computed as 1 - P(X <= line-1) for numerical stability. */
 export function probabilityOverLine(lambda: number, line: number): number {
-  const kStart = Math.ceil(line);
-  if (kStart < 0) return 1;
-  let sum = 0;
-  for (let k = kStart; k <= kStart + 50; k++) {
-    sum += poissonProbability(lambda, k);
-    if (poissonProbability(lambda, k) < 1e-10) break;
-  }
-  return sum;
+  const under = probabilityUnderLine(lambda, line);
+  const over = 1 - under;
+  return Math.max(0, Math.min(1, over));
 }
 
 /** P(X <= line - 0.5) for Under line (e.g. Under 1.5 → X <= 1). */

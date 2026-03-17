@@ -7,6 +7,8 @@
 import { useState, useEffect, useCallback } from "react";
 import {
   CORE_MARKET_IDS,
+  MARKET_ID_ALTERNATIVE_CORNERS,
+  MARKET_ID_ALTERNATIVE_TOTAL_GOALS,
   MARKET_ID_BTTS,
   MARKET_ID_MATCH_RESULTS,
   TEAM_PROP_MARKET_IDS,
@@ -58,9 +60,11 @@ export interface FixtureOddsPanelProps {
   fixtureId: number | null;
   /** Optional fixture name for panel header (e.g. "Home vs Away") */
   fixtureLabel?: string | null;
+  /** When true, hide the "Player Props / Coming soon" section (e.g. inside LineupModal) */
+  hidePlayerPropsSection?: boolean;
 }
 
-export function FixtureOddsPanel({ fixtureId, fixtureLabel }: FixtureOddsPanelProps) {
+export function FixtureOddsPanel({ fixtureId, fixtureLabel, hidePlayerPropsSection }: FixtureOddsPanelProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<NormalisedOddsResponse | null>(null);
@@ -129,13 +133,22 @@ export function FixtureOddsPanel({ fixtureId, fixtureLabel }: FixtureOddsPanelPr
         <p className="fixture-odds-panel__message fixture-odds-panel__message--error">{error}</p>
       )}
       {!loading && !error && data && (
-        <FixtureOddsPanelContent bookmakers={data.bookmakers} />
+        <FixtureOddsPanelContent
+          bookmakers={data.bookmakers}
+          hidePlayerPropsSection={hidePlayerPropsSection}
+        />
       )}
     </aside>
   );
 }
 
-function FixtureOddsPanelContent({ bookmakers }: { bookmakers: OddsBookmaker[] }) {
+function FixtureOddsPanelContent({
+  bookmakers,
+  hidePlayerPropsSection,
+}: {
+  bookmakers: OddsBookmaker[];
+  hidePlayerPropsSection?: boolean;
+}) {
   const [expandedMarkets, setExpandedMarkets] = useState<Set<number>>(DEFAULT_EXPANDED_MARKET_IDS);
 
   const toggleMarket = useCallback((marketId: number) => {
@@ -188,11 +201,12 @@ function FixtureOddsPanelContent({ bookmakers }: { bookmakers: OddsBookmaker[] }
           ))}
         </section>
       )}
-      {/* Future: Player Props section - structure ready, no data yet */}
-      <section className="fixture-odds-panel__section fixture-odds-panel__section--player-props" aria-label="Player props">
-        <h3 className="fixture-odds-panel__heading">Player Props</h3>
-        <p className="fixture-odds-panel__message fixture-odds-panel__message--muted">Coming soon</p>
-      </section>
+      {!hidePlayerPropsSection && (
+        <section className="fixture-odds-panel__section fixture-odds-panel__section--player-props" aria-label="Player props">
+          <h3 className="fixture-odds-panel__heading">Player Props</h3>
+          <p className="fixture-odds-panel__message fixture-odds-panel__message--muted">Coming soon</p>
+        </section>
+      )}
     </>
   );
 }
@@ -213,6 +227,43 @@ function collectMarketsInGroup(
   }
   return out;
 }
+
+/** Parse numeric line from "Over 2.5" / "Under 2.5" style labels. */
+function parseLineFromOverUnderLabel(label: string): number | null {
+  const num = parseFloat((label || "").replace(/[^\d.]/g, ""));
+  return Number.isFinite(num) ? num : null;
+}
+
+function isOverLabel(label: string): boolean {
+  const lower = (label || "").toLowerCase();
+  return (lower.includes("over") && !lower.includes("under")) || lower === "over";
+}
+
+/** Group Over/Under selections by line for alternative goals/corners. */
+function groupSelectionsByLine(
+  selections: OddsSelection[]
+): Array<{ line: number; over: OddsSelection | null; under: OddsSelection | null }> {
+  const byLine = new Map<
+    number,
+    { over: OddsSelection | null; under: OddsSelection | null }
+  >();
+  for (const sel of selections) {
+    const line = parseLineFromOverUnderLabel(sel.label);
+    if (line == null) continue;
+    const entry = byLine.get(line) ?? { over: null, under: null };
+    if (isOverLabel(sel.label)) entry.over = sel;
+    else entry.under = sel;
+    byLine.set(line, entry);
+  }
+  return Array.from(byLine.entries())
+    .sort(([a], [b]) => a - b)
+    .map(([line, { over, under }]) => ({ line, over, under }));
+}
+
+const ALTERNATIVE_LINE_MARKET_IDS = new Set<number>([
+  MARKET_ID_ALTERNATIVE_TOTAL_GOALS,
+  MARKET_ID_ALTERNATIVE_CORNERS,
+]);
 
 function MarketBlock({
   market,
@@ -236,6 +287,8 @@ function MarketBlock({
 
   if (bookmakersWithMarket.length === 0) return null;
 
+  const useLineGroups = ALTERNATIVE_LINE_MARKET_IDS.has(market.marketId);
+
   return (
     <div className="fixture-odds-panel__market">
       <button
@@ -253,7 +306,7 @@ function MarketBlock({
       </button>
       <div
         id={`fixture-odds-market-${market.marketId}`}
-        className="fixture-odds-panel__market-body"
+        className={`fixture-odds-panel__market-body${useLineGroups ? " fixture-odds-panel__market-body--by-line" : ""}`}
         aria-labelledby={`fixture-odds-market-heading-${market.marketId}`}
         hidden={!isExpanded}
       >
@@ -261,16 +314,34 @@ function MarketBlock({
           {bookmakersWithMarket.map(({ bookmaker, market: m }) => (
             <div key={bookmaker.bookmakerId} className="fixture-odds-panel__bookmaker">
               <div className="fixture-odds-panel__bookmaker-name">{bookmaker.bookmakerName}</div>
-              <div className="fixture-odds-panel__selections">
-                {m.selections.map((sel, i) => (
-                  <span key={i} className="fixture-odds-panel__row">
-                    <span className="fixture-odds-panel__label">{sel.label}:</span>
-                    <span className="fixture-odds-panel__value">
-                      {sel.odds != null ? String(sel.odds) : "—"}
+              {useLineGroups ? (
+                <div className="fixture-odds-panel__line-groups">
+                  {groupSelectionsByLine(m.selections).map(({ line, over, under }) => (
+                    <div key={line} className="fixture-odds-panel__line-group">
+                      <span className="fixture-odds-panel__line-label">{line}</span>
+                      <div className="fixture-odds-panel__line-pair">
+                        <span className="fixture-odds-panel__chip fixture-odds-panel__chip--over">
+                          O {over?.odds != null ? String(over.odds) : "—"}
+                        </span>
+                        <span className="fixture-odds-panel__chip fixture-odds-panel__chip--under">
+                          U {under?.odds != null ? String(under.odds) : "—"}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="fixture-odds-panel__selections">
+                  {m.selections.map((sel, i) => (
+                    <span key={i} className="fixture-odds-panel__row">
+                      <span className="fixture-odds-panel__label">{sel.label}:</span>
+                      <span className="fixture-odds-panel__value">
+                        {sel.odds != null ? String(sel.odds) : "—"}
+                      </span>
                     </span>
-                  </span>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
         </div>

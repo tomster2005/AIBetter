@@ -10,6 +10,7 @@ import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import {
   runBacktest,
+  buildLowLineEvaluation,
   type PreMatchContext,
   type HistoricalFixtureOutcome,
 } from "../src/lib/valueBetBacktest.js";
@@ -56,6 +57,23 @@ function main() {
     console.log(
       `  ${b.bucketKey}: n=${b.count} hitRate=${(b.hitRate * 100).toFixed(1)}% avgRaw=${((b.avgRawModelProbability ?? 0) * 100).toFixed(1)}%`
     );
+  }
+
+  const lowLineEval = buildLowLineEvaluation(rows);
+  if (lowLineEval && lowLineEval.totalRowCount > 0) {
+    console.log("\n=== 0.5-line evaluation (model vs actual outcomes) ===");
+    console.log("Total 0.5-line rows:", lowLineEval.totalRowCount);
+    console.log("\nBy market:");
+    for (const ev of Object.values(lowLineEval.byMarket)) {
+      console.log(`  ${ev.marketName} (${ev.marketId}):`);
+      console.log(`    rowCount=${ev.rowCount} avgModelProb=${(ev.averageModelProbability * 100).toFixed(2)}% actualHitRate=${(ev.actualHitRate * 100).toFixed(2)}% avgBookProb=${(ev.averageBookmakerProbability * 100).toFixed(2)}% calibrationGap=${(ev.calibrationGap * 100).toFixed(2)}%`);
+    }
+    console.log("\nBy probability bucket (0.5 lines only):");
+    for (const [key, b] of Object.entries(lowLineEval.byProbabilityBucket)) {
+      console.log(`  ${key}: n=${b.rowCount} avgModelProb=${(b.averageModelProbability * 100).toFixed(2)}% actualHitRate=${(b.actualHitRate * 100).toFixed(2)}% calibrationGap=${(b.calibrationGap * 100).toFixed(2)}%`);
+    }
+  } else {
+    console.log("\nNo 0.5-line rows in backtest data; skipping low-line evaluation.");
   }
 
   const publicDir = join(root, "public");

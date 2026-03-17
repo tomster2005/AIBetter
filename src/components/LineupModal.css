@@ -197,6 +197,24 @@
   margin-bottom: 0.25rem;
 }
 
+.lineup-content__value-bet-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.lineup-content__build-value-btn {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1d4ed8;
+}
+
+.lineup-content__build-value-btn:hover {
+  background: #dbeafe;
+  border-color: #93c5fd;
+}
+
 .lineup-content__starting-title {
   margin: 0 0 0.75rem;
   font-size: 1rem;
@@ -224,6 +242,109 @@
 .lineup-content__find-value-btn:disabled {
   opacity: 0.8;
   cursor: not-allowed;
+}
+
+/* ========== Match Odds (collapsible, embedded FixtureOddsPanel) ========== */
+.lineup-content__match-odds {
+  margin-top: 0.5rem;
+  padding-top: 1.25rem;
+  border-top: var(--lineup-border);
+}
+
+.lineup-content__match-odds-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: 100%;
+  margin: 0;
+  padding: 0.35rem 0;
+  font: inherit;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: #111827;
+  line-height: 1.3;
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: var(--lineup-radius-sm);
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.lineup-content__match-odds-toggle:hover {
+  background: #f3f4f6;
+  color: #0f172a;
+}
+
+.lineup-content__match-odds-toggle:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
+}
+
+.lineup-content__match-odds-toggle-icon {
+  flex-shrink: 0;
+  font-size: 0.625rem;
+  color: #6b7280;
+  line-height: 1;
+}
+
+.lineup-content__match-odds-toggle-title {
+  flex: 1;
+}
+
+.lineup-content__match-odds-body {
+  margin-top: 0.5rem;
+}
+
+.lineup-content__match-odds .fixture-odds-panel {
+  padding: 0.6rem 0.85rem;
+  gap: 0.5rem;
+  max-height: 50vh;
+}
+
+.lineup-content__match-odds .fixture-odds-panel__section {
+  gap: 0.5rem;
+}
+
+.lineup-content__match-odds .fixture-odds-panel__heading,
+.lineup-content__match-odds .fixture-odds-panel__market-toggle {
+  font-size: 0.8125rem;
+}
+
+.lineup-content__match-odds .fixture-odds-panel__market {
+  margin-bottom: 0;
+}
+
+.lineup-content__match-odds .fixture-odds-panel__list {
+  gap: 0.35rem;
+}
+
+.lineup-content__match-odds .fixture-odds-panel__bookmaker {
+  padding: 0.35rem 0.5rem;
+}
+
+.lineup-content__match-odds .fixture-odds-panel__bookmaker-name {
+  font-size: 0.75rem;
+  margin-bottom: 0.15rem;
+}
+
+.lineup-content__match-odds .fixture-odds-panel__row,
+.lineup-content__match-odds .fixture-odds-panel__selections {
+  font-size: 0.75rem;
+}
+
+.lineup-content__match-odds .fixture-odds-panel__line-groups {
+  gap: 0.35rem 0.6rem;
+}
+
+.lineup-content__match-odds .fixture-odds-panel__line-label {
+  font-size: 0.6875rem;
+  min-width: 1.75rem;
+}
+
+.lineup-content__match-odds .fixture-odds-panel__chip {
+  font-size: 0.6875rem;
+  padding: 0.15rem 0.3rem;
 }
 
 /* ========== Value Bet Analysis ========== */

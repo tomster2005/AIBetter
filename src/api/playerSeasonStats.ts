@@ -81,17 +81,30 @@ export async function getPlayerSeasonStatsForProps(
   let foulsWon: number | undefined = undefined;
   let minutesPlayed = 0;
   let appearances = 0;
+  let shotsSourceName: string | null = null;
+  let shotsOnTargetSourceName: string | null = null;
 
   for (const stat of entries) {
     const name = (stat.name ?? "").toLowerCase().trim();
     const value = stat.value;
     if (!name) continue;
 
-    if (name.includes("shot") && !name.includes("target")) {
+    // Shots / shots on target mapping. Prefer explicit, safe matches.
+    const isShotsTotal =
+      name === "shots total" ||
+      name === "total shots" ||
+      name === "shots";
+    const isShotsOnTarget =
+      name === "shots on target" ||
+      name === "shots on goal" ||
+      name === "on target shots";
+
+    if (isShotsTotal) {
       shots = value;
-    }
-    if (name.includes("target")) {
+      shotsSourceName = shotsSourceName ?? name;
+    } else if (isShotsOnTarget) {
       shotsOnTarget = value;
+      shotsOnTargetSourceName = shotsOnTargetSourceName ?? name;
     }
     if (
       name.includes("foul") &&
@@ -126,6 +139,15 @@ export async function getPlayerSeasonStatsForProps(
       foulsWon,
       minutesPlayed,
       appearances,
+    });
+    console.log("[player-stats] raw mapping audit", {
+      playerId,
+      rawShotsFieldName: shotsSourceName,
+      rawShotsValue: shots,
+      rawShotsOnTargetFieldName: shotsOnTargetSourceName,
+      rawShotsOnTargetValue: shotsOnTarget,
+      mappedShots: shots,
+      mappedShotsOnTarget: shotsOnTarget,
     });
   }
 

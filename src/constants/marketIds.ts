@@ -3,10 +3,10 @@ export const MARKET_ID_BTTS = 14;
 export const MARKET_ID_MATCH_GOALS = 80;
 export const MARKET_ID_ALTERNATIVE_TOTAL_GOALS = 81;
 
-/** Sportmonks: Player Shots (player props). */
-export const MARKET_ID_PLAYER_SHOTS = 334;
+/** Sportmonks: Player Shots (player props) — total shots. */
+export const MARKET_ID_PLAYER_SHOTS = 336;
 /** Sportmonks: Player Shots On Target (player props). */
-export const MARKET_ID_PLAYER_SHOTS_ON_TARGET = 336;
+export const MARKET_ID_PLAYER_SHOTS_ON_TARGET = 334;
 /** Sportmonks: Player Fouls Committed (player props). */
 export const MARKET_ID_PLAYER_FOULS_COMMITTED = 338;
 /** Sportmonks: Player Fouls Won (player props). */
