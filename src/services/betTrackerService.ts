@@ -2,10 +2,23 @@ import type { BuildCombo, BuildLeg } from "../lib/valueBetBuilder.js";
 
 const BOOKMAKERS_STORAGE_KEY = "betTracker:bookmakers:v1";
 const TRACKED_BETS_STORAGE_KEY = "betTracker:trackedBets:v1";
+const BALANCE_ADJUSTMENTS_STORAGE_KEY = "betTracker:balanceAdjustments:v1";
 const UNIT_SIZE_STORAGE_KEY = "bet_tracker_unit_size";
 
 export type TrackedBetStatus = "pending" | "win" | "loss";
 export type TrackedBetSourceType = "valueBetBuilder" | "manualMulti";
+
+export type BalanceAdjustmentType = "deposit" | "withdrawal" | "correction";
+
+export interface BalanceAdjustment {
+  id: string;
+  bookmakerId: string;
+  amount: number;
+  type: BalanceAdjustmentType;
+  note?: string;
+  /** epoch ms */
+  createdAt: number;
+}
 
 export interface TrackedBookmaker {
   id: string;
@@ -134,6 +147,11 @@ function toNumber(value: unknown, fallback = 0): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function round2(n: number): number {
+  if (!Number.isFinite(n)) return 0;
+  return Math.round((n + Number.EPSILON) * 100) / 100;
+}
+
 function sanitizeBookmaker(value: unknown): TrackedBookmaker | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Partial<TrackedBookmaker>;
@@ -145,6 +163,28 @@ function sanitizeBookmaker(value: unknown): TrackedBookmaker | null {
     name,
     startingBalance: toNumber(raw.startingBalance, 0),
     createdAt: normalizeText(raw.createdAt) || new Date(0).toISOString(),
+  };
+}
+
+function sanitizeBalanceAdjustment(value: unknown): BalanceAdjustment | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Partial<BalanceAdjustment>;
+  const id = normalizeText(raw.id);
+  const bookmakerId = normalizeText(raw.bookmakerId);
+  const type = raw.type;
+  const validType = type === "deposit" || type === "withdrawal" || type === "correction";
+  const note = normalizeText(raw.note);
+  const createdAt = typeof raw.createdAt === "number" && Number.isFinite(raw.createdAt) ? raw.createdAt : Date.parse(String((raw as any).createdAt)) || Date.now();
+  const amount = round2(toNumber(raw.amount, 0));
+  if (!id || !bookmakerId || !validType) return null;
+  if (!Number.isFinite(amount) || Number.isNaN(amount)) return null;
+  return {
+    id,
+    bookmakerId,
+    amount,
+    type,
+    note: note ? note : undefined,
+    createdAt,
   };
 }
 
@@ -332,6 +372,60 @@ function readBookmakers(): TrackedBookmaker[] {
 
 function writeBookmakers(value: TrackedBookmaker[]): void {
   write(BOOKMAKERS_STORAGE_KEY, value);
+}
+
+function readBalanceAdjustments(): BalanceAdjustment[] {
+  return read<BalanceAdjustment>(BALANCE_ADJUSTMENTS_STORAGE_KEY)
+    .map(sanitizeBalanceAdjustment)
+    .filter((a): a is BalanceAdjustment => a != null)
+    .sort((a, b) => b.createdAt - a.createdAt);
+}
+
+function writeBalanceAdjustments(value: BalanceAdjustment[]): void {
+  write(BALANCE_ADJUSTMENTS_STORAGE_KEY, value);
+}
+
+export function getBalanceAdjustments(): BalanceAdjustment[] {
+  return readBalanceAdjustments();
+}
+
+export function getBalanceAdjustmentsForBookmaker(bookmakerId: string): BalanceAdjustment[] {
+  return readBalanceAdjustments().filter((a) => a.bookmakerId === bookmakerId);
+}
+
+export function adjustBalance(
+  bookmakerId: string,
+  input: { amount: number; type: BalanceAdjustmentType; note?: string }
+): BalanceAdjustment | null {
+  const bookmakers = readBookmakers();
+  const bookmaker = bookmakers.find((b) => b.id === bookmakerId);
+  if (!bookmaker) return null;
+
+  const rawAmount = toNumber(input.amount, 0);
+  if (!Number.isFinite(rawAmount)) return null;
+
+  let normalized: number;
+  if (input.type === "deposit") normalized = Math.abs(rawAmount);
+  else if (input.type === "withdrawal") normalized = -Math.abs(rawAmount);
+  else normalized = rawAmount;
+
+  normalized = round2(normalized);
+  if (!Number.isFinite(normalized) || normalized === 0) return null;
+
+  const note = normalizeText(input.note);
+  const now = Date.now();
+  const adj: BalanceAdjustment = {
+    id: `adj-${now}-${Math.random().toString(36).slice(2, 9)}`,
+    bookmakerId,
+    amount: normalized,
+    type: input.type,
+    note: note ? note : undefined,
+    createdAt: now,
+  };
+
+  const current = readBalanceAdjustments();
+  writeBalanceAdjustments([adj, ...current]);
+  return adj;
 }
 
 function readTrackedBets(): TrackedBetRecord[] {
@@ -733,7 +827,8 @@ export function getBookmakerStats(bookmakerId: string): BookmakerStats | null {
   const potentialProfit = pending.reduce((sum, b) => sum + (b.returnAmount - b.stake), 0);
   const pendingStake = pending.reduce((sum, b) => sum + b.stake, 0);
   const settledStake = settled.reduce((sum, b) => sum + b.stake, 0);
-  const currentBalance = bookmaker.startingBalance + realizedProfit;
+  const adjustmentsSum = getBalanceAdjustmentsForBookmaker(bookmakerId).reduce((sum, a) => sum + (Number.isFinite(a.amount) ? a.amount : 0), 0);
+  const currentBalance = bookmaker.startingBalance + realizedProfit + adjustmentsSum;
   const availableBalance = currentBalance - pendingStake;
   const potentialBalance = currentBalance + potentialProfit;
   return {
@@ -791,14 +886,34 @@ export function getBankrollTimeline(bookmakerId?: string): BankrollTimelinePoint
     .filter((b) => (bookmakerFilter ? b.bookmakerId === bookmakerFilter : true))
     .sort((a, b) => Date.parse(a.updatedAt || a.createdAt) - Date.parse(b.updatedAt || b.createdAt));
 
+  const adjustments = getBalanceAdjustments()
+    .filter((a) => (bookmakerFilter ? a.bookmakerId === bookmakerFilter : true))
+    .sort((a, b) => a.createdAt - b.createdAt);
+
+  type Event =
+    | { kind: "bet"; date: number; delta: number; label: string }
+    | { kind: "adjustment"; date: number; delta: number; label: string };
+
+  const events: Event[] = [];
+  for (const bet of settled) {
+    const d = Date.parse(bet.updatedAt || bet.createdAt);
+    const delta =
+      bet.status === "win" ? bet.returnAmount - bet.stake : bet.status === "loss" ? -bet.stake : 0;
+    events.push({ kind: "bet", date: d, delta, label: bet.updatedAt || bet.createdAt });
+  }
+  for (const a of adjustments) {
+    events.push({ kind: "adjustment", date: a.createdAt, delta: a.amount, label: new Date(a.createdAt).toISOString() });
+  }
+  events.sort((a, b) => a.date - b.date);
+
   const points: BankrollTimelinePoint[] = [];
   let balance = startingBalance;
   points.push({ date: "Start", balance });
-  for (const bet of settled) {
-    if (bet.status === "win") balance += bet.returnAmount - bet.stake;
-    else if (bet.status === "loss") balance -= bet.stake;
+  for (const e of events) {
+    if (!Number.isFinite(e.delta)) continue;
+    balance += e.delta;
     points.push({
-      date: bet.updatedAt || bet.createdAt,
+      date: e.label,
       balance,
     });
   }

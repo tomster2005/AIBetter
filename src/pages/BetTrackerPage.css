@@ -410,6 +410,78 @@
   padding: 0.8rem;
 }
 
+.bet-tracker-page__adjust-balance-btn {
+  margin-top: 0.55rem;
+  border: 1px solid #2563eb;
+  background: #fff;
+  color: #2563eb;
+  border-radius: 6px;
+  padding: 0.28rem 0.55rem;
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.bet-tracker-page__adjustments-details {
+  margin-top: 0.55rem;
+}
+
+.bet-tracker-page__adjustments-details > summary {
+  cursor: pointer;
+  color: #1d4ed8;
+  font-weight: 700;
+  font-size: 0.82rem;
+}
+
+.bet-tracker-page__adjustments-empty {
+  margin: 0.35rem 0 0;
+  font-size: 0.78rem;
+  color: #6b7280;
+}
+
+.bet-tracker-page__adjustments-list {
+  margin-top: 0.4rem;
+  display: grid;
+  gap: 0.25rem;
+}
+
+.bet-tracker-page__adjustment-row {
+  font-size: 0.82rem;
+  color: #111827;
+  display: flex;
+  gap: 0.35rem;
+  align-items: baseline;
+}
+
+.bet-tracker-page__adjustment-line {
+  font-weight: 700;
+}
+
+.bet-tracker-page__adjustment-note {
+  color: #6b7280;
+  font-size: 0.74rem;
+}
+
+.bet-tracker-page__adjust-balance-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.55);
+  display: grid;
+  place-items: center;
+  z-index: 100;
+  padding: 1rem;
+}
+
+.bet-tracker-page__adjust-balance-modal {
+  width: min(720px, 96vw);
+  max-height: 92vh;
+  overflow: auto;
+  background: #fff;
+  border-radius: 10px;
+  border: 1px solid #d1d5db;
+  padding: 0.8rem;
+}
+
 .bet-tracker-page__quick-add-head {
   display: flex;
   justify-content: space-between;

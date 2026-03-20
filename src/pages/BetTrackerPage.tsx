@@ -6,16 +6,20 @@ import {
   getAllBookmakerStats,
   getBankrollTimeline,
   getBookmakers,
+  getBalanceAdjustments,
   getUnitSize,
   getScoreBandAnalysis,
   setUnitSize,
   getTrackedBetStats,
   getTrackedBets,
+  adjustBalance,
   deleteTrackedBet,
   updateTrackedBetStatus,
   type BookmakerStats,
   type ManualTrackedSelectionInput,
   type ScoreBandAnalysisRow,
+  type BalanceAdjustment,
+  type BalanceAdjustmentType,
   type TrackedBetRecord,
   type TrackedBetStatus,
 } from "../services/betTrackerService.js";
@@ -29,6 +33,12 @@ function fmtMoney(v: number): string {
 function fmtSignedMoney(v: number): string {
   if (!Number.isFinite(v) || v === 0) return "£0.00";
   return `${v > 0 ? "+" : "-"}£${Math.abs(v).toFixed(2)}`;
+}
+
+function fmtAdjustmentLine(a: BalanceAdjustment): string {
+  const label = a.type === "deposit" ? "Deposit" : a.type === "withdrawal" ? "Withdrawal" : "Correction";
+  const sign = a.amount >= 0 ? "+" : "-";
+  return `${sign}£${Math.abs(a.amount).toFixed(2)} ${label}`;
 }
 
 function fmtDate(v: string): string {
@@ -279,6 +289,7 @@ export function BetTrackerPage() {
   const [startingBalance, setStartingBalance] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [bookmakers, setBookmakers] = useState<BookmakerStats[]>([]);
+  const [balanceAdjustments, setBalanceAdjustments] = useState<BalanceAdjustment[]>([]);
   const [bets, setBets] = useState<TrackedBetRecord[]>([]);
   const [selectedStatus, setSelectedStatus] = useState<"all" | TrackedBetStatus>("all");
   const [selectedBookmakerId, setSelectedBookmakerId] = useState<string>("all");
@@ -299,14 +310,28 @@ export function BetTrackerPage() {
   const quickAddModalRef = useRef<HTMLDivElement | null>(null);
   const quickAddBookmakerRef = useRef<HTMLSelectElement | null>(null);
 
+  const [adjustModalOpen, setAdjustModalOpen] = useState(false);
+  const [adjustBookmakerId, setAdjustBookmakerId] = useState<string | null>(null);
+  const [adjustType, setAdjustType] = useState<BalanceAdjustmentType>("deposit");
+  const [adjustAmount, setAdjustAmount] = useState<string>("");
+  const [adjustNote, setAdjustNote] = useState<string>("");
+  const [adjustError, setAdjustError] = useState<string | null>(null);
+  const adjustAmountRef = useRef<HTMLInputElement | null>(null);
+
   const refresh = useCallback(() => {
     setBookmakers(getAllBookmakerStats());
+    setBalanceAdjustments(getBalanceAdjustments());
     setBets(getTrackedBets());
   }, []);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    if (!adjustModalOpen) return;
+    adjustAmountRef.current?.focus();
+  }, [adjustModalOpen]);
   useEffect(() => {
     setUnitSizeInput(getUnitSize().toString());
   }, []);
@@ -318,6 +343,20 @@ export function BetTrackerPage() {
   );
   const scoreBands = useMemo<ScoreBandAnalysisRow[]>(() => getScoreBandAnalysis(), [bets]);
   const availableBookmakers = useMemo(() => getBookmakers(), [bookmakers]);
+  const adjustmentsByBookmakerId = useMemo(() => {
+    const m = new Map<string, BalanceAdjustment[]>();
+    for (const adj of balanceAdjustments) {
+      const arr = m.get(adj.bookmakerId);
+      if (arr) arr.push(adj);
+      else m.set(adj.bookmakerId, [adj]);
+    }
+    return m;
+  }, [balanceAdjustments]);
+
+  const getAdjustmentsForBookmaker = useCallback(
+    (bookmakerId: string) => adjustmentsByBookmakerId.get(bookmakerId) ?? [],
+    [adjustmentsByBookmakerId]
+  );
   const currentUnitSize = useMemo(() => {
     const n = Number(unitSizeInput);
     return Number.isFinite(n) && n > 0 ? n : getUnitSize();
@@ -398,6 +437,49 @@ export function BetTrackerPage() {
     setError(null);
     refresh();
   }, [name, startingBalance, refresh]);
+
+  const openAdjustBalance = useCallback((bookmakerId: string) => {
+    setAdjustBookmakerId(bookmakerId);
+    setAdjustType("deposit");
+    setAdjustAmount("");
+    setAdjustNote("");
+    setAdjustError(null);
+    setAdjustModalOpen(true);
+  }, []);
+
+  const closeAdjustBalance = useCallback(() => {
+    setAdjustModalOpen(false);
+    setAdjustBookmakerId(null);
+    setAdjustAmount("");
+    setAdjustNote("");
+    setAdjustError(null);
+  }, []);
+
+  const onConfirmAdjustBalance = useCallback(() => {
+    if (!adjustBookmakerId) return;
+    const n = Number(adjustAmount);
+    if (!Number.isFinite(n)) {
+      setAdjustError("Enter a valid adjustment amount.");
+      return;
+    }
+    const rounded = Math.round((n + Number.EPSILON) * 100) / 100;
+    if (rounded === 0) {
+      setAdjustError("Amount must not be 0.");
+      return;
+    }
+    const created = adjustBalance(adjustBookmakerId, {
+      amount: n,
+      type: adjustType,
+      note: adjustNote.trim() || undefined,
+    });
+    if (!created) {
+      setAdjustError("Adjustment could not be saved. Check the input and try again.");
+      return;
+    }
+    closeAdjustBalance();
+    refresh();
+    setMessage(`Balance adjusted: ${fmtAdjustmentLine(created)}`);
+  }, [adjustBookmakerId, adjustAmount, adjustType, adjustNote, closeAdjustBalance, refresh]);
 
   const onStatusChange = useCallback((id: string, status: TrackedBetStatus) => {
     updateTrackedBetStatus(id, status);
@@ -748,6 +830,28 @@ export function BetTrackerPage() {
                   Potential Balance: £{fmtMoney(b.potentialBalance)}
                 </p>
                 <p>Bets: {b.betCount} (settled {b.settledCount}, pending {b.pendingCount})</p>
+                <button
+                  type="button"
+                  className="bet-tracker-page__adjust-balance-btn"
+                  onClick={() => openAdjustBalance(b.bookmakerId)}
+                >
+                  Adjust Balance
+                </button>
+                <details className="bet-tracker-page__adjustments-details">
+                  <summary>Balance adjustments ({getAdjustmentsForBookmaker(b.bookmakerId).length})</summary>
+                  {getAdjustmentsForBookmaker(b.bookmakerId).length === 0 ? (
+                    <p className="bet-tracker-page__adjustments-empty">No adjustments yet.</p>
+                  ) : (
+                    <div className="bet-tracker-page__adjustments-list">
+                      {getAdjustmentsForBookmaker(b.bookmakerId).map((a) => (
+                        <div key={a.id} className="bet-tracker-page__adjustment-row">
+                          <span className="bet-tracker-page__adjustment-line">{fmtAdjustmentLine(a)}</span>
+                          {a.note ? <span className="bet-tracker-page__adjustment-note"> — {a.note}</span> : null}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </details>
               </article>
             ))}
           </div>
@@ -1186,6 +1290,49 @@ export function BetTrackerPage() {
             <div className="bet-tracker-page__quick-add-actions">
               <button type="button" className="secondary" onClick={onCloseQuickAdd}>Cancel</button>
               <button type="button" onClick={onSaveQuickAdd}>Save Bet</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {adjustModalOpen && (
+        <div className="bet-tracker-page__adjust-balance-overlay" role="dialog" aria-modal="true" aria-label="Adjust Balance">
+          <div className="bet-tracker-page__adjust-balance-modal">
+            <div className="bet-tracker-page__quick-add-head">
+              <h2>Adjust Balance</h2>
+              <button type="button" onClick={closeAdjustBalance}>Close</button>
+            </div>
+
+            <div className="bet-tracker-page__quick-add-grid">
+              <label>
+                Amount (GBP)
+                <input
+                  ref={adjustAmountRef}
+                  type="number"
+                  step={0.01}
+                  value={adjustAmount}
+                  onChange={(e) => setAdjustAmount(e.target.value)}
+                />
+              </label>
+              <label>
+                Adjustment Type
+                <select value={adjustType} onChange={(e) => setAdjustType(e.target.value as BalanceAdjustmentType)}>
+                  <option value="deposit">Deposit</option>
+                  <option value="withdrawal">Withdrawal</option>
+                  <option value="correction">Correction</option>
+                </select>
+              </label>
+              <label className="bet-tracker-page__quick-add-notes">
+                Note (optional)
+                <textarea rows={2} value={adjustNote} onChange={(e) => setAdjustNote(e.target.value)} placeholder="Optional note" />
+              </label>
+            </div>
+
+            {adjustError && <p className="bet-tracker-page__error-inline">{adjustError}</p>}
+
+            <div className="bet-tracker-page__quick-add-actions">
+              <button type="button" className="secondary" onClick={closeAdjustBalance}>Cancel</button>
+              <button type="button" onClick={onConfirmAdjustBalance}>Confirm Adjustment</button>
             </div>
           </div>
         </div>
