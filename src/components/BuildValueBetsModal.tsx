@@ -3,7 +3,7 @@
  * Reuses value-bet candidate pipeline and fixture odds team props.
  */
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import type { Fixture } from "../types/fixture.js";
 import type { ValueBetRow } from "./LineupModal.js";
 import {
@@ -16,6 +16,10 @@ import {
   type BuildEvidenceContext,
   type RecentStatsByNormalizedName,
 } from "../lib/valueBetBuilder.js";
+import { loadHeadToHeadContext } from "../services/headToHeadContextService.js";
+import { saveGeneratedCombosForFixture, getBetPerformanceSummary, resolveStoredCombosForFixture } from "../services/comboPerformanceService.js";
+import { fetchFixtureResolutionData } from "../services/comboResolutionDataService.js";
+import { addTrackedBet, getBookmakers, getBookmakerStats, getUnitSize, type TrackedBookmaker } from "../services/betTrackerService.js";
 import "./BuildValueBetsModal.css";
 
 function getApiOrigin(): string {
@@ -45,22 +49,101 @@ async function fetchFixtureOddsBookmakers(fixtureId: number): Promise<OddsBookma
   }
 }
 
-/** Fetch recent match-by-match stats for given player names. Returns map keyed by normalized name; empty on error. */
-async function fetchRecentPlayerStats(playerNames: string[]): Promise<RecentStatsByNormalizedName> {
-  const names = [...new Set(playerNames)].filter((n) => (n ?? "").trim() !== "");
-  if (names.length === 0) return {};
+/** Display string for combo EV% (ROI-style `comboEVPercent`). UI-only. */
+function formatComboEvPercentLabel(comboEVPercent: number): string {
+  const pct = comboEVPercent * 100;
+  if (pct > 0) return `+${pct.toFixed(1)}% EV`;
+  if (pct < 0) return `(−${Math.abs(pct).toFixed(1)}% EV)`;
+  return `0.0% EV`;
+}
+
+/**
+ * Fetch recent match-by-match stats from the API (Sportmonks-backed when player/team IDs are present).
+ * Map keyed by normalized player name (aligned with valueBetBuilder).
+ */
+async function fetchRecentPlayerStats(
+  playerRows: ValueBetRow[],
+  excludeFixtureId: number
+): Promise<RecentStatsByNormalizedName> {
+  const players: Array<{ playerName: string; playerId: number; teamId: number }> = [];
+  const seen = new Set<string>();
+  for (const r of playerRows) {
+    const key = (r.playerName || "").trim().toLowerCase().replace(/\s+/g, " ");
+    if (!key || seen.has(key)) continue;
+    const pid = r.sportmonksPlayerId;
+    const tid = r.sportmonksTeamId;
+    if (typeof pid !== "number" || typeof tid !== "number") continue;
+    if (!Number.isFinite(pid) || !Number.isFinite(tid)) continue;
+    seen.add(key);
+    players.push({ playerName: r.playerName, playerId: pid, teamId: tid });
+  }
+  if (players.length === 0) {
+    if (import.meta.env.DEV) {
+      console.log("[recent-stats request skipped] no valid sportmonks ids found", {
+        uniquePlayerRows: playerRows.length,
+      });
+    }
+    return {};
+  }
+
+  const playersPayload = { players, excludeFixtureId, limit: 10 };
+  if (import.meta.env.DEV) console.log("[recent-stats request]", playersPayload);
+
   try {
     const res = await fetch(getRecentPlayerStatsApiUrl(), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ playerNames: names }),
+      body: JSON.stringify(playersPayload),
     });
     if (!res.ok) return {};
     const data = (await res.json()) as RecentStatsByNormalizedName;
+    if (import.meta.env.DEV) console.log("[recent-stats response]", data);
     return data && typeof data === "object" ? data : {};
   } catch {
     return {};
   }
+}
+
+/** Group flat explanation lines into per-pick blocks (each ✍️ starts a new block). Skips legacy "---" rows if present. */
+function splitWhyLinesIntoLegBlocks(lines: readonly string[]): string[][] {
+  const out: string[][] = [];
+  let cur: string[] = [];
+  for (const line of lines) {
+    if (line === "---") continue;
+    if (line.startsWith("✍️")) {
+      if (cur.length) out.push(cur);
+      cur = [line];
+    } else if (cur.length === 0) {
+      cur = [line];
+    } else {
+      cur.push(line);
+    }
+  }
+  if (cur.length) out.push(cur);
+  return out;
+}
+
+/** Classify body lines under a ✍️ header for presentation only (does not alter copy). */
+function classifyWhyBodyLine(line: string): "stats" | "context" | "line" | "spacer" {
+  if (line === "") return "spacer";
+  const t = line.trim();
+  /** Comma-separated ints only (no spaces) — matches tipster series output. */
+  const isStatsRow = /^(\d+,)*\d+$/.test(t);
+  if (isStatsRow) return "stats";
+  if (/^Recent\b.*:$/.test(t)) return "line";
+  const low = t.toLowerCase();
+  const isContextLike =
+    low.startsWith("opponent profile") ||
+    low.startsWith("role and positioning") ||
+    low.startsWith("shot quality") ||
+    low.startsWith("role and minutes") ||
+    low.includes("opponent draws") ||
+    low.includes("opponent commits") ||
+    low.includes("matchup") ||
+    low.includes("attacking matchup") ||
+    (low.includes("opponent") && t.length > 12);
+  if (isContextLike) return "context";
+  return "line";
 }
 
 export interface BuildValueBetsModalProps {
@@ -89,11 +172,67 @@ export function BuildValueBetsModal({
   const [targetOdds, setTargetOdds] = useState("");
   const [building, setBuilding] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [trackerError, setTrackerError] = useState<string | null>(null);
+  const [trackerSuccess, setTrackerSuccess] = useState<string | null>(null);
+  const [bookmakers, setBookmakers] = useState<TrackedBookmaker[]>([]);
+  const [trackerOpenIdx, setTrackerOpenIdx] = useState<number | null>(null);
+  const [trackerBookmakerId, setTrackerBookmakerId] = useState<string>("");
+  const [trackerStake, setTrackerStake] = useState<string>("");
+  const [trackerOddsTaken, setTrackerOddsTaken] = useState<string>("");
+  const [unitSize, setUnitSizeState] = useState<number>(2);
+  const [trackerAvailableBalance, setTrackerAvailableBalance] = useState<number | null>(null);
+  const [trackerStakeTouched, setTrackerStakeTouched] = useState(false);
   const [result, setResult] = useState<{
     combos: BuildCombo[];
     candidateCount: number;
     legCount: number;
   } | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const current = getBookmakers();
+    setUnitSizeState(getUnitSize());
+    setBookmakers(current);
+    if (current.length > 0) {
+      setTrackerBookmakerId((prev) => (prev && current.some((b) => b.id === prev) ? prev : current[0]!.id));
+    } else {
+      setTrackerBookmakerId("");
+    }
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || fixture == null) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const resolutionInput = await fetchFixtureResolutionData(fixture.id);
+        if (cancelled) return;
+        const { resolved } = resolveStoredCombosForFixture(fixture.id, {
+          isFinished: resolutionInput.isFinished,
+          playerResults: resolutionInput.playerResults,
+          playerStatsById: resolutionInput.playerStatsById,
+          teamLegResultsByLabel: {},
+        });
+        if (import.meta.env.DEV) {
+          const perf = getBetPerformanceSummary();
+          console.log("[bet-performance update]", {
+            fixtureId: fixture.id,
+            resolvedThisRun: resolved,
+            totalResolved: perf.wins + perf.losses,
+            winRate: Number((perf.winRate * 100).toFixed(1)),
+            avgScoreWin: Number(perf.avgScoreWin.toFixed(2)),
+            avgScoreLoss: Number(perf.avgScoreLoss.toFixed(2)),
+            profit: Number(perf.profit.toFixed(2)),
+          });
+        }
+      } catch (err) {
+        if (import.meta.env.DEV) console.warn("[bet-performance update] auto-resolution skipped", err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, fixture?.id]);
 
   const handleBuild = useCallback(async () => {
     if (fixture == null) return;
@@ -106,18 +245,32 @@ export function BuildValueBetsModal({
     setResult(null);
     setBuilding(true);
     try {
-      const [playerRows, bookmakers] = await Promise.all([
+      const [playerRows, bookmakers, h2h] = await Promise.all([
         getCandidates(),
         fetchFixtureOddsBookmakers(fixture.id),
+        loadHeadToHeadContext(fixture.homeTeam.id, fixture.awayTeam.id),
       ]);
-      const uniqueNames = [...new Set(playerRows.map((r) => r.playerName).filter((n) => (n ?? "").trim() !== ""))];
-      const recentStatsByNormalizedName = await fetchRecentPlayerStats(uniqueNames);
+      const recentStatsByNormalizedName = await fetchRecentPlayerStats(playerRows, fixture.id);
       const fromRows = buildEvidenceContextFromRows(playerRows, fixture, recentStatsByNormalizedName);
       const evidenceContext: BuildEvidenceContext | null = {
         ...fromRows,
         ...evidenceContextProp,
         playerRecentStats: evidenceContextProp?.playerRecentStats ?? fromRows.playerRecentStats,
       };
+      const headToHeadContext = h2h?.context ?? null;
+      if (import.meta.env.DEV) {
+        console.log("[build-value-bets] headToHeadContext", {
+          fixtureId: fixture.id,
+          homeTeamId: fixture.homeTeam.id,
+          awayTeamId: fixture.awayTeam.id,
+          hasContext: headToHeadContext != null,
+          sampleSize: headToHeadContext?.sampleSize ?? 0,
+          averageTotalGoals: headToHeadContext?.averageTotalGoals ?? null,
+          averageTotalCorners: headToHeadContext?.averageTotalCorners ?? null,
+          bttsRate: headToHeadContext?.bttsRate ?? null,
+          drawRate: headToHeadContext?.drawRate ?? null,
+        });
+      }
       if (import.meta.env.DEV) {
         const n = evidenceContext?.playerRecentStats?.length ?? 0;
         const sample = evidenceContext?.playerRecentStats?.slice(0, 5).map((e) => ({
@@ -136,8 +289,20 @@ export function BuildValueBetsModal({
         playerRows as Parameters<typeof buildValueBetCombos>[0],
         bookmakers,
         target,
-        { maxCombos: 30, fixtureCornersContext, lineupContext, evidenceContext }
+        { maxCombos: 30, fixtureCornersContext, lineupContext, evidenceContext, headToHeadContext }
       );
+      const stored = saveGeneratedCombosForFixture(fixture.id, combos, Math.max(1, combos.length));
+      if (import.meta.env.DEV) {
+        const perf = getBetPerformanceSummary();
+        console.log("[bet-performance]", {
+          ...perf,
+          savedFromBuild: stored.length,
+          avgScoreWin: Number(perf.avgScoreWin.toFixed(2)),
+          avgScoreLoss: Number(perf.avgScoreLoss.toFixed(2)),
+          winRate: Number((perf.winRate * 100).toFixed(1)),
+          profit: Number(perf.profit.toFixed(2)),
+        });
+      }
       setResult({ combos, candidateCount, legCount });
       if (combos.length === 0 && import.meta.env.DEV) {
         console.log("[build-value-bets] no combos; candidateCount", candidateCount, "legCount", legCount);
@@ -153,15 +318,96 @@ export function BuildValueBetsModal({
   const handleClose = useCallback(() => {
     setTargetOdds("");
     setError(null);
+    setTrackerError(null);
+    setTrackerSuccess(null);
+    setTrackerOpenIdx(null);
+    setTrackerStake("");
+    setTrackerOddsTaken("");
+    setTrackerStakeTouched(false);
+    setTrackerAvailableBalance(null);
     setResult(null);
     onClose();
   }, [onClose]);
+
+  const openTrackerPanel = useCallback((idx: number, combo: BuildCombo) => {
+    const current = getBookmakers();
+    setBookmakers(current);
+    setTrackerError(null);
+    setTrackerSuccess(null);
+    setTrackerOpenIdx(idx);
+    setTrackerOddsTaken(combo.combinedOdds.toFixed(2));
+    setUnitSizeState(getUnitSize());
+    if (current.length > 0) {
+      const firstId = current[0]!.id;
+      setTrackerBookmakerId(firstId);
+      const firstStats = getBookmakerStats(firstId);
+      setTrackerAvailableBalance(firstStats?.availableBalance ?? null);
+      setTrackerStake("");
+      setTrackerStakeTouched(false);
+    } else {
+      setTrackerBookmakerId("");
+      setTrackerAvailableBalance(null);
+      setTrackerStake("");
+      setTrackerStakeTouched(false);
+    }
+  }, []);
+
+  const handleAddTrackedBet = useCallback((combo: BuildCombo) => {
+    if (!fixture) return;
+    if (bookmakers.length === 0) {
+      setTrackerError("Add a bookmaker first in Bet Tracker.");
+      return;
+    }
+    const stake = Number(trackerStake);
+    const oddsTaken = Number(trackerOddsTaken);
+    const availableBalance = trackerAvailableBalance;
+    if (!trackerBookmakerId) {
+      setTrackerError("Select a bookmaker.");
+      return;
+    }
+    if (!Number.isFinite(stake) || stake <= 0) {
+      setTrackerError("Enter a valid stake.");
+      return;
+    }
+    if (availableBalance != null && Number.isFinite(availableBalance) && stake > availableBalance) {
+      setTrackerError(`Stake exceeds available balance (£${availableBalance.toFixed(2)}).`);
+      return;
+    }
+    if (!Number.isFinite(oddsTaken) || oddsTaken <= 1) {
+      setTrackerError("Odds taken must be greater than 1.");
+      return;
+    }
+    const record = addTrackedBet({
+      bookmakerId: trackerBookmakerId,
+      stake,
+      oddsTaken,
+      status: "pending",
+      fixtureId: fixture.id,
+      matchLabel: `${fixture.homeTeam?.name ?? "Home"} v ${fixture.awayTeam?.name ?? "Away"}`,
+      kickoffTime: fixture.startingAt ?? "-",
+      leagueName: fixture.league?.name ?? "-",
+      combo,
+    });
+    if (!record) {
+      setTrackerError("Could not add bet to tracker.");
+      return;
+    }
+    setTrackerSuccess("Added to Bet Tracker.");
+    setTrackerError(null);
+    setTrackerOpenIdx(null);
+  }, [fixture, bookmakers.length, trackerBookmakerId, trackerStake, trackerOddsTaken]);
 
   if (!open) return null;
 
   const fixtureLabel = fixture
     ? `${fixture.homeTeam?.name ?? "Home"} v ${fixture.awayTeam?.name ?? "Away"}`
     : "";
+  const parsedStake = Number(trackerStake);
+  const stakeExceedsAvailable =
+    trackerAvailableBalance != null &&
+    Number.isFinite(trackerAvailableBalance) &&
+    Number.isFinite(parsedStake) &&
+    parsedStake > trackerAvailableBalance;
 
   return (
     <div
@@ -220,6 +466,9 @@ export function BuildValueBetsModal({
           )}
           {result && (
             <div className="build-value-bets-modal__results">
+              {result.combos.length > 0 && (
+                <p className="build-value-bets-modal__results-ev-note">Ranked by Expected Value (EV)</p>
+              )}
               <p className="build-value-bets-modal__results-meta">
                 {result.combos.length} combo{result.combos.length !== 1 ? "s" : ""} from {result.legCount} candidate leg
                 {result.legCount !== 1 ? "s" : ""} ({result.candidateCount} player rows).
@@ -241,7 +490,130 @@ export function BuildValueBetsModal({
                             ? "at target"
                             : `±${combo.distanceFromTarget.toFixed(2)}`}
                         </span>
+                        <span
+                          className={`build-value-bets-modal__combo-ev ${
+                            combo.comboEVPercent > 0 ? "why-ev-positive" : "why-ev-neutral"
+                          }`}
+                        >
+                          {formatComboEvPercentLabel(combo.comboEVPercent)}
+                        </span>
+                        <span
+                          className="build-value-bets-modal__combo-kelly"
+                          title="Suggested stake (½ Kelly)"
+                        >
+                          {` | ${((combo.kellyStakePct ?? 0) * 100).toFixed(1)}% stake`}
+                        </span>
+                        <button
+                          type="button"
+                          className="build-value-bets-modal__tracker-add-btn"
+                          onClick={() => openTrackerPanel(i, combo)}
+                          title="Add this bet to Bet Tracker"
+                          aria-label="Add this bet to Bet Tracker"
+                        >
+                          +
+                        </button>
                       </div>
+                      {trackerOpenIdx === i && (
+                        <div className="build-value-bets-modal__tracker-panel">
+                          {bookmakers.length === 0 ? (
+                            <p className="build-value-bets-modal__tracker-note">
+                              No bookmakers found. Add one in the Bet Tracker tab first.
+                            </p>
+                          ) : (
+                            <>
+                              <label>
+                                Bookmaker
+                                <select
+                                  value={trackerBookmakerId}
+                                  onChange={(e) => {
+                                    const id = e.target.value;
+                                    setTrackerBookmakerId(id);
+                                    const stats = getBookmakerStats(id);
+                                    setTrackerAvailableBalance(stats?.availableBalance ?? null);
+                                  }}
+                                >
+                                  {bookmakers.map((b) => (
+                                    <option key={b.id} value={b.id}>
+                                      {b.name}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                              <label>
+                                Stake
+                                <input
+                                  type="number"
+                                  min={0}
+                                  step={0.01}
+                                  value={trackerStake}
+                                  onChange={(e) => {
+                                    setTrackerStake(e.target.value);
+                                    setTrackerStakeTouched(true);
+                                  }}
+                                  placeholder="0.00"
+                                />
+                              </label>
+                              <label>
+                                Odds taken
+                                <input
+                                  type="number"
+                                  min={1.01}
+                                  step={0.01}
+                                  value={trackerOddsTaken}
+                                  onChange={(e) => setTrackerOddsTaken(e.target.value)}
+                                  placeholder="e.g. 3.20"
+                                />
+                              </label>
+                              <p className="build-value-bets-modal__tracker-available">
+                                Available: £
+                                {trackerAvailableBalance != null && Number.isFinite(trackerAvailableBalance)
+                                  ? trackerAvailableBalance.toFixed(2)
+                                  : "0.00"}
+                              </p>
+                              {stakeExceedsAvailable && (
+                                <p className="build-value-bets-modal__tracker-balance-error">
+                                  Stake exceeds available balance (£{trackerAvailableBalance?.toFixed(2)}).
+                                </p>
+                              )}
+                              <p className="build-value-bets-modal__tracker-return">
+                                Return: £
+                                {(() => {
+                                  const s = Number(trackerStake);
+                                  const o = Number(trackerOddsTaken);
+                                  if (!Number.isFinite(s) || !Number.isFinite(o) || s <= 0 || o <= 0) return "0.00";
+                                  return (s * o).toFixed(2);
+                                })()}
+                              </p>
+                              <p className="build-value-bets-modal__tracker-suggested">
+                                Stake Units:{" "}
+                                {(() => {
+                                  const s = Number(trackerStake);
+                                  if (!Number.isFinite(s) || s <= 0 || unitSize <= 0) return "0.00u";
+                                  return `${(s / unitSize).toFixed(2)}u`;
+                                })()}
+                              </p>
+                              <p className="build-value-bets-modal__tracker-suggested">
+                                Return Units:{" "}
+                                {(() => {
+                                  const s = Number(trackerStake);
+                                  const o = Number(trackerOddsTaken);
+                                  if (!Number.isFinite(s) || !Number.isFinite(o) || s <= 0 || o <= 0 || unitSize <= 0) return "0.00u";
+                                  return `${((s * o) / unitSize).toFixed(2)}u`;
+                                })()}
+                              </p>
+                              {trackerStakeTouched && <p className="build-value-bets-modal__tracker-override">Manual override</p>}
+                              <button
+                                type="button"
+                                className="build-value-bets-modal__tracker-save-btn"
+                                onClick={() => handleAddTrackedBet(combo)}
+                                disabled={stakeExceedsAvailable}
+                              >
+                                Save to tracker
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      )}
                       <ul className="build-value-bets-modal__leg-list">
                         {combo.legs.map((leg) => (
                           <li key={leg.id} className="build-value-bets-modal__leg">
@@ -253,20 +625,47 @@ export function BuildValueBetsModal({
                           </li>
                         ))}
                       </ul>
-                      {combo.explanation?.lines?.length > 0 && (
+                      {combo.explanation?.lines?.some((x) => x.length > 0) && (
                         <div className="build-value-bets-modal__why">
                           <h4 className="build-value-bets-modal__why-title">Why this build</h4>
-                          <ul className="build-value-bets-modal__why-list">
-                            {combo.explanation.lines.map((line, j) => (
-                              <li key={j} className="build-value-bets-modal__why-line">{line}</li>
-                            ))}
-                          </ul>
+                          <div className="build-value-bets-modal__why-blocks">
+                            {splitWhyLinesIntoLegBlocks(combo.explanation.lines).map((block, bi) => {
+                              const headerLine = block[0]?.startsWith("✍️") ? block[0] : null;
+                              const bodyLines = headerLine != null ? block.slice(1) : block;
+                              return (
+                                <div key={bi} className="why-leg-block">
+                                  {headerLine != null && (
+                                    <div className="why-leg-header">{headerLine}</div>
+                                  )}
+                                  {bodyLines.map((line, li) => {
+                                    const kind =
+                                      headerLine != null ? classifyWhyBodyLine(line) : "line";
+                                    const lineClass =
+                                      kind === "stats"
+                                        ? "why-leg-stats"
+                                        : kind === "context"
+                                          ? "why-leg-context"
+                                          : kind === "spacer"
+                                            ? "why-leg-spacer"
+                                            : "why-leg-line";
+                                    return (
+                                      <div key={li} className={lineClass}>
+                                        {line}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              );
+                            })}
+                          </div>
                         </div>
                       )}
                     </li>
                   ))}
                 </ul>
               )}
+              {trackerError && <p className="build-value-bets-modal__error">{trackerError}</p>}
+              {trackerSuccess && <p className="build-value-bets-modal__tracker-success">{trackerSuccess}</p>}
             </div>
           )}
         </div>

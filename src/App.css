@@ -42,6 +42,7 @@
 }
 
 .app-main .calendar-page,
-.app-main .odds-page {
+.app-main .bet-tracker-page,
+.app-main .bet-history {
   min-height: 100%;
 }

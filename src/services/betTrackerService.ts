@@ -1,0 +1,846 @@
+import type { BuildCombo, BuildLeg } from "../lib/valueBetBuilder.js";
+
+const BOOKMAKERS_STORAGE_KEY = "betTracker:bookmakers:v1";
+const TRACKED_BETS_STORAGE_KEY = "betTracker:trackedBets:v1";
+const UNIT_SIZE_STORAGE_KEY = "bet_tracker_unit_size";
+
+export type TrackedBetStatus = "pending" | "win" | "loss";
+export type TrackedBetSourceType = "valueBetBuilder" | "manualMulti";
+
+export interface TrackedBookmaker {
+  id: string;
+  name: string;
+  startingBalance: number;
+  createdAt: string;
+}
+
+export interface TrackedBetLeg {
+  legId?: string;
+  type: BuildLeg["type"];
+  marketName: string;
+  marketFamily: string;
+  label: string;
+  playerName?: string;
+  matchLabel?: string;
+  leagueName?: string;
+  kickoffTime?: string;
+  line: number;
+  outcome: BuildLeg["outcome"];
+  odds?: number;
+  bookmakerName?: string;
+  /** Per-leg notes from Quick Add (optional); kept separate from `label`. */
+  legNotes?: string;
+}
+
+export interface TrackedBetRecord {
+  id: string;
+  sourceType: TrackedBetSourceType;
+  createdAt: string;
+  updatedAt: string;
+  bookmakerId: string;
+  bookmakerName: string;
+  stake: number;
+  unitSizeAtBet?: number;
+  stakeUnits?: number;
+  oddsTaken: number;
+  returnAmount: number;
+  returnUnits?: number;
+  profitUnits?: number;
+  status: TrackedBetStatus;
+  fixtureId?: number;
+  matchLabel: string;
+  kickoffTime: string;
+  leagueName: string;
+  legs: TrackedBetLeg[];
+  notes?: string;
+  sourceMeta?: {
+    modelScore?: number;
+    normalizedScore?: number;
+  };
+}
+
+export interface BookmakerStats {
+  bookmakerId: string;
+  bookmakerName: string;
+  startingBalance: number;
+  currentBalance: number;
+  availableBalance: number;
+  realizedProfit: number;
+  totalUnitsProfit: number;
+  potentialProfit: number;
+  potentialBalance: number;
+  pendingStake: number;
+  betCount: number;
+  settledCount: number;
+  pendingCount: number;
+  roi: number;
+}
+
+export interface TrackedBetStats {
+  totalBets: number;
+  settledBets: number;
+  pendingBets: number;
+  wins: number;
+  losses: number;
+  totalProfit: number;
+  roi: number;
+}
+
+export interface ScoreBandAnalysisRow {
+  label: string;
+  total: number;
+  wins: number;
+  losses: number;
+  winRate: number;
+  profit: number;
+}
+
+export interface BankrollTimelinePoint {
+  date: string;
+  balance: number;
+}
+
+function canUseStorage(): boolean {
+  return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
+}
+
+function read<T>(key: string): T[] {
+  if (!canUseStorage()) return [];
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? (parsed as T[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function write<T>(key: string, value: T[]): void {
+  if (!canUseStorage()) return;
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // ignore quota errors
+  }
+}
+
+function normalizeText(value: unknown): string {
+  return String(value ?? "").trim();
+}
+
+function toNumber(value: unknown, fallback = 0): number {
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function sanitizeBookmaker(value: unknown): TrackedBookmaker | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Partial<TrackedBookmaker>;
+  const id = normalizeText(raw.id);
+  const name = normalizeText(raw.name);
+  if (!id || !name) return null;
+  return {
+    id,
+    name,
+    startingBalance: toNumber(raw.startingBalance, 0),
+    createdAt: normalizeText(raw.createdAt) || new Date(0).toISOString(),
+  };
+}
+
+function sanitizeTrackedLeg(value: unknown): TrackedBetLeg | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Partial<TrackedBetLeg>;
+  const type = raw.type === "player" || raw.type === "team" ? raw.type : null;
+  const marketName = normalizeText(raw.marketName) || "Unknown market";
+  const marketFamily = normalizeText(raw.marketFamily) || "unknown";
+  const label = normalizeText(raw.label) || marketName;
+  const outcome = raw.outcome;
+  const validOutcome =
+    outcome === "Over" || outcome === "Under" || outcome === "Home" || outcome === "Draw" || outcome === "Away" || outcome === "Yes" || outcome === "No";
+  if (!type || !validOutcome) return null;
+  return {
+    legId: normalizeText(raw.legId) || undefined,
+    type,
+    marketName,
+    marketFamily,
+    label,
+    playerName: normalizeText(raw.playerName) || undefined,
+    matchLabel: normalizeText(raw.matchLabel) || undefined,
+    leagueName: normalizeText(raw.leagueName) || undefined,
+    kickoffTime: normalizeText(raw.kickoffTime) || undefined,
+    line: toNumber(raw.line, 0),
+    outcome,
+    odds: Number.isFinite(raw.odds as number) ? (raw.odds as number) : undefined,
+    bookmakerName: normalizeText(raw.bookmakerName) || undefined,
+    legNotes: normalizeText(raw.legNotes) || undefined,
+  };
+}
+
+function sanitizeTrackedBet(value: unknown): TrackedBetRecord | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Partial<TrackedBetRecord>;
+  const status: TrackedBetStatus = raw.status === "win" || raw.status === "loss" ? raw.status : "pending";
+  const rawLegs = Array.isArray(raw.legs) ? raw.legs : [];
+  const legs = rawLegs.map(sanitizeTrackedLeg).filter((l): l is TrackedBetLeg => l != null);
+  const droppedLegCount = rawLegs.length - legs.length;
+  const id = normalizeText(raw.id);
+  if (!id) return null;
+  if (droppedLegCount > 0 && import.meta.env.DEV) {
+    console.warn("[bet-tracker sanitize]", {
+      message: "Dropped invalid legs during bet load",
+      betId: id,
+      droppedLegCount,
+      originalLegCount: rawLegs.length,
+      keptLegCount: legs.length,
+    });
+  }
+  return {
+    id,
+    sourceType: raw.sourceType === "manualMulti" ? "manualMulti" : "valueBetBuilder",
+    createdAt: normalizeText(raw.createdAt) || new Date(0).toISOString(),
+    updatedAt: normalizeText(raw.updatedAt) || normalizeText(raw.createdAt) || new Date(0).toISOString(),
+    bookmakerId: normalizeText(raw.bookmakerId),
+    bookmakerName: normalizeText(raw.bookmakerName) || "Unknown bookmaker",
+    stake: Math.max(0, toNumber(raw.stake, 0)),
+    unitSizeAtBet: Number.isFinite(raw.unitSizeAtBet as number) && toNumber(raw.unitSizeAtBet, 0) > 0 ? toNumber(raw.unitSizeAtBet, 0) : undefined,
+    stakeUnits: Number.isFinite(raw.stakeUnits as number) ? Math.max(0, toNumber(raw.stakeUnits, 0)) : undefined,
+    oddsTaken: Math.max(0, toNumber(raw.oddsTaken, 0)),
+    returnAmount: Math.max(0, toNumber(raw.returnAmount, 0)),
+    returnUnits: Number.isFinite(raw.returnUnits as number) ? Math.max(0, toNumber(raw.returnUnits, 0)) : undefined,
+    profitUnits: Number.isFinite(raw.profitUnits as number) ? toNumber(raw.profitUnits, 0) : undefined,
+    status,
+    fixtureId: Number.isFinite(raw.fixtureId as number) ? (raw.fixtureId as number) : undefined,
+    matchLabel: normalizeText(raw.matchLabel) || "Unknown match",
+    kickoffTime: normalizeText(raw.kickoffTime) || "-",
+    leagueName: normalizeText(raw.leagueName) || "-",
+    legs,
+    notes: normalizeText(raw.notes) || undefined,
+    sourceMeta: raw.sourceMeta && typeof raw.sourceMeta === "object"
+      ? {
+          modelScore: Number.isFinite((raw.sourceMeta as { modelScore?: number }).modelScore)
+            ? (raw.sourceMeta as { modelScore?: number }).modelScore
+            : undefined,
+          normalizedScore: Number.isFinite((raw.sourceMeta as { normalizedScore?: number }).normalizedScore)
+            ? (raw.sourceMeta as { normalizedScore?: number }).normalizedScore
+            : undefined,
+        }
+      : undefined,
+  };
+}
+
+function repairUnits(record: TrackedBetRecord): TrackedBetRecord {
+  const hasUnitSizeAtBet = Number.isFinite(record.unitSizeAtBet as number) && (record.unitSizeAtBet as number) > 0;
+  const inferredUnitSize =
+    record.stake > 0 && Number.isFinite(record.stakeUnits as number) && (record.stakeUnits as number) > 0
+      ? record.stake / (record.stakeUnits as number)
+      : undefined;
+  const canonicalUnitSize = hasUnitSizeAtBet
+    ? (record.unitSizeAtBet as number)
+    : inferredUnitSize && Number.isFinite(inferredUnitSize) && inferredUnitSize > 0
+      ? inferredUnitSize
+      : undefined;
+
+  const stakeUnits =
+    Number.isFinite(record.stakeUnits as number) && (record.stakeUnits as number) >= 0
+      ? (record.stakeUnits as number)
+      : canonicalUnitSize && canonicalUnitSize > 0
+        ? record.stake / canonicalUnitSize
+        : undefined;
+  const returnUnits =
+    Number.isFinite(record.returnUnits as number) && (record.returnUnits as number) >= 0
+      ? (record.returnUnits as number)
+      : canonicalUnitSize && canonicalUnitSize > 0
+        ? record.returnAmount / canonicalUnitSize
+        : undefined;
+  const profitUnits =
+    Number.isFinite(record.profitUnits as number)
+      ? (record.profitUnits as number)
+      : (() => {
+          if (record.status === "pending") return 0;
+          if (record.status === "loss") return stakeUnits != null ? -stakeUnits : undefined;
+          if (record.status === "win") {
+            if (returnUnits != null && stakeUnits != null) return returnUnits - stakeUnits;
+          }
+          return undefined;
+        })();
+
+  const next: TrackedBetRecord = {
+    ...record,
+    unitSizeAtBet: canonicalUnitSize != null && canonicalUnitSize > 0 ? Number(canonicalUnitSize.toFixed(6)) : record.unitSizeAtBet,
+    stakeUnits: stakeUnits != null ? Number(stakeUnits.toFixed(4)) : record.stakeUnits,
+    returnUnits: returnUnits != null ? Number(returnUnits.toFixed(4)) : record.returnUnits,
+    profitUnits: profitUnits != null ? Number(profitUnits.toFixed(4)) : record.profitUnits,
+  };
+
+  const repaired =
+    next.unitSizeAtBet !== record.unitSizeAtBet ||
+    next.stakeUnits !== record.stakeUnits ||
+    next.returnUnits !== record.returnUnits ||
+    next.profitUnits !== record.profitUnits;
+  if (repaired && import.meta.env.DEV) {
+    console.warn("[bet-tracker repairUnits] repaired unit values", {
+      betId: next.id,
+      before: {
+        unitSizeAtBet: record.unitSizeAtBet,
+        stakeUnits: record.stakeUnits,
+        returnUnits: record.returnUnits,
+        profitUnits: record.profitUnits,
+      },
+      after: {
+        unitSizeAtBet: next.unitSizeAtBet,
+        stakeUnits: next.stakeUnits,
+        returnUnits: next.returnUnits,
+        profitUnits: next.profitUnits,
+      },
+      status: next.status,
+      stake: next.stake,
+      returnAmount: next.returnAmount,
+    });
+  }
+  return next;
+}
+
+export function getUnitSize(): number {
+  if (!canUseStorage()) return 2;
+  try {
+    const raw = window.localStorage.getItem(UNIT_SIZE_STORAGE_KEY);
+    const n = raw == null ? NaN : Number(raw);
+    if (Number.isFinite(n) && n > 0) return n;
+    return 2;
+  } catch {
+    return 2;
+  }
+}
+
+export function setUnitSize(value: number): number {
+  const safe = Number.isFinite(value) && value > 0 ? value : 2;
+  if (!canUseStorage()) return safe;
+  try {
+    window.localStorage.setItem(UNIT_SIZE_STORAGE_KEY, String(safe));
+  } catch {
+    // ignore
+  }
+  return safe;
+}
+
+function readBookmakers(): TrackedBookmaker[] {
+  return read<TrackedBookmaker>(BOOKMAKERS_STORAGE_KEY)
+    .map(sanitizeBookmaker)
+    .filter((b): b is TrackedBookmaker => b != null);
+}
+
+function writeBookmakers(value: TrackedBookmaker[]): void {
+  write(BOOKMAKERS_STORAGE_KEY, value);
+}
+
+function readTrackedBets(): TrackedBetRecord[] {
+  const sanitized = read<TrackedBetRecord>(TRACKED_BETS_STORAGE_KEY)
+    .map(sanitizeTrackedBet)
+    .filter((b): b is TrackedBetRecord => b != null);
+  let repairedAny = false;
+  const repaired = sanitized.map((b) => {
+    const next = repairUnits(b);
+    if (
+      next.unitSizeAtBet !== b.unitSizeAtBet ||
+      next.stakeUnits !== b.stakeUnits ||
+      next.returnUnits !== b.returnUnits ||
+      next.profitUnits !== b.profitUnits
+    ) {
+      repairedAny = true;
+    }
+    return next;
+  });
+  if (repairedAny) {
+    writeTrackedBets(repaired);
+  }
+  return repaired.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+}
+
+function writeTrackedBets(value: TrackedBetRecord[]): void {
+  write(TRACKED_BETS_STORAGE_KEY, value);
+}
+
+function toTrackedLeg(leg: BuildLeg): TrackedBetLeg {
+  return {
+    legId: leg.id,
+    type: leg.type,
+    marketName: leg.marketName,
+    marketFamily: leg.marketFamily,
+    label: leg.label,
+    playerName: leg.playerName,
+    line: leg.line,
+    outcome: leg.outcome,
+    odds: leg.odds,
+    bookmakerName: leg.bookmakerName,
+  };
+}
+
+/** Same rules as `toManualTrackedLeg` — used for user-facing save diagnostics. */
+export function manualLegRejectReason(
+  sel: ManualTrackedSelectionInput
+): { field: "matchLabel" | "marketName" | "selectionLabel" | "outcome"; message: string } | null {
+  const matchLabel = normalizeText(sel.matchLabel);
+  const marketName = normalizeText(sel.marketName);
+  const selectionLabel = normalizeText(sel.selectionLabel);
+  const outcome = sel.outcome;
+  const normalizedOutcome = normalizeText(outcome);
+  const validOutcome =
+    outcome === "Over" || outcome === "Under" || outcome === "Home" || outcome === "Draw" || outcome === "Away" || outcome === "Yes" || outcome === "No";
+  let error: { field: "matchLabel" | "marketName" | "selectionLabel" | "outcome"; message: string } | null = null;
+  if (!matchLabel) error = { field: "matchLabel", message: "Match is required." };
+  if (!marketName) error = { field: "marketName", message: "Market is required." };
+  if (!selectionLabel) error = { field: "selectionLabel", message: "Selection is required." };
+  if (!normalizedOutcome || normalizedOutcome.toLowerCase() === "none") error = { field: "outcome", message: "Outcome is required." };
+  else if (!validOutcome) error = { field: "outcome", message: "Invalid outcome selected." };
+  return error;
+}
+
+function toManualTrackedLeg(sel: ManualTrackedSelectionInput, legId: string): TrackedBetLeg | null {
+  if (manualLegRejectReason(sel)) return null;
+  const matchLabel = normalizeText(sel.matchLabel);
+  const marketName = normalizeText(sel.marketName);
+  const selectionLabel = normalizeText(sel.selectionLabel);
+  const playerName = normalizeText(sel.playerName) || undefined;
+  const line = Number.isFinite(sel.line as number) ? (sel.line as number) : 0;
+  const outcome = sel.outcome as BuildLeg["outcome"];
+  return {
+    legId,
+    type: "team",
+    marketName,
+    marketFamily: `manual:${marketName.toLowerCase().replace(/\s+/g, "-")}`,
+    label: playerName ? `${selectionLabel} (${playerName})` : selectionLabel,
+    playerName,
+    matchLabel,
+    leagueName: normalizeText(sel.leagueName) || undefined,
+    kickoffTime: normalizeText(sel.kickoffTime) || undefined,
+    line,
+    outcome,
+    odds: Number.isFinite(sel.odds as number) ? (sel.odds as number) : undefined,
+    legNotes: normalizeText(sel.legNotes) || undefined,
+  };
+}
+
+function getSettledProfit(record: TrackedBetRecord): number {
+  if (record.status === "win") return record.returnAmount - record.stake;
+  if (record.status === "loss") return -record.stake;
+  return 0;
+}
+
+export function getBookmakers(): TrackedBookmaker[] {
+  return readBookmakers();
+}
+
+export function addBookmaker(name: string, startingBalance: number): TrackedBookmaker | null {
+  const cleanName = normalizeText(name);
+  if (!cleanName) return null;
+  const balance = Math.max(0, toNumber(startingBalance, 0));
+  const existing = readBookmakers();
+  if (existing.some((b) => b.name.toLowerCase() === cleanName.toLowerCase())) return null;
+  const next: TrackedBookmaker = {
+    id: `book-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    name: cleanName,
+    startingBalance: balance,
+    createdAt: new Date().toISOString(),
+  };
+  writeBookmakers([...existing, next]);
+  return next;
+}
+
+export function getTrackedBets(): TrackedBetRecord[] {
+  return readTrackedBets();
+}
+
+export interface AddTrackedBetInput {
+  bookmakerId: string;
+  stake: number;
+  oddsTaken: number;
+  status?: TrackedBetStatus;
+  fixtureId?: number;
+  matchLabel: string;
+  kickoffTime: string;
+  leagueName: string;
+  combo: BuildCombo;
+}
+
+export interface ManualTrackedSelectionInput {
+  matchLabel: string;
+  leagueName?: string;
+  kickoffTime?: string;
+  marketName: string;
+  selectionLabel: string;
+  playerName?: string;
+  line?: number;
+  outcome?: BuildLeg["outcome"];
+  odds?: number;
+  /** Per-leg notes; stored on the leg, not appended to `selectionLabel`. */
+  legNotes?: string;
+}
+
+export interface AddManualMultiBetInput {
+  bookmakerId: string;
+  stake: number;
+  oddsTaken: number;
+  status?: TrackedBetStatus;
+  notes?: string;
+  selections: ManualTrackedSelectionInput[];
+}
+
+export type ManualMultiBetSaveFailureUI = {
+  bookmakerId?: string;
+  stake?: string;
+  oddsTaken?: string;
+  selections?: string;
+  /** Map 0-based selection index → inline field errors (caller maps to row ids). */
+  selectionRowsByIndex?: Record<number, { matchLabel?: string; marketName?: string; selectionLabel?: string; outcome?: string }>;
+};
+
+/**
+ * Explains why `addManualMultiBet` would return null, using the same rules as the save path.
+ * Call with the same payload you passed to `addManualMultiBet` when it returns null.
+ */
+export function explainManualMultiBetFailure(input: AddManualMultiBetInput): ManualMultiBetSaveFailureUI {
+  const selections = Array.isArray(input.selections) ? input.selections : [];
+  const bookmakers = readBookmakers();
+  const bookmaker = bookmakers.find((b) => b.id === input.bookmakerId);
+  if (!bookmaker) {
+    return { bookmakerId: "That bookmaker was not found. Refresh the page and select a bookmaker again." };
+  }
+  const stake = Math.max(0, toNumber(input.stake, 0));
+  const oddsTaken = Math.max(0, toNumber(input.oddsTaken, 0));
+  if (stake <= 0) return { stake: "Stake must be greater than 0." };
+  if (oddsTaken <= 1) return { oddsTaken: "Odds must be greater than 1." };
+  if (selections.length === 0) return { selections: "Add at least one selection." };
+
+  const selectionRowsByIndex: Record<number, { matchLabel?: string; marketName?: string; selectionLabel?: string; outcome?: string }> = {};
+  for (let i = 0; i < selections.length; i++) {
+    const rej = manualLegRejectReason(selections[i]);
+    if (rej) {
+      selectionRowsByIndex[i] = { [rej.field]: rej.message };
+    }
+  }
+  if (Object.keys(selectionRowsByIndex).length > 0) {
+    return {
+      selections: "Fix the highlighted selection rows below.",
+      selectionRowsByIndex,
+    };
+  }
+  return { selections: "Save failed. Try again or refresh the page." };
+}
+
+export function addManualMultiBet(input: AddManualMultiBetInput): TrackedBetRecord | null {
+  const bookmakers = readBookmakers();
+  const bookmaker = bookmakers.find((b) => b.id === input.bookmakerId);
+  if (!bookmaker) return null;
+
+  const stake = Math.max(0, toNumber(input.stake, 0));
+  const oddsTaken = Math.max(0, toNumber(input.oddsTaken, 0));
+  if (stake <= 0 || oddsTaken <= 1) return null;
+
+  const rawSelections = Array.isArray(input.selections) ? input.selections : [];
+  const legIdPrefix = `manual-leg-${Date.now()}`;
+  const legs = rawSelections
+    .map((sel, index) => toManualTrackedLeg(sel, `${legIdPrefix}-${index + 1}`))
+    .filter((leg): leg is TrackedBetLeg => leg != null);
+  if (legs.length !== rawSelections.length || legs.length === 0) return null;
+
+  const firstLeg = legs[0];
+  const uniqueMatches = Array.from(new Set(legs.map((l) => normalizeText(l.matchLabel)).filter(Boolean)));
+  const fixtureCount = uniqueMatches.length;
+  const hasManyFixtures = fixtureCount > 1;
+  const matchLabel = hasManyFixtures
+    ? `Multi (${fixtureCount} fixtures)`
+    : uniqueMatches[0] || normalizeText(firstLeg.matchLabel) || `Multi (${legs.length} selections)`;
+  const kickoffTime = hasManyFixtures ? "-" : normalizeText(firstLeg.kickoffTime) || "-";
+  const leagueName = hasManyFixtures ? "Multiple" : normalizeText(firstLeg.leagueName) || "-";
+
+  const returnAmount = stake * oddsTaken;
+  const unitSize = getUnitSize();
+  const stakeUnits = unitSize > 0 ? stake / unitSize : 0;
+  const returnUnits = unitSize > 0 ? returnAmount / unitSize : 0;
+  const status = input.status ?? "pending";
+  const profitUnits =
+    status === "win"
+      ? (returnAmount - stake) / unitSize
+      : status === "loss"
+        ? (-stake) / unitSize
+        : 0;
+  const now = new Date().toISOString();
+  const record: TrackedBetRecord = {
+    id: `tracked-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+    sourceType: "manualMulti",
+    createdAt: now,
+    updatedAt: now,
+    bookmakerId: bookmaker.id,
+    bookmakerName: bookmaker.name,
+    stake,
+    unitSizeAtBet: Number(unitSize.toFixed(6)),
+    stakeUnits: Number(stakeUnits.toFixed(4)),
+    oddsTaken,
+    returnAmount,
+    returnUnits: Number(returnUnits.toFixed(4)),
+    profitUnits: Number(profitUnits.toFixed(4)),
+    status,
+    matchLabel,
+    kickoffTime,
+    leagueName,
+    legs,
+    notes: normalizeText(input.notes) || undefined,
+  };
+  const current = readTrackedBets();
+  writeTrackedBets([record, ...current]);
+
+  if (import.meta.env.DEV) {
+    console.log("[bet-tracker quick-add]", {
+      bookmaker: bookmaker.name,
+      stake: record.stake,
+      oddsTaken: record.oddsTaken,
+      selectionCount: record.legs.length,
+      status: record.status,
+    });
+  }
+  return record;
+}
+
+export function addTrackedBet(input: AddTrackedBetInput): TrackedBetRecord | null {
+  const bookmakers = readBookmakers();
+  const bookmaker = bookmakers.find((b) => b.id === input.bookmakerId);
+  if (!bookmaker) return null;
+  const stake = Math.max(0, toNumber(input.stake, 0));
+  const oddsTaken = Math.max(0, toNumber(input.oddsTaken, 0));
+  if (stake <= 0 || oddsTaken <= 1) return null;
+  const returnAmount = stake * oddsTaken;
+  const unitSize = getUnitSize();
+  const stakeUnits = unitSize > 0 ? stake / unitSize : 0;
+  const returnUnits = unitSize > 0 ? returnAmount / unitSize : 0;
+  const status = input.status ?? "pending";
+  const profitUnits =
+    status === "win"
+      ? (returnAmount - stake) / unitSize
+      : status === "loss"
+        ? (-stake) / unitSize
+        : 0;
+  const now = new Date().toISOString();
+  const record: TrackedBetRecord = {
+    id: `tracked-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+    sourceType: "valueBetBuilder",
+    createdAt: now,
+    updatedAt: now,
+    bookmakerId: bookmaker.id,
+    bookmakerName: bookmaker.name,
+    stake,
+    unitSizeAtBet: Number(unitSize.toFixed(6)),
+    stakeUnits: Number(stakeUnits.toFixed(4)),
+    oddsTaken,
+    returnAmount,
+    returnUnits: Number(returnUnits.toFixed(4)),
+    profitUnits: Number(profitUnits.toFixed(4)),
+    status,
+    fixtureId: input.fixtureId,
+    matchLabel: normalizeText(input.matchLabel) || "Unknown match",
+    kickoffTime: normalizeText(input.kickoffTime) || "-",
+    leagueName: normalizeText(input.leagueName) || "-",
+    legs: input.combo.legs.map(toTrackedLeg),
+    sourceMeta: {
+      modelScore: Number.isFinite(input.combo.comboScore) ? input.combo.comboScore : undefined,
+      normalizedScore: Number.isFinite(input.combo.normalizedScore as number) ? (input.combo.normalizedScore as number) : undefined,
+    },
+  };
+  const current = readTrackedBets();
+  writeTrackedBets([record, ...current]);
+  if (import.meta.env.DEV) {
+    console.log("[bet-tracker add]", {
+      bookmaker: bookmaker.name,
+      fixtureId: input.fixtureId ?? null,
+      match: record.matchLabel,
+      oddsTaken: record.oddsTaken,
+      stake: record.stake,
+      status: record.status,
+    });
+  }
+  return record;
+}
+
+export function updateTrackedBetStatus(id: string, status: TrackedBetStatus): TrackedBetRecord | null {
+  const current = readTrackedBets();
+  let updatedRecord: TrackedBetRecord | null = null;
+  const now = new Date().toISOString();
+  const next = current.map((r) => {
+    if (r.id !== id) return r;
+    const hasUnitSizeAtBet = Number.isFinite(r.unitSizeAtBet as number) && (r.unitSizeAtBet as number) > 0;
+    const inferredUnitSize =
+      r.stake > 0 && Number.isFinite(r.stakeUnits as number) && (r.stakeUnits as number) > 0
+        ? r.stake / (r.stakeUnits as number)
+        : undefined;
+    const canonicalUnitSize = hasUnitSizeAtBet
+      ? (r.unitSizeAtBet as number)
+      : inferredUnitSize && Number.isFinite(inferredUnitSize) && inferredUnitSize > 0
+        ? inferredUnitSize
+        : undefined;
+    const stableStakeUnits =
+      canonicalUnitSize && canonicalUnitSize > 0
+        ? r.stake / canonicalUnitSize
+        : Number.isFinite(r.stakeUnits as number)
+          ? (r.stakeUnits as number)
+          : 0;
+    const stableReturnUnits =
+      canonicalUnitSize && canonicalUnitSize > 0
+        ? r.returnAmount / canonicalUnitSize
+        : Number.isFinite(r.returnUnits as number)
+          ? (r.returnUnits as number)
+          : 0;
+    const profitUnits =
+      status === "win"
+        ? stableReturnUnits - stableStakeUnits
+        : status === "loss"
+          ? -stableStakeUnits
+          : 0;
+    updatedRecord = {
+      ...r,
+      status,
+      updatedAt: now,
+      unitSizeAtBet: canonicalUnitSize != null && canonicalUnitSize > 0 ? Number(canonicalUnitSize.toFixed(6)) : r.unitSizeAtBet,
+      stakeUnits: Number(stableStakeUnits.toFixed(4)),
+      returnUnits: Number(stableReturnUnits.toFixed(4)),
+      profitUnits: Number(profitUnits.toFixed(4)),
+    };
+    return updatedRecord;
+  });
+  writeTrackedBets(next);
+  return updatedRecord;
+}
+
+export function deleteTrackedBet(id: string): boolean {
+  const current = readTrackedBets();
+  const next = current.filter((b) => b.id !== id);
+  if (next.length === current.length) return false;
+  writeTrackedBets(next);
+  return true;
+}
+
+export function getTrackedBetsByBookmaker(bookmakerId: string): TrackedBetRecord[] {
+  return readTrackedBets().filter((b) => b.bookmakerId === bookmakerId);
+}
+
+export function getBookmakerStats(bookmakerId: string): BookmakerStats | null {
+  const bookmaker = readBookmakers().find((b) => b.id === bookmakerId);
+  if (!bookmaker) return null;
+  const bets = getTrackedBetsByBookmaker(bookmakerId);
+  const settled = bets.filter((b) => b.status !== "pending");
+  const pending = bets.filter((b) => b.status === "pending");
+  const realizedProfit = settled.reduce((sum, b) => sum + getSettledProfit(b), 0);
+  const totalUnitsProfit = settled.reduce((sum, b) => sum + (Number.isFinite(b.profitUnits as number) ? (b.profitUnits as number) : 0), 0);
+  const potentialProfit = pending.reduce((sum, b) => sum + (b.returnAmount - b.stake), 0);
+  const pendingStake = pending.reduce((sum, b) => sum + b.stake, 0);
+  const settledStake = settled.reduce((sum, b) => sum + b.stake, 0);
+  const currentBalance = bookmaker.startingBalance + realizedProfit;
+  const availableBalance = currentBalance - pendingStake;
+  const potentialBalance = currentBalance + potentialProfit;
+  return {
+    bookmakerId: bookmaker.id,
+    bookmakerName: bookmaker.name,
+    startingBalance: bookmaker.startingBalance,
+    currentBalance,
+    availableBalance,
+    realizedProfit,
+    totalUnitsProfit,
+    potentialProfit,
+    potentialBalance,
+    pendingStake,
+    betCount: bets.length,
+    settledCount: settled.length,
+    pendingCount: bets.length - settled.length,
+    roi: settledStake > 0 ? realizedProfit / settledStake : 0,
+  };
+}
+
+export function getAllBookmakerStats(): BookmakerStats[] {
+  return readBookmakers()
+    .map((b) => getBookmakerStats(b.id))
+    .filter((s): s is BookmakerStats => s != null)
+    .sort((a, b) => b.currentBalance - a.currentBalance);
+}
+
+export function getTrackedBetStats(): TrackedBetStats {
+  const bets = readTrackedBets();
+  const settled = bets.filter((b) => b.status !== "pending");
+  const wins = settled.filter((b) => b.status === "win").length;
+  const losses = settled.filter((b) => b.status === "loss").length;
+  const totalProfit = settled.reduce((sum, b) => sum + getSettledProfit(b), 0);
+  const totalStakeSettled = settled.reduce((sum, b) => sum + b.stake, 0);
+  return {
+    totalBets: bets.length,
+    settledBets: settled.length,
+    pendingBets: bets.length - settled.length,
+    wins,
+    losses,
+    totalProfit,
+    roi: totalStakeSettled > 0 ? totalProfit / totalStakeSettled : 0,
+  };
+}
+
+export function getBankrollTimeline(bookmakerId?: string): BankrollTimelinePoint[] {
+  const bookmakers = readBookmakers();
+  const tracked = readTrackedBets();
+
+  const bookmakerFilter = bookmakerId && bookmakerId.trim() !== "" ? bookmakerId : null;
+  const relevantBookmakers = bookmakerFilter ? bookmakers.filter((b) => b.id === bookmakerFilter) : bookmakers;
+  const startingBalance = relevantBookmakers.reduce((sum, b) => sum + b.startingBalance, 0);
+  const settled = tracked
+    .filter((b) => b.status !== "pending")
+    .filter((b) => (bookmakerFilter ? b.bookmakerId === bookmakerFilter : true))
+    .sort((a, b) => Date.parse(a.updatedAt || a.createdAt) - Date.parse(b.updatedAt || b.createdAt));
+
+  const points: BankrollTimelinePoint[] = [];
+  let balance = startingBalance;
+  points.push({ date: "Start", balance });
+  for (const bet of settled) {
+    if (bet.status === "win") balance += bet.returnAmount - bet.stake;
+    else if (bet.status === "loss") balance -= bet.stake;
+    points.push({
+      date: bet.updatedAt || bet.createdAt,
+      balance,
+    });
+  }
+  return points;
+}
+
+export function getScoreBandAnalysis(): ScoreBandAnalysisRow[] {
+  const bands: Array<{ label: string; min: number; max: number }> = [
+    { label: "0-40", min: 0, max: 40 },
+    { label: "40-60", min: 40, max: 60 },
+    { label: "60-70", min: 60, max: 70 },
+    { label: "70-80", min: 70, max: 80 },
+    { label: "80-90", min: 80, max: 90 },
+    { label: "90-100", min: 90, max: 101 }, // include 100 in final band
+  ];
+
+  const settled = readTrackedBets().filter((b) => b.status !== "pending");
+  const withScore = settled.filter((b) => {
+    const s = b.sourceMeta?.normalizedScore;
+    return typeof s === "number" && Number.isFinite(s);
+  });
+
+  return bands.map((band) => {
+    const inBand = withScore.filter((b) => {
+      const s = b.sourceMeta?.normalizedScore as number;
+      return s >= band.min && s < band.max;
+    });
+    const wins = inBand.filter((b) => b.status === "win").length;
+    const losses = inBand.filter((b) => b.status === "loss").length;
+    const total = inBand.length;
+    const profit = inBand.reduce((sum, b) => {
+      if (b.status === "win") return sum + (b.returnAmount - b.stake);
+      if (b.status === "loss") return sum - b.stake;
+      return sum;
+    }, 0);
+    return {
+      label: band.label,
+      total,
+      wins,
+      losses,
+      winRate: total > 0 ? wins / total : 0,
+      profit,
+    };
+  });
+}

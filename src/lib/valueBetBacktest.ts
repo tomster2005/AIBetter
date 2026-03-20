@@ -22,6 +22,7 @@ import {
   type StatsForModel,
 } from "./valueBetModel.js";
 import type { CalibrationBucket } from "./valueBetCalibration.js";
+import { isMarketSupportedForBacktest } from "./marketCapabilities.js";
 
 /** Outcome for a prop: Over or Under the line. */
 export type PropOutcome = "Over" | "Under";
@@ -167,6 +168,7 @@ export function generateBacktestRows(
       : null;
 
     for (const sel of ctx.selections) {
+      if (!isMarketSupportedForBacktest(sel.marketId)) continue;
       const appearances = sel.stats.appearances ?? 0;
       const minutesPlayed = sel.stats.minutesPlayed ?? 0;
       const expectedMinutes = computeExpectedMinutes(minutesPlayed, appearances);

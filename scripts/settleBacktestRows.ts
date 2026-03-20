@@ -8,6 +8,7 @@
  *   Shape: { [fixtureId: string]: { playerResults: Array<{ playerId, playerName, shots, shotsOnTarget, foulsCommitted?, foulsWon? }> } }
  */
 
+import "dotenv/config";
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -20,6 +21,7 @@ import {
 } from "../src/constants/marketIds.js";
 import type { PlayerMatchStats } from "../src/api/fixtureSettlement.js";
 import { getFixtureStateAndPlayerStats, getFixtureDetailsForSettlementDebug, SETTLEMENT_INCLUDES } from "../src/api/fixtureSettlement.js";
+import { isMarketSupportedForSettlement, getMarketCapability } from "../src/lib/marketCapabilities.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, "..");
@@ -116,6 +118,9 @@ async function main() {
 
   let settledCount = 0;
   let skippedUnfinished = 0;
+  let skippedMissingStatCount = 0;
+  let skippedUnsupportedMarketCount = 0;
+  let settleCheckPrinted = 0;
 
   let outcomesByFixture: Record<string, { playerResults: PlayerMatchStats[] }> = {};
   if (outcomesPath) {
@@ -292,6 +297,20 @@ async function main() {
     let rowsNullActualCount = 0;
     for (const row of rows) {
       rowsTried += 1;
+      if (!isMarketSupportedForSettlement(row.marketId)) {
+        skippedUnsupportedMarketCount += 1;
+        if (DEBUG && rowDebugCount < 12) {
+          console.log("[settle-debug] skipped unsupported market for settlement", {
+            fixtureId,
+            marketId: row.marketId,
+            marketName: row.marketName,
+            playerName: row.playerName,
+            note: getMarketCapability(row.marketId).note ?? null,
+          });
+          rowDebugCount += 1;
+        }
+        continue;
+      }
       const stats = findPlayerStats(playerResults, row);
       if (!stats) {
         rowsNoPlayerMatch += 1;
@@ -311,6 +330,15 @@ async function main() {
       const actualCount = getActualCountForMarket(stats, row.marketId);
       if (actualCount === null) {
         rowsNullActualCount += 1;
+        skippedMissingStatCount += 1;
+        if (DEBUG && rowDebugCount < 12) {
+          console.log("[settle-debug] skipped due to missing stat", {
+            fixtureId,
+            playerName: row.playerName,
+            marketId: row.marketId,
+          });
+          rowDebugCount += 1;
+        }
         if (DEBUG && rowDebugCount < 12) {
           console.log("[settle-debug] matched player but null actualCount", {
             fixtureId,
@@ -338,6 +366,30 @@ async function main() {
       row.actualOutcome = outcomeFromCount(actualCount, row.line);
       settledCount += 1;
       rowsSettledThisFixture += 1;
+
+      if (DEBUG && settleCheckPrinted < 10) {
+        const selection = (row as unknown as { outcome?: unknown }).outcome;
+        const assumedSelection = selection === "Over" || selection === "Under" ? selection : null;
+        const threshold = Math.floor(row.line) + 1;
+        console.log("[settle-debug-check]", {
+          fixtureId,
+          marketId: row.marketId,
+          marketName: row.marketName,
+          playerName: row.playerName,
+          playerId: row.playerId,
+          line: row.line,
+          selection: assumedSelection,
+          actualStat: actualCount,
+          comparison: {
+            actual: actualCount,
+            line: row.line,
+            thresholdOverX5: threshold,
+            result: actualCount >= threshold ? "over-hit" : "over-miss",
+          },
+          finalOutcome: row.actualOutcome,
+        });
+        settleCheckPrinted += 1;
+      }
     }
     if (DEBUG && fromFile && Array.isArray(fromFile.playerResults) && fromFile.playerResults.length > 0) {
       console.log("[settle-debug] outcomes-file fixture summary", {
@@ -355,6 +407,8 @@ async function main() {
 
   console.log("[backtest-dataset] settled rows:", settledCount);
   console.log("[backtest-dataset] skipped unfinished fixtures:", skippedUnfinished);
+  console.log("[backtest-dataset] skipped rows due to missing stat:", skippedMissingStatCount);
+  console.log("[backtest-dataset] skipped rows due to unsupported market:", skippedUnsupportedMarketCount);
 }
 
 main().catch((err) => {

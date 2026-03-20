@@ -9,6 +9,7 @@ import {
   MARKET_ID_PLAYER_FOULS_COMMITTED,
   MARKET_ID_PLAYER_FOULS_WON,
 } from "../constants/marketIds.js";
+import { isMarketSupportedForBacktest } from "./marketCapabilities.js";
 
 /** Stored pre-match snapshot row. actualCount / actualOutcome filled at settlement later. */
 export interface StoredBacktestRow {
@@ -78,6 +79,8 @@ export interface ValueBetRowLike {
   odds: number;
   bookmakerName: string;
   bookmakerProbability: number;
+  /** Optional Sportmonks player ID when available (improves settlement matching). */
+  playerId?: number | null;
   rawModelProbability?: number | null;
   calibratedProbability?: number | null;
   modelEdge?: number | null;
@@ -107,13 +110,16 @@ export function convertToBacktestRows(
 ): StoredBacktestRow[] {
   const { fixtureId, kickoffAt } = context;
   const createdAt = new Date().toISOString();
-  return rows.map((row) => {
+  const out: StoredBacktestRow[] = [];
+  for (const row of rows) {
     const marketId = marketIdFromName(row.marketName);
+    if (!isMarketSupportedForBacktest(marketId)) continue;
     const modelInputs = row.modelInputs ?? undefined;
-    return {
+    const playerId = typeof row.playerId === "number" && Number.isFinite(row.playerId) && row.playerId > 0 ? row.playerId : null;
+    out.push({
       fixtureId,
       kickoffAt,
-      playerId: null,
+      playerId,
       playerName: row.playerName,
       marketId,
       marketName: row.marketName,
@@ -131,8 +137,9 @@ export function convertToBacktestRows(
       actualCount: null,
       actualOutcome: null,
       createdAt,
-    };
-  });
+    });
+  }
+  return out;
 }
 
 /**

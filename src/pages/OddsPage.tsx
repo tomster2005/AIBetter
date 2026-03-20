@@ -17,6 +17,7 @@ import {
   TEAM_PROP_MARKET_IDS,
 } from "../constants/marketIds.js";
 import { loadPlayerPropsForFixture } from "../services/playerPropsService.js";
+import { useAutoResolveCombos } from "../hooks/useAutoResolveCombos.js";
 import "./OddsPage.css";
 
 const LONDON = "Europe/London";
@@ -402,6 +403,7 @@ export function OddsPage() {
   const [error, setError] = useState<string | null>(null);
 
   const [selectedFixture, setSelectedFixture] = useState<Fixture | null>(null);
+  useAutoResolveCombos(selectedFixture?.id ?? null, selectedFixture != null);
   const [oddsData, setOddsData] = useState<NormalisedOddsResponse | null>(null);
   const [oddsLoading, setOddsLoading] = useState(false);
   const [oddsError, setOddsError] = useState<string | null>(null);

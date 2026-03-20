@@ -20,6 +20,7 @@ import {
   type PlayerOddsResponse as ServicePlayerOddsResponse,
 } from "../services/playerPropsService.js";
 import { appendBacktestSnapshots } from "../services/backtestSnapshotService.js";
+import { useAutoResolveCombos } from "../hooks/useAutoResolveCombos.js";
 import {
   loadPlayerSeasonStats,
   fetchLeagueCurrentSeason,
@@ -96,6 +97,9 @@ export interface ValueBetRow {
   isStrongBet?: boolean;
   /** True when this row's probability bucket has enough historical sample for calibration. */
   calibrationBucketValid?: boolean;
+  /** Sportmonks ids for live recent match stats (Build Value Bets evidence). */
+  sportmonksPlayerId?: number;
+  sportmonksTeamId?: number;
 }
 
 interface LineupModalProps {
@@ -1215,7 +1219,6 @@ function buildValueBetRows(
         const bookmakerName = (sel as { bookmakerName?: string }).bookmakerName ?? (sel as { bookmaker_name?: string }).bookmaker_name ?? "Unknown bookmaker";
 
         const addRow = (outcome: "Over" | "Under", odds: number) => {
-          if (outcome !== "Over") return;
           const oddsNum = Number(odds);
           if (typeof oddsNum !== "number" || !Number.isFinite(oddsNum) || oddsNum <= 1.01) {
             skipReasons.invalidOdds += 1;
@@ -1417,7 +1420,20 @@ function buildValueBetRows(
             };
             row.calibrationBucketValid = isBucketCalibrated(built.rawModelProbability);
             row.isStrongBet = isStrongBetCandidate(row);
-            if (import.meta.env.DEV) {
+            if (lineupPlayerId != null) row.sportmonksPlayerId = lineupPlayerId;
+            if (lineupInfoFinal?.teamId != null) row.sportmonksTeamId = lineupInfoFinal.teamId;
+            if (
+              import.meta.env.DEV &&
+              (row.sportmonksPlayerId == null || row.sportmonksTeamId == null)
+            ) {
+              console.log("[row ids]", {
+                player: row.playerName,
+                rowPlayerId: row.sportmonksPlayerId,
+                rowTeamId: row.sportmonksTeamId,
+                marketName: row.marketName,
+                line: row.line,
+                outcome: row.outcome,
+              });
               const cat =
                 row.marketName?.includes("Shots On Target")
                   ? "shotsOnTarget"
@@ -1605,7 +1621,10 @@ function buildValueBetRows(
           }
         };
 
-        if (overOdds != null) addRow("Over", overOdds);
+        if (Number.isFinite(overOdds)) addRow("Over", overOdds);
+        const underOddsRaw = (sel as { underOdds?: number | null }).underOdds ?? (sel as { under_odds?: number | null }).under_odds;
+        const underOdds = typeof underOddsRaw === "number" ? underOddsRaw : Number(underOddsRaw);
+        if (Number.isFinite(underOdds)) addRow("Under", underOdds);
       }
     }
   }
@@ -1747,6 +1766,14 @@ function buildValueBetRows(
       foulsCommitted: lowLineBlendSummary("foulsCommitted"),
       foulsWon: lowLineBlendSummary("foulsWon"),
     });
+    console.log("[builder-debug] buildValueBetRows fouls summary", {
+      foulMarketsSeen,
+      foulPlayersSeen,
+      foulRowsCreated,
+      foulRowsSkipped,
+      foulStatsAvailable,
+      foulSkipReasonsBreakdown: skipReasonsBreakdown,
+    });
   }
   return { rows, foulStatsAvailable, foulMarketsSeen };
 }
@@ -1761,6 +1788,7 @@ export function LineupModal({
   formations,
   coaches,
 }: LineupModalProps) {
+  useAutoResolveCombos(fixture?.id ?? null, open && fixture != null);
   const [selectedPlayerId, setSelectedPlayerId] = useState<number | null>(null);
   const [selectedTeamName, setSelectedTeamName] = useState<string | null>(null);
   const [loadingValueBets, setLoadingValueBets] = useState(false);

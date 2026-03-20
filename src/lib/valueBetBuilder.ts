@@ -6,6 +6,15 @@
 
 import { isOddsSane } from "./valueBetModel.js";
 import { probabilityOverLine, probabilityUnderLine } from "./playerPropProbability.js";
+import {
+  MARKET_ID_ALTERNATIVE_CORNERS,
+  MARKET_ID_ALTERNATIVE_TOTAL_GOALS,
+  MARKET_ID_BTTS,
+  MARKET_ID_MATCH_GOALS,
+  MARKET_ID_MATCH_RESULTS,
+} from "../constants/marketIds.js";
+import type { HeadToHeadFixtureContext } from "../types/headToHeadContext.js";
+import { getCompressedNormalizedScore } from "./modelScoreNormalization.js";
 
 /** Min expected minutes for player legs (align with value bet hard filter). */
 const MIN_EXPECTED_MINUTES = 35;
@@ -13,6 +22,12 @@ const MIN_EXPECTED_MINUTES = 35;
 const MIN_EDGE = 0.001;
 /** Max odds per leg to avoid longshot junk. */
 const MAX_ODDS_PER_LEG = 15;
+/** Minimum combo EV (model prob − implied prob) to keep; ~+1% edge. If none qualify, unfiltered list is used. */
+const MIN_COMBO_EV = 0.01;
+/** Cap full Kelly fraction at 5% of bankroll before applying fractional Kelly. */
+const KELLY_FULL_CAP = 0.05;
+/** Fractional Kelly: half of capped full Kelly. */
+const KELLY_FRACTIONAL = 0.5;
 /** Sensible line bounds per market (loose). */
 const LINE_BOUNDS: Record<string, { min: number; max: number }> = {
   shots: { min: 0.5, max: 8 },
@@ -25,17 +40,46 @@ const LINE_BOUNDS: Record<string, { min: number; max: number }> = {
 export interface BuildLeg {
   id: string;
   type: "player" | "team";
+  /** Optional identifiers used for lightweight correlation penalties. */
+  playerId?: string;
+  teamId?: string;
+  marketId?: number;
+  legRole?: "core" | "supporting" | "filler";
+  playerQuality?: {
+    playerTier: "weak" | "ok" | "strong" | "elite";
+    qualityScore: number;
+    sampleReliability: number;
+    minutesReliability: number;
+    recencyScore: number;
+    roleConsistencyScore: number;
+    marketSpecificScore: number;
+    projectedRateStrength: number;
+    weakSignalFlags: {
+      lowSample: boolean;
+      unstableMinutes: boolean;
+      weakRecency: boolean;
+    };
+    explanationSourceFlags: {
+      hasRecentValues: boolean;
+      hasSample: boolean;
+      stableMinutes: boolean;
+    };
+  };
   /** Used to reject combos with multiple legs from the same family (e.g. same player+market or multiple corner lines). */
   marketFamily: string;
   label: string;
   marketName: string;
   line: number;
-  outcome: "Over" | "Under";
+  outcome: "Over" | "Under" | "Home" | "Draw" | "Away" | "Yes" | "No";
   odds: number;
   bookmakerName: string;
   score: number;
+  edge?: number;
+  probability?: number;
   reason?: string;
   playerName?: string;
+  /** Optional extra stat row in combo explanations only (real data; never fabricated). */
+  opponentStatSeries?: { label: string; values: number[] };
 }
 
 /** Optional team corner stats per match (for/against). When provided, used to compute fixture expected corners. */
@@ -124,6 +168,21 @@ export function buildEvidenceContextFromRows(
       (cat === "foulsWon" && playerStats?.foulsWon);
     const useRecent =
       Array.isArray(recentValues) && recentValues.length > 0 && recentValues.every((v) => typeof v === "number" && Number.isFinite(v));
+    if (import.meta.env?.DEV) {
+      if (useRecent) {
+        console.log("[assign recent]", {
+          player: r.playerName,
+          marketCategory: cat,
+          valuesLength: (recentValues as number[]).length,
+        });
+      } else if (Array.isArray(recentValues) && recentValues.length > 0) {
+        console.log("[assign recent skipped]", {
+          player: r.playerName,
+          marketCategory: cat,
+          values: recentValues,
+        });
+      }
+    }
     playerRecentStats.push({
       playerName: r.playerName,
       marketCategory: cat,
@@ -140,11 +199,35 @@ export function buildEvidenceContextFromRows(
 }
 
 /** One suggested combo. */
+export interface ComboScoreBreakdown {
+  multiPlayerBase: number;
+  fillerPenalty: number;
+  fillerAltGoalsPenalty: number;
+  scenarioCohesionBonus: number;
+  onePlayerAllFillerPenalty: number;
+  supportSignal: number;
+  qualitySignals: number;
+  playerCoherence: number;
+  eliteCoherenceBonus: number;
+  tierComboShaping: number;
+  total: number;
+}
+
 export interface BuildCombo {
   legs: BuildLeg[];
   combinedOdds: number;
   distanceFromTarget: number;
   comboScore: number;
+  comboEdge: number;
+  adjustedComboEdge: number;
+  combinedProb: number;
+  impliedProb: number;
+  comboEV: number;
+  comboEVPercent: number;
+  /** Suggested stake as fraction of bankroll (½ Kelly after full-Kelly cap). */
+  kellyStakePct: number;
+  normalizedScore?: number;
+  scoreBreakdown?: ComboScoreBreakdown;
   /** Short factual "Why this build" lines derived from stats. */
   explanation?: ComboExplanation;
 }
@@ -181,8 +264,14 @@ export interface OddsBookmakerInput {
   }>;
 }
 
-/** Team prop market IDs we use for build (v1: corners only to keep clean). */
-const BUILD_TEAM_MARKET_IDS = new Set([69]); // MARKET_ID_ALTERNATIVE_CORNERS
+/** Team market IDs we allow into the builder (explicit allowlist; small and easy to tune). */
+const BUILD_TEAM_MARKET_IDS = new Set<number>([
+  MARKET_ID_ALTERNATIVE_CORNERS,      // 69
+  MARKET_ID_MATCH_RESULTS,           // 1
+  MARKET_ID_BTTS,                    // 14
+  MARKET_ID_MATCH_GOALS,             // 80
+  MARKET_ID_ALTERNATIVE_TOTAL_GOALS, // 81
+]);
 
 /** Only one corner leg per combo; all Alternative Corners lines share this family. */
 const CORNERS_MARKET_FAMILY = "team:alternative-corners";
@@ -192,6 +281,16 @@ const DEFAULT_FIXTURE_EXPECTED_CORNERS = 10.5;
 
 /** Max corner legs to pass into combo builder (best-rated only). */
 const MAX_CORNER_LEGS = 5;
+/** Max legs per non-corners team market to consider (best-rated only). */
+const MAX_TEAM_LEGS_PER_MARKET = 6;
+
+/** H2H context: minimum sample size to apply scoring. */
+const MIN_H2H_SAMPLE_SIZE = 4;
+
+const BUILDER_DEBUG_VERBOSE =
+  import.meta.env?.DEV &&
+  (import.meta.env?.VITE_BUILDER_DEBUG_VERBOSE === "1" ||
+    import.meta.env?.VITE_BUILDER_DEBUG_VERBOSE === "true");
 
 /** Prefer Over corners by default; Under must clear a higher bar to be included. */
 const MIN_EDGE_OVER_CORNERS = 0;
@@ -251,8 +350,496 @@ function isOverLabel(label: string): boolean {
   return (lower.includes("over") && !lower.includes("under")) || lower === "over";
 }
 
+function parseMatchResultOutcome(label: string): "Home" | "Draw" | "Away" | null {
+  const lower = (label || "").trim().toLowerCase();
+  if (!lower) return null;
+  if (lower === "home" || lower === "1") return "Home";
+  if (lower === "draw" || lower === "x") return "Draw";
+  if (lower === "away" || lower === "2") return "Away";
+  return null;
+}
+
+function parseBttsOutcome(label: string): "Yes" | "No" | null {
+  const lower = (label || "").trim().toLowerCase();
+  if (lower === "yes" || lower === "y") return "Yes";
+  if (lower === "no" || lower === "n") return "No";
+  return null;
+}
+
 function normalizePlayerNameForMatch(name: string): string {
   return (name || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/** Diversity tuning (builder-local). Keep small and easy to tweak. */
+const DIVERSITY_INTERNAL_MULTIPLIER = 6;
+const DIVERSITY_PLAYER_REUSE_PENALTY = 10;
+// Encourage variation in combo shape (player-heavy vs player-light) after quality tie-breaking.
+const DIVERSITY_PLAYER_LEGCOUNT_REUSE_PENALTY = 6;
+const DIVERSITY_CORNERS_REUSE_PENALTY = 8;
+// Diversity should mostly break ties, not promote clearly worse combos.
+// Only consider candidates within this raw-score window of the best remaining combo.
+const DIVERSITY_TIE_WINDOW_SCORE = 10;
+// Soft cap: try not to have corners in nearly every returned combo.
+// Applied as a strong penalty once we reach the cap (unless we run out of non-corner options).
+const DIVERSITY_MAX_CORNERS_SHARE = 0.6;
+const DIVERSITY_OVER_CORNERS_CAP_PENALTY = 40;
+// Prefer spreading across player market categories (shots vs SOT vs fouls, etc.) when quality is similar.
+const DIVERSITY_MARKET_CATEGORY_REUSE_PENALTY = 4;
+
+/**
+ * Central scoring config for tunability/calibration.
+ * Intentionally mirrors current behaviour; future optimisation can adjust these values only.
+ */
+const SCORING_CONFIG = {
+  playerTier: {
+    weakPenalty: -7,
+    okBonus: 1,
+    strongBonus: 7,
+    eliteBonus: 14,
+    thresholds: {
+      weak: {
+        minQualityScore: 45,
+        minSampleReliability: 0.35,
+        minMinutesReliability: 0.35,
+        minRecencyScore: 0.4,
+        minProjectedRateStrength: 0.5,
+      },
+      strong: {
+        minQualityScore: 66,
+        minSampleReliability: 0.5,
+        minMinutesReliability: 0.55,
+        minRecencyScore: 0.5,
+        minProjectedRateStrength: 0.62,
+      },
+      elite: {
+        minQualityScore: 82,
+        minSampleReliability: 0.7,
+        minMinutesReliability: 0.72,
+        minRecencyScore: 0.66,
+        minProjectedRateStrength: 0.78,
+      },
+    },
+  },
+  weakSignalPenalties: {
+    lowSample: 4,
+    lowMinutes: 4,
+    lowRecency: 3,
+    lowSampleThreshold: 0.42,
+    lowMinutesThreshold: 0.5,
+    lowRecencyThreshold: 0.45,
+  },
+  projectedRateStrength: {
+    veryHighThreshold: 0.9,
+    highThreshold: 0.78,
+    mediumThreshold: 0.65,
+    lowThreshold: 0.5,
+    veryHighBonus: 8,
+    highBonus: 5,
+    mediumBonus: 2,
+    lowPenalty: 5,
+  },
+  playerQualityAggregation: {
+    qualityScoreMultiplier: 0.7,
+    marketSpecificOffsetMultiplier: 22,
+    qualityBlend: {
+      marketSpecific: 0.4,
+      edge: 0.25,
+      roleConsistency: 0.15,
+      dataConfidence: 0.1,
+      betQuality: 0.1,
+    },
+    marketSpecificWeights: {
+      shots: { projectedRate: 0.35, recency: 0.2, minutes: 0.25, sample: 0.2 },
+      shotsOnTarget: { projectedRate: 0.3, recency: 0.3, minutes: 0.2, sample: 0.2 },
+      foulsCommitted: { projectedRate: 0.25, recency: 0.15, minutes: 0.3, sample: 0.3 },
+      foulsWon: { projectedRate: 0.25, recency: 0.25, minutes: 0.25, sample: 0.25 },
+    },
+  },
+  comboQuality: {
+    onePlayerWithAnyTeamPenalty: 6,
+    oneLowMarginalPenalty: 5,
+    twoLowMarginalPenalty: 8,
+    onePlayerFillerNoAdditivePenalty: 8,
+    multiTeamNotAllHighConfidencePenalty: 9,
+    multiTeamAllHighConfidencePenalty: 2,
+    playerLedNoFillerBonus: 8,
+    playerLedAdditiveBonus: 4,
+    playerLedNoLowMarginalBonus: 3,
+    playerOnlyProtectionBonus: 4,
+    mixedSingleTeamLegBonus: 7,
+    tokenTeamLegPenalty: 6,
+    tokenLowMarginalExtraPenalty: 3,
+  },
+  playerCoherence: {
+    sameTeamBaseBonus: 3,
+    sameTeamTripleBonus: 3,
+    attackingShotsSotBonus: 4,
+    attackingMultiBonus: 2,
+    defensiveClusterBonus: 2,
+    randomSpreadPenalty: 4,
+    bands: {
+      veryStrongMin: 11,
+      strongMin: 7,
+      decentMin: 3,
+      negativeMax: -2,
+      veryStrongScore: 12,
+      strongScore: 8,
+      decentScore: 4,
+      negativeScore: -3,
+    },
+  },
+  combo: {
+    multiPlayerBasePerLeg: 3,
+    multiPlayerBaseCap: 8,
+    fillerPenaltyOne: 4,
+    fillerPenaltyTwoPlus: 8,
+    singleCoreTwoPlusFillerPenalty: 10,
+    fillerAltGoalsPenalty: 6,
+    scenarioCohesionBonus: 7,
+    onePlayerAllFillerPenalty: 12,
+    supportingTeamPerLegBonus: 3,
+    supportingTeamBonusCap: 10,
+    unsupportedTeamPerLegPenalty: 3,
+    additiveTeamLegBonus: 2,
+    lowMarginalTeamLegPenalty: 4,
+    eliteComboBonus: 8,
+    multiEliteBonus: 6,
+    weakLegPenaltyPerLeg: 5,
+    flatComboPenalty: 6,
+    eliteCoherenceBonus: 6,
+    multiEliteCoherenceBonus: 4,
+  },
+} as const;
+
+function comboMarketFamilySignature(c: BuildCombo): string {
+  // Ignore exact line/label differences; marketFamily already collapses alternative corners lines.
+  return c.legs
+    .map((l) => l.marketFamily)
+    .slice()
+    .sort()
+    .join("||");
+}
+
+function comboHasCorners(c: BuildCombo): boolean {
+  return c.legs.some((l) => l.marketFamily === CORNERS_MARKET_FAMILY);
+}
+
+function comboPlayerKeys(c: BuildCombo): string[] {
+  const out: string[] = [];
+  for (const l of c.legs) {
+    if (l.type !== "player") continue;
+    if (!l.playerName) continue;
+    out.push(normalizePlayerNameForMatch(l.playerName));
+  }
+  return out;
+}
+
+function comboMarketCategories(c: BuildCombo): string[] {
+  const cats: string[] = [];
+  for (const l of c.legs) {
+    if (l.marketFamily === CORNERS_MARKET_FAMILY) {
+      cats.push("corners");
+      continue;
+    }
+    if (l.type === "player") {
+      const cat = getMarketCategory(l.marketName);
+      cats.push(cat ?? "playerOther");
+      continue;
+    }
+    cats.push("teamOther");
+  }
+  return cats;
+}
+
+function selectDiverseTopCombos(
+  combos: BuildCombo[],
+  maxOut: number
+): { selected: BuildCombo[]; nearDuplicatesRemoved: number } {
+  if (combos.length <= maxOut) return { selected: combos, nearDuplicatesRemoved: 0 };
+
+  // 1) Remove near-duplicates: keep best per market-family signature.
+  // This specifically collapses "same legs except corners line" variants because all Alternative Corners share one marketFamily.
+  const bestBySig = new Map<string, BuildCombo>();
+  for (const c of combos) {
+    const sig = comboMarketFamilySignature(c);
+    const prev = bestBySig.get(sig);
+    if (!prev || c.comboScore > prev.comboScore) bestBySig.set(sig, c);
+  }
+  const deduped = Array.from(bestBySig.values()).sort((a, b) => b.comboScore - a.comboScore);
+  const nearDuplicatesRemoved = combos.length - deduped.length;
+
+  // 2) Greedy diversity selection: only use diversity to break ties among similarly strong combos.
+  // We pick iteratively from the "best remaining" neighborhood and apply small penalties for repetition.
+  const selected: BuildCombo[] = [];
+  const playerUse = new Map<string, number>();
+  const playerLegCountUse = new Map<number, number>();
+  let cornersUsed = 0;
+  const marketUse = new Map<string, number>();
+
+  const maxCornersAllowed = Math.max(1, Math.round(maxOut * DIVERSITY_MAX_CORNERS_SHARE));
+
+  while (selected.length < maxOut && deduped.length > 0) {
+    const bestRaw = deduped[0]!.comboScore;
+    const candidateIdxs: number[] = [];
+    for (let i = 0; i < deduped.length; i++) {
+      if (bestRaw - deduped[i]!.comboScore > DIVERSITY_TIE_WINDOW_SCORE) break;
+      candidateIdxs.push(i);
+    }
+    // If we're out of tie-window candidates (shouldn't happen), fall back to top raw.
+    if (candidateIdxs.length === 0) candidateIdxs.push(0);
+
+    let bestIdx = candidateIdxs[0]!;
+    let bestAdjusted = -Infinity;
+    for (const i of candidateIdxs) {
+      const c = deduped[i]!;
+      const players = comboPlayerKeys(c);
+      const cats = comboMarketCategories(c);
+      let penalty = 0;
+
+      for (const p of players) penalty += (playerUse.get(p) ?? 0) * DIVERSITY_PLAYER_REUSE_PENALTY;
+      const playerLegCount = c.legs.filter((l) => l.type === "player").length;
+      penalty += (playerLegCountUse.get(playerLegCount) ?? 0) * DIVERSITY_PLAYER_LEGCOUNT_REUSE_PENALTY;
+      for (const cat of cats) penalty += (marketUse.get(cat) ?? 0) * DIVERSITY_MARKET_CATEGORY_REUSE_PENALTY;
+
+      if (comboHasCorners(c)) {
+        penalty += cornersUsed * DIVERSITY_CORNERS_REUSE_PENALTY;
+        // Soft cap corners dominance: once we hit the cap, strongly prefer non-corners options (when available in tie window).
+        if (cornersUsed >= maxCornersAllowed) penalty += DIVERSITY_OVER_CORNERS_CAP_PENALTY;
+      }
+
+      const adjusted = c.comboScore - penalty;
+      if (adjusted > bestAdjusted) {
+        bestAdjusted = adjusted;
+        bestIdx = i;
+      }
+    }
+
+    const pick = deduped.splice(bestIdx, 1)[0]!;
+    selected.push(pick);
+    for (const p of comboPlayerKeys(pick)) playerUse.set(p, (playerUse.get(p) ?? 0) + 1);
+    const pickPlayerLegCount = pick.legs.filter((l) => l.type === "player").length;
+    playerLegCountUse.set(pickPlayerLegCount, (playerLegCountUse.get(pickPlayerLegCount) ?? 0) + 1);
+    if (comboHasCorners(pick)) cornersUsed += 1;
+    for (const cat of comboMarketCategories(pick)) marketUse.set(cat, (marketUse.get(cat) ?? 0) + 1);
+  }
+
+  return { selected, nearDuplicatesRemoved };
+}
+
+type ComboSanityRejectReason =
+  | "multipleGoalsTotals"
+  | "narrowGoalWindow"
+  | "redundantImpliedMarket"
+  | "redundantImpliedMarketUnder"
+  | "contradictoryImplication"
+  | "duplicateBtts"
+  | "duplicateResult";
+
+type TeamLegImplication =
+  | { kind: "minGoals"; value: number }
+  | { kind: "maxGoals"; value: number }
+  | { kind: "btts"; value: boolean }
+  | { kind: "result"; value: "home" | "draw" | "away" };
+
+type NormalisedGoalsTotalLeg = { type: "goalsTotal"; direction: "over" | "under"; line: number; label: string };
+
+function normaliseGoalsTotalLeg(leg: BuildLeg): NormalisedGoalsTotalLeg | null {
+  // IMPORTANT: do not rely on marketFamily/outcome/line — these can vary.
+  // Derive direction + line from label, defensively, for all Sportmonks formats we surface.
+  if (leg.type !== "team") return null;
+  const label = String(leg.label ?? "").trim();
+  if (!label) return null;
+  const lower = label.toLowerCase();
+
+  // Heuristic guard so we don't accidentally treat corners as goals.
+  // Accept: "Over/Under Goals ...", "Alternative Goals ...", etc.
+  if (!lower.includes("goal")) return null;
+  if (lower.includes("corner")) return null;
+
+  // Direction: take the LAST standalone "over"/"under" token in the label.
+  // This handles "Over/Under Goals 2.5 Over" (contains both words) correctly.
+  const dirMatches = Array.from(lower.matchAll(/\b(over|under)\b/g));
+  const last = dirMatches.length > 0 ? dirMatches[dirMatches.length - 1] : null;
+  const direction = last?.[1] === "over" ? "over" : last?.[1] === "under" ? "under" : null;
+  if (!direction) return null;
+
+  // Line: first decimal number (e.g. 2.5) found in label.
+  const m = label.match(/(\d+(?:\.\d+)?)/);
+  const line = m ? parseFloat(m[1]) : NaN;
+  if (!Number.isFinite(line) || line <= 0) return null;
+
+  if (BUILDER_DEBUG_VERBOSE) {
+    console.log("[normaliseGoals]", { label, parsedLine: line, parsedDirection: direction });
+  }
+
+  return { type: "goalsTotal", direction, line, label };
+}
+
+function parseBttsFromLabel(label: string): boolean | null {
+  const lower = (label || "").toLowerCase();
+  if (!lower.includes("btts") && !lower.includes("both teams to score")) return null;
+  const yes = /\b(yes|y)\b/.test(lower);
+  const no = /\b(no|n)\b/.test(lower);
+  if (yes && !no) return true;
+  if (no && !yes) return false;
+  return null;
+}
+
+function parseResultFromLabel(label: string): "home" | "draw" | "away" | null {
+  const lower = (label || "").toLowerCase();
+  // Typical builder labels: "Match Results Home" / "Match Results Draw" / "Match Results Away"
+  if (/\bhome\b/.test(lower)) return "home";
+  if (/\bdraw\b/.test(lower) || /\blevel\b/.test(lower)) return "draw";
+  if (/\baway\b/.test(lower)) return "away";
+  return null;
+}
+
+function getTeamLegImplications(leg: BuildLeg): TeamLegImplication[] {
+  if (leg.type !== "team") return [];
+  const out: TeamLegImplication[] = [];
+
+  const goals = normaliseGoalsTotalLeg(leg);
+  if (goals) {
+    if (goals.direction === "over") {
+      // Over 0.5 => minGoals 1; Over 1.5 => 2; Over 2.5 => 3...
+      out.push({ kind: "minGoals", value: Math.round(goals.line + 0.5) });
+    } else {
+      // Under 3.5 => maxGoals 3; Under 2.5 => 2...
+      out.push({ kind: "maxGoals", value: Math.floor(goals.line) });
+    }
+    return out;
+  }
+
+  // BTTS (Yes/No)
+  const btts =
+    leg.marketFamily === "team:btts"
+      ? leg.outcome === "Yes"
+        ? true
+        : leg.outcome === "No"
+          ? false
+          : parseBttsFromLabel(leg.label)
+      : parseBttsFromLabel(leg.label);
+  if (btts != null) {
+    out.push({ kind: "btts", value: btts });
+    if (btts === true) {
+      // BTTS yes implies at least 2 goals.
+      out.push({ kind: "minGoals", value: 2 });
+    }
+    return out;
+  }
+
+  // Result (Home/Draw/Away)
+  const res =
+    leg.marketFamily === "team:match-results"
+      ? leg.outcome === "Home"
+        ? "home"
+        : leg.outcome === "Draw"
+          ? "draw"
+          : leg.outcome === "Away"
+            ? "away"
+            : parseResultFromLabel(leg.label)
+      : parseResultFromLabel(leg.label);
+  if (res) {
+    out.push({ kind: "result", value: res });
+  }
+
+  return out;
+}
+
+function getComboTeamImplications(combo: BuildCombo): TeamLegImplication[] {
+  const out: TeamLegImplication[] = [];
+  for (const leg of combo.legs) {
+    out.push(...getTeamLegImplications(leg));
+  }
+  return out;
+}
+
+function getComboSanityRejectReason(combo: BuildCombo): ComboSanityRejectReason | null {
+  // Rule 0 — Extremely narrow over/under goal windows are almost always padding/artifact.
+  if (hasNarrowGoalWindow(combo)) return "narrowGoalWindow";
+
+  // Rule 1 — Multiple goals-total team legs.
+  // Keep the guard strict against redundant ladders, but allow coherent Over+Under windows.
+  const goalsTotalLegs = combo.legs.map(normaliseGoalsTotalLeg).filter((x): x is NormalisedGoalsTotalLeg => x != null);
+  if (goalsTotalLegs.length >= 3) return "multipleGoalsTotals";
+  if (goalsTotalLegs.length === 2) {
+    const dirCounts = goalsTotalLegs.reduce(
+      (acc, g) => {
+        acc[g.direction] += 1;
+        return acc;
+      },
+      { over: 0, under: 0 }
+    );
+    // Over+Over and Under+Under are usually ladder padding => reject.
+    if (dirCounts.over === 2 || dirCounts.under === 2) return "multipleGoalsTotals";
+
+    // Over+Under: allow if not a narrow/implied contradiction case.
+    const overs = goalsTotalLegs.filter((g) => g.direction === "over").map((g) => g.line);
+    const unders = goalsTotalLegs.filter((g) => g.direction === "under").map((g) => g.line);
+    const maxOver = Math.max(...overs);
+    const minUnder = Math.min(...unders);
+    const width = minUnder - maxOver;
+    // If the window is narrow (<=1 goal), treat as a redundant/strained stack.
+    if (Number.isFinite(width) && width <= 1.0001) return "multipleGoalsTotals";
+  }
+
+  const impl = getComboTeamImplications(combo);
+
+  // Rule 4 — Duplicate BTTS
+  const bttsCount = impl.filter((i) => i.kind === "btts").length;
+  if (bttsCount >= 2) return "duplicateBtts";
+
+  // Rule 5 — Duplicate result
+  const resultCount = impl.filter((i) => i.kind === "result").length;
+  if (resultCount >= 2) return "duplicateResult";
+
+  // Aggregate goal constraints.
+  const minGoals = impl.filter((i): i is Extract<TeamLegImplication, { kind: "minGoals" }> => i.kind === "minGoals").map((i) => i.value);
+  const maxGoals = impl.filter((i): i is Extract<TeamLegImplication, { kind: "maxGoals" }> => i.kind === "maxGoals").map((i) => i.value);
+  const minGoal = minGoals.length ? Math.max(...minGoals) : null;
+  const maxGoal = maxGoals.length ? Math.min(...maxGoals) : null;
+
+  // Rule 3 — Contradictory goal constraints.
+  if (minGoal != null && maxGoal != null && minGoal > maxGoal) return "contradictoryImplication";
+
+  // Rule 2 — Redundant implied market: BTTS Yes + low over-goals.
+  // "low over-goals" = any explicit minGoals <= 2 from a goals-total leg.
+  const hasBttsYes = impl.some((i) => i.kind === "btts" && i.value === true);
+  if (hasBttsYes) {
+    const goalsNorm = combo.legs.map(normaliseGoalsTotalLeg).filter((x): x is NormalisedGoalsTotalLeg => x != null);
+    const overs = goalsNorm.filter((g) => g.direction === "over");
+    const unders = goalsNorm.filter((g) => g.direction === "under");
+
+    // Reject low-to-mid Over totals only when it’s the only goals-total direction present.
+    // This avoids over-blocking coherent Over+Under windows.
+    // BTTS Yes implies at least 2 total goals:
+    // - Over 0.5/1.5/2.5 are highly correlated (reject)
+    // - Over 3.5+ is less correlated (allow)
+    if (overs.length === 1 && unders.length === 0 && overs[0]!.line <= 2.5) return "redundantImpliedMarket";
+
+    // Symmetric redundancy: BTTS Yes correlates with low Under totals.
+    // Apply only when Under is the only goals-total direction present.
+    const hasLowUnderGoalsTotal = unders.length === 1 && overs.length === 0 && unders[0]!.line <= 3.5;
+    if (hasLowUnderGoalsTotal) return "redundantImpliedMarketUnder";
+  }
+
+  return null;
+}
+
+function isComboSensible(combo: BuildCombo): boolean {
+  return getComboSanityRejectReason(combo) == null;
+}
+
+function hasNarrowGoalWindow(combo: BuildCombo): boolean {
+  const goals = combo.legs.map(normaliseGoalsTotalLeg).filter((x): x is NormalisedGoalsTotalLeg => x != null);
+  if (goals.length < 2) return false;
+  const overs = goals.filter((g) => g.direction === "over").map((g) => g.line);
+  const unders = goals.filter((g) => g.direction === "under").map((g) => g.line);
+  if (overs.length === 0 || unders.length === 0) return false;
+  const maxOver = Math.max(...overs);
+  const minUnder = Math.min(...unders);
+  const width = minUnder - maxOver;
+  return Number.isFinite(width) && width <= 1.0001;
 }
 
 /** Score how well an opponent position matches our player's position (flank vs flank, central vs central). */
@@ -491,31 +1078,124 @@ function applyShotMatchupBoost(
 }
 
 /** Filter and convert player rows to build legs. */
-export function filterPlayerCandidates(rows: PlayerCandidateInput[]): BuildLeg[] {
+export function filterPlayerCandidates(
+  rows: PlayerCandidateInput[],
+  evidenceContext?: BuildEvidenceContext | null
+): BuildLeg[] {
   const legs: BuildLeg[] = [];
   const seen = new Set<string>();
+  // Dev-only fouls tracing.
+  let foulsRawCount = 0;
+  let foulsKeptCount = 0;
+  const foulsRejectedReasons: Record<string, number> = {};
+  const foulsRejectedSamples: Array<{
+    reason: string;
+    playerName: string;
+    marketName: string;
+    line: number;
+    odds: number;
+    edge: number | undefined;
+    expectedMinutes: number | undefined;
+  }> = [];
 
   for (const r of rows) {
     const cat = getMarketCategory(r.marketName);
     if (cat == null) continue; // only supported player-prop markets
-    if (!isOddsSane(r.odds) || r.odds > MAX_ODDS_PER_LEG) continue;
+    const isFoulsCat = cat === "foulsCommitted" || cat === "foulsWon";
+    if (isFoulsCat) foulsRawCount += 1;
+
+    if (!isOddsSane(r.odds) || r.odds > MAX_ODDS_PER_LEG) {
+      if (isFoulsCat) {
+        foulsRejectedReasons["odds"] = (foulsRejectedReasons["odds"] ?? 0) + 1;
+        if (foulsRejectedSamples.length < 5) {
+          foulsRejectedSamples.push({
+            reason: "odds",
+            playerName: r.playerName,
+            marketName: r.marketName,
+            line: r.line,
+            odds: r.odds,
+            edge: r.modelEdge,
+            expectedMinutes: r.modelInputs?.expectedMinutes,
+          });
+        }
+      }
+      continue;
+    }
     const edge = r.modelEdge ?? 0;
-    if (edge < MIN_EDGE) continue;
+    if (edge < MIN_EDGE) {
+      if (isFoulsCat) {
+        foulsRejectedReasons["edge"] = (foulsRejectedReasons["edge"] ?? 0) + 1;
+        if (foulsRejectedSamples.length < 5) {
+          foulsRejectedSamples.push({
+            reason: "edge",
+            playerName: r.playerName,
+            marketName: r.marketName,
+            line: r.line,
+            odds: r.odds,
+            edge: r.modelEdge,
+            expectedMinutes: r.modelInputs?.expectedMinutes,
+          });
+        }
+      }
+      continue;
+    }
     const expectedMinutes = r.modelInputs?.expectedMinutes ?? 0;
-    if (expectedMinutes < MIN_EXPECTED_MINUTES) continue;
-    if (!isLineSensible(r.marketName, r.line)) continue;
+    if (expectedMinutes < MIN_EXPECTED_MINUTES) {
+      if (isFoulsCat) {
+        foulsRejectedReasons["minutes"] = (foulsRejectedReasons["minutes"] ?? 0) + 1;
+        if (foulsRejectedSamples.length < 5) {
+          foulsRejectedSamples.push({
+            reason: "minutes",
+            playerName: r.playerName,
+            marketName: r.marketName,
+            line: r.line,
+            odds: r.odds,
+            edge: r.modelEdge,
+            expectedMinutes: r.modelInputs?.expectedMinutes,
+          });
+        }
+      }
+      continue;
+    }
+    if (!isLineSensible(r.marketName, r.line)) {
+      if (isFoulsCat) {
+        foulsRejectedReasons["line"] = (foulsRejectedReasons["line"] ?? 0) + 1;
+        if (foulsRejectedSamples.length < 5) {
+          foulsRejectedSamples.push({
+            reason: "line",
+            playerName: r.playerName,
+            marketName: r.marketName,
+            line: r.line,
+            odds: r.odds,
+            edge: r.modelEdge,
+            expectedMinutes: r.modelInputs?.expectedMinutes,
+          });
+        }
+      }
+      continue;
+    }
 
     const key = `${r.playerName}|${r.marketName}|${r.line}|${r.outcome}|${r.bookmakerName}`;
-    if (seen.has(key)) continue;
+    if (seen.has(key)) {
+      if (isFoulsCat) {
+        foulsRejectedReasons["duplicate"] = (foulsRejectedReasons["duplicate"] ?? 0) + 1;
+      }
+      continue;
+    }
     seen.add(key);
 
-    const score = scorePlayerLeg(r);
+    const quality = computePlayerLegQualitySignals(r, evidenceContext);
+    const score = scorePlayerLeg(r, quality);
+    const implied = 1 / r.odds;
+    const probability = clamp01(implied + (r.modelEdge ?? 0));
     const id = `player-${legs.length}-${key.slice(0, 40)}`;
-    const reason = buildLegReason(r);
+    const reason = buildLegReason(r, quality);
     const marketFamily = `player:${String(r.playerName).trim().toLowerCase()}|${cat}`;
     legs.push({
       id,
       type: "player",
+      playerId: String(r.playerName).trim().toLowerCase(),
+      playerQuality: quality,
       marketFamily,
       label: `${r.playerName} ${r.marketName} ${r.line} ${r.outcome}`,
       marketName: r.marketName,
@@ -524,16 +1204,209 @@ export function filterPlayerCandidates(rows: PlayerCandidateInput[]): BuildLeg[]
       odds: r.odds,
       bookmakerName: r.bookmakerName,
       score,
+      edge: r.modelEdge,
+      probability,
       reason,
       playerName: r.playerName,
     });
+    if (isFoulsCat) foulsKeptCount += 1;
+  }
+
+  if (import.meta.env?.DEV) {
+    const foulsRawExist = foulsRawCount > 0;
+    if (!foulsRawExist) {
+      console.log("[builder-debug] fouls filter stats", {
+        foulsRawCount,
+        foulsKeptCount,
+        note: "NO FOULS ROWS IN INPUT",
+      });
+    } else {
+      console.log("[builder-debug] fouls filter stats", {
+        foulsRawCount,
+        foulsKeptCount,
+        foulsRejectedReasons,
+        foulsRejectedSampleCount: foulsRejectedSamples.length,
+        foulsRejectedSamples,
+      });
+    }
   }
 
   return legs;
 }
 
+/** Builder-only market priority: fouls get a strong bonus, others lower. */
+function getBuilderMarketPriority(cat: string | null): number {
+  if (!cat) return 0;
+  if (cat === "foulsCommitted") return 20;
+  if (cat === "foulsWon") return 18;
+  if (cat === "shotsOnTarget") return 6;
+  if (cat === "shots") return 4;
+  return 0;
+}
+
+type PlayerLegQualitySignals = NonNullable<BuildLeg["playerQuality"]>;
+type PlayerLegTier = PlayerLegQualitySignals["playerTier"];
+
+function clamp01(x: number): number {
+  if (!Number.isFinite(x)) return 0;
+  return Math.max(0, Math.min(1, x));
+}
+
+function getModelInputNumber(r: PlayerCandidateInput, key: string): number | null {
+  const v = r.modelInputs?.[key];
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+function computeProjectedRateStrength(r: PlayerCandidateInput): number {
+  const per90 = getModelInputNumber(r, "per90");
+  const expectedMinutes = r.modelInputs?.expectedMinutes ?? 0;
+  if (per90 == null || expectedMinutes <= 0) return 0.5;
+  const expectedCount = (per90 * expectedMinutes) / 90;
+  const threshold = r.outcome === "Over" ? Math.round(r.line + 0.5) : Math.max(0, Math.floor(r.line));
+  if (threshold <= 0) return clamp01(expectedCount / 1.25);
+  if (r.outcome === "Over") return clamp01(expectedCount / threshold);
+  return clamp01((threshold - expectedCount + threshold) / (threshold * 2));
+}
+
+function classifyPlayerLegTier(quality: Omit<PlayerLegQualitySignals, "playerTier" | "weakSignalFlags">): PlayerLegTier {
+  const weakCfg = SCORING_CONFIG.playerTier.thresholds.weak;
+  const weakByReliability =
+    quality.sampleReliability < weakCfg.minSampleReliability || quality.minutesReliability < weakCfg.minMinutesReliability;
+  const weakBySignal =
+    quality.projectedRateStrength < weakCfg.minProjectedRateStrength || quality.recencyScore < weakCfg.minRecencyScore;
+  if (weakByReliability || weakBySignal || quality.qualityScore < weakCfg.minQualityScore) return "weak";
+
+  const eliteCfg = SCORING_CONFIG.playerTier.thresholds.elite;
+  const eliteAllAround =
+    quality.qualityScore >= eliteCfg.minQualityScore &&
+    quality.sampleReliability >= eliteCfg.minSampleReliability &&
+    quality.minutesReliability >= eliteCfg.minMinutesReliability &&
+    quality.recencyScore >= eliteCfg.minRecencyScore &&
+    quality.projectedRateStrength >= eliteCfg.minProjectedRateStrength;
+  if (eliteAllAround) return "elite";
+
+  const strongCfg = SCORING_CONFIG.playerTier.thresholds.strong;
+  const strongOverall =
+    quality.qualityScore >= strongCfg.minQualityScore &&
+    quality.sampleReliability >= strongCfg.minSampleReliability &&
+    quality.minutesReliability >= strongCfg.minMinutesReliability &&
+    quality.recencyScore >= strongCfg.minRecencyScore &&
+    quality.projectedRateStrength >= strongCfg.minProjectedRateStrength;
+  if (strongOverall) return "strong";
+
+  return "ok";
+}
+
+function computeRecencyScore(r: PlayerCandidateInput, evidenceContext?: BuildEvidenceContext | null): number {
+  const cat = getMarketCategory(r.marketName);
+  if (!cat || !evidenceContext?.playerRecentStats?.length) return 0.5;
+  const evidence = getPlayerEvidence(r.playerName, cat, evidenceContext.playerRecentStats);
+  if (!evidence?.recentValues?.length) return 0.5;
+  const values = evidence.recentValues.slice(-8);
+  const weights = values.map((_, i) => i + 1); // recent matches weighted more
+  const weightedMean = values.reduce((s, v, i) => s + v * weights[i]!, 0) / weights.reduce((a, b) => a + b, 0);
+  const threshold = r.outcome === "Over" ? Math.round(r.line + 0.5) : Math.max(0, Math.floor(r.line));
+  if (threshold <= 0) return clamp01(weightedMean / 1.25);
+  if (r.outcome === "Over") return clamp01(weightedMean / threshold);
+  return clamp01((threshold - weightedMean + threshold) / (threshold * 2));
+}
+
+function computePlayerLegQualitySignals(
+  r: PlayerCandidateInput,
+  evidenceContext?: BuildEvidenceContext | null
+): PlayerLegQualitySignals {
+  const cat = getMarketCategory(r.marketName);
+  const appearances = getModelInputNumber(r, "appearances") ?? 0;
+  const minutesPlayed = getModelInputNumber(r, "minutesPlayed") ?? 0;
+  const expectedMinutes = r.modelInputs?.expectedMinutes ?? 0;
+  const dataConfidence = clamp01((r.dataConfidenceScore ?? 0) / 100);
+  const betQualityNorm = clamp01((r.betQualityScore ?? 0) / 100);
+  const edgeNorm = clamp01(((r.modelEdge ?? 0) + 0.01) / 0.12);
+
+  const sampleReliability = clamp01(Math.min(1, appearances / 12) * 0.7 + Math.min(1, minutesPlayed / 900) * 0.3);
+  const minutesReliability = clamp01(expectedMinutes / 80);
+  const recencyScore = computeRecencyScore(r, evidenceContext);
+  const projectedRateStrength = computeProjectedRateStrength(r);
+  const roleConsistencyScore = clamp01(minutesReliability * 0.6 + sampleReliability * 0.3 + dataConfidence * 0.1);
+
+  let marketSpecificScore = 0.5;
+  if (cat === "shots") {
+    const w = SCORING_CONFIG.playerQualityAggregation.marketSpecificWeights.shots;
+    marketSpecificScore = clamp01(
+      projectedRateStrength * w.projectedRate + recencyScore * w.recency + minutesReliability * w.minutes + sampleReliability * w.sample
+    );
+  } else if (cat === "shotsOnTarget") {
+    const w = SCORING_CONFIG.playerQualityAggregation.marketSpecificWeights.shotsOnTarget;
+    marketSpecificScore = clamp01(
+      projectedRateStrength * w.projectedRate + recencyScore * w.recency + minutesReliability * w.minutes + sampleReliability * w.sample
+    );
+  } else if (cat === "foulsCommitted") {
+    const w = SCORING_CONFIG.playerQualityAggregation.marketSpecificWeights.foulsCommitted;
+    marketSpecificScore = clamp01(
+      projectedRateStrength * w.projectedRate + recencyScore * w.recency + minutesReliability * w.minutes + sampleReliability * w.sample
+    );
+  } else if (cat === "foulsWon") {
+    const w = SCORING_CONFIG.playerQualityAggregation.marketSpecificWeights.foulsWon;
+    marketSpecificScore = clamp01(
+      projectedRateStrength * w.projectedRate + recencyScore * w.recency + minutesReliability * w.minutes + sampleReliability * w.sample
+    );
+  }
+
+  const qb = SCORING_CONFIG.playerQualityAggregation.qualityBlend;
+  const qualityScore = Math.round(
+    clamp01(
+      marketSpecificScore * qb.marketSpecific +
+        edgeNorm * qb.edge +
+        roleConsistencyScore * qb.roleConsistency +
+        dataConfidence * qb.dataConfidence +
+        betQualityNorm * qb.betQuality
+    ) * 100
+  );
+
+  const evidence = cat && evidenceContext?.playerRecentStats?.length ? getPlayerEvidence(r.playerName, cat, evidenceContext.playerRecentStats) : null;
+  const hasRecentValues = Boolean(evidence?.recentValues?.length);
+  const lowSample = sampleReliability < SCORING_CONFIG.weakSignalPenalties.lowSampleThreshold;
+  const unstableMinutes = minutesReliability < SCORING_CONFIG.weakSignalPenalties.lowMinutesThreshold;
+  const weakRecency = recencyScore < SCORING_CONFIG.weakSignalPenalties.lowRecencyThreshold;
+  const playerTier = classifyPlayerLegTier({
+    qualityScore,
+    sampleReliability,
+    minutesReliability,
+    recencyScore,
+    roleConsistencyScore,
+    marketSpecificScore,
+    projectedRateStrength,
+    explanationSourceFlags: {
+      hasRecentValues,
+      hasSample: appearances >= 6 || minutesPlayed >= 500,
+      stableMinutes: expectedMinutes >= 60,
+    },
+  });
+
+  return {
+    playerTier,
+    qualityScore,
+    sampleReliability,
+    minutesReliability,
+    recencyScore,
+    roleConsistencyScore,
+    marketSpecificScore,
+    projectedRateStrength,
+    weakSignalFlags: {
+      lowSample,
+      unstableMinutes,
+      weakRecency,
+    },
+    explanationSourceFlags: {
+      hasRecentValues,
+      hasSample: appearances >= 6 || minutesPlayed >= 500,
+      stableMinutes: expectedMinutes >= 60,
+    },
+  };
+}
+
 /** Score a player leg for combo ranking (higher = better). */
-function scorePlayerLeg(r: PlayerCandidateInput): number {
+function scorePlayerLeg(r: PlayerCandidateInput, quality: PlayerLegQualitySignals): number {
   let score = 0;
   const edge = r.modelEdge ?? 0;
   score += Math.min(50, Math.max(0, edge * 200)); // edge contribution cap
@@ -549,14 +1422,48 @@ function scorePlayerLeg(r: PlayerCandidateInput): number {
   if (!isLineSensible(r.marketName, r.line)) score -= 20;
   if (r.odds > 8) score -= 5;
   if (r.odds > 12) score -= 10;
+  score += getBuilderMarketPriority(getMarketCategory(r.marketName));
+
+  // Non-linear tier impact: elite legs separate clearly from average ones.
+  if (quality.playerTier === "weak") score += SCORING_CONFIG.playerTier.weakPenalty;
+  else if (quality.playerTier === "ok") score += SCORING_CONFIG.playerTier.okBonus;
+  else if (quality.playerTier === "strong") score += SCORING_CONFIG.playerTier.strongBonus;
+  else if (quality.playerTier === "elite") score += SCORING_CONFIG.playerTier.eliteBonus;
+
+  // Sharper projected-rate-vs-line contribution.
+  if (quality.projectedRateStrength >= SCORING_CONFIG.projectedRateStrength.veryHighThreshold) {
+    score += SCORING_CONFIG.projectedRateStrength.veryHighBonus;
+  } else if (quality.projectedRateStrength >= SCORING_CONFIG.projectedRateStrength.highThreshold) {
+    score += SCORING_CONFIG.projectedRateStrength.highBonus;
+  } else if (quality.projectedRateStrength >= SCORING_CONFIG.projectedRateStrength.mediumThreshold) {
+    score += SCORING_CONFIG.projectedRateStrength.mediumBonus;
+  } else if (quality.projectedRateStrength < SCORING_CONFIG.projectedRateStrength.lowThreshold) {
+    score -= SCORING_CONFIG.projectedRateStrength.lowPenalty;
+  }
+
+  // Weak-signal drag: low reliability stacks should pull leg scores down.
+  if (quality.weakSignalFlags.lowSample) score -= SCORING_CONFIG.weakSignalPenalties.lowSample;
+  if (quality.weakSignalFlags.unstableMinutes) score -= SCORING_CONFIG.weakSignalPenalties.lowMinutes;
+  if (quality.weakSignalFlags.weakRecency) score -= SCORING_CONFIG.weakSignalPenalties.lowRecency;
+
+  score += (quality.qualityScore - 50) * SCORING_CONFIG.playerQualityAggregation.qualityScoreMultiplier;
+  score += (quality.marketSpecificScore - 0.5) * SCORING_CONFIG.playerQualityAggregation.marketSpecificOffsetMultiplier;
   return Math.max(0, score);
 }
 
-function buildLegReason(r: PlayerCandidateInput): string {
+function buildLegReason(r: PlayerCandidateInput, quality: PlayerLegQualitySignals): string {
   const edge = r.modelEdge;
   const pct = edge != null ? `${(edge * 100).toFixed(1)}% edge` : "";
   const strong = r.isStrongBet ? " strong" : "";
-  return pct ? `${pct}${strong}`.trim() : "value";
+  const reasons: string[] = [];
+  if (pct) reasons.push(`${pct}${strong}`.trim());
+  if (quality.playerTier === "elite") reasons.push("strong underlying rate; consistent involvement");
+  if (quality.playerTier === "strong") reasons.push("solid underlying rate");
+  if (quality.sampleReliability >= 0.7) reasons.push("reliable sample");
+  if (quality.minutesReliability >= 0.75) reasons.push("stable minutes");
+  if (quality.recencyScore >= 0.65) reasons.push("recent form supports line");
+  if (quality.playerTier === "weak") reasons.push("limited signal reliability");
+  return reasons.length > 0 ? reasons.join("; ") : "value";
 }
 
 /** Compute fixture expected total corners from team stats (for/against per match). */
@@ -597,7 +1504,8 @@ function evaluateCornerLine(
 /** Build model-based Alternative Corners legs: evaluate each line, keep top N by score. */
 export function getCornerLegsFromOdds(
   bookmakers: OddsBookmakerInput[],
-  fixtureCornersContext: FixtureCornersContext | null
+  fixtureCornersContext: FixtureCornersContext | null,
+  headToHeadContext?: HeadToHeadFixtureContext | null
 ): BuildLeg[] {
   const fixtureExpected = getFixtureExpectedCorners(fixtureCornersContext);
   if (import.meta.env?.DEV) {
@@ -613,6 +1521,7 @@ export function getCornerLegsFromOdds(
     score: number;
     reason: string;
     edge: number;
+    probability: number;
   }> = [];
   const seen = new Set<string>();
   let underRejectedByPreference = 0;
@@ -630,7 +1539,7 @@ export function getCornerLegsFromOdds(
         if (seen.has(key)) continue;
         seen.add(key);
         const evaluated = evaluateCornerLine(line, outcome, odds, fixtureExpected);
-        let { score, reason, edge } = evaluated;
+        let { score, reason, edge, modelProb } = evaluated;
 
         if (outcome === "Under") {
           if (edge < MIN_EDGE_UNDER_CORNERS) {
@@ -648,6 +1557,26 @@ export function getCornerLegsFromOdds(
           reason = "strong Under value vs model — included on merit";
         } else {
           if (edge < MIN_EDGE_OVER_CORNERS) continue;
+        }
+
+        // Optional H2H context adjustment: modestly align corners direction with historical average when sample is strong.
+        if (headToHeadContext && headToHeadContext.sampleSize >= MIN_H2H_SAMPLE_SIZE && headToHeadContext.averageTotalCorners != null) {
+          const diff = headToHeadContext.averageTotalCorners - fixtureExpected;
+          if (diff >= 1.0) {
+            if (outcome === "Over") {
+              score += 3;
+              reason = `${reason}; H2H corners lean high`;
+            } else {
+              score = Math.max(0, score - 2);
+            }
+          } else if (diff <= -1.0) {
+            if (outcome === "Under") {
+              score += 3;
+              reason = `${reason}; H2H corners lean low`;
+            } else {
+              score = Math.max(0, score - 2);
+            }
+          }
         }
 
         if (import.meta.env?.DEV) {
@@ -675,6 +1604,7 @@ export function getCornerLegsFromOdds(
           score,
           reason,
           edge,
+          probability: modelProb,
         });
       }
     }
@@ -694,6 +1624,7 @@ export function getCornerLegsFromOdds(
   return kept.map((c, i) => ({
     id: `team-corners-${i}`,
     type: "team" as const,
+    marketId: MARKET_ID_ALTERNATIVE_CORNERS,
     marketFamily: CORNERS_MARKET_FAMILY,
     label: `${c.marketName} ${c.line} ${c.outcome}`,
     marketName: c.marketName,
@@ -702,8 +1633,342 @@ export function getCornerLegsFromOdds(
     odds: c.odds,
     bookmakerName: c.bookmakerName,
     score: c.score,
+    edge: c.edge,
+    probability: c.probability,
     reason: c.reason,
   }));
+}
+
+function applyH2HAdjustmentsToTeamLeg(
+  leg: BuildLeg,
+  headToHeadContext: HeadToHeadFixtureContext | null | undefined
+): { delta: number; note: string | null } {
+  if (!headToHeadContext) return { delta: 0, note: null };
+  if (headToHeadContext.sampleSize < MIN_H2H_SAMPLE_SIZE) return { delta: 0, note: null };
+
+  let delta = 0;
+  const notes: string[] = [];
+
+  const avgGoals = headToHeadContext.averageTotalGoals;
+  const avgCorners = headToHeadContext.averageTotalCorners;
+  const bttsRate = headToHeadContext.bttsRate;
+  const drawRate = headToHeadContext.drawRate;
+  const homeWin = headToHeadContext.team1WinRate;
+  const awayWin = headToHeadContext.team2WinRate;
+
+  // Goals lean (team totals markets only).
+  if ((leg.marketFamily === "team:match-goals" || leg.marketFamily === "team:alternative-total-goals") && avgGoals != null) {
+    const high = avgGoals >= 3.0;
+    const low = avgGoals <= 2.2;
+    if (high) {
+      if (leg.outcome === "Over") {
+        delta += 5;
+        notes.push("H2H avg goals leans high");
+      } else if (leg.outcome === "Under") {
+        delta -= 3;
+      }
+    } else if (low) {
+      if (leg.outcome === "Under") {
+        delta += 5;
+        notes.push("H2H avg goals leans low");
+      } else if (leg.outcome === "Over") {
+        delta -= 3;
+      }
+    }
+    // Small extra nudge if line is clearly below/above avg goals.
+    if (typeof leg.line === "number" && Number.isFinite(leg.line)) {
+      if (leg.outcome === "Over" && avgGoals >= leg.line + 0.6) delta += 2;
+      if (leg.outcome === "Under" && avgGoals <= leg.line - 0.6) delta += 2;
+    }
+  }
+
+  // BTTS lean.
+  if (leg.marketFamily === "team:btts" && bttsRate != null) {
+    if (bttsRate >= 0.6) {
+      if (leg.outcome === "Yes") {
+        delta += 4;
+        notes.push("H2H BTTS rate supports Yes");
+      } else if (leg.outcome === "No") {
+        delta -= 3;
+      }
+    } else if (bttsRate <= 0.45) {
+      if (leg.outcome === "No") {
+        delta += 4;
+        notes.push("H2H BTTS rate supports No");
+      } else if (leg.outcome === "Yes") {
+        delta -= 3;
+      }
+    }
+  }
+
+  // Match result lean (assumes team1=Home, team2=Away in our request order).
+  if (leg.marketFamily === "team:match-results") {
+    if (drawRate != null && drawRate >= 0.33 && leg.outcome === "Draw") {
+      delta += 3;
+      notes.push("H2H draw rate is elevated");
+    }
+    if (homeWin != null && awayWin != null) {
+      const diff = homeWin - awayWin;
+      if (diff >= 0.22) {
+        if (leg.outcome === "Home") {
+          delta += 4;
+          notes.push("H2H results lean Home");
+        } else if (leg.outcome === "Away") {
+          delta -= 2;
+        }
+      } else if (diff <= -0.22) {
+        if (leg.outcome === "Away") {
+          delta += 4;
+          notes.push("H2H results lean Away");
+        } else if (leg.outcome === "Home") {
+          delta -= 2;
+        }
+      }
+    }
+  }
+
+  // Corners lean already applied in `getCornerLegsFromOdds` (model-based), but allow a tiny note passthrough here for non-corners legs.
+  if (leg.marketFamily !== CORNERS_MARKET_FAMILY && avgCorners != null) {
+    // no-op; reserved for future use if we introduce other corners markets
+  }
+
+  return { delta, note: notes.length > 0 ? notes.join("; ") : null };
+}
+
+function scoreTeamLegNoModel(opts: {
+  marketId: number;
+  odds: number;
+  line: number | null;
+  outcomeLabel: string;
+}): { score: number; reason: string } {
+  // Conservative: these legs are "available alternatives" vs corners, not meant to dominate without a model.
+  const { marketId, odds, line, outcomeLabel } = opts;
+  let score = 8;
+  // Avoid generic filler; evidence-style explanations are added later (H2H counts, etc.).
+  let reason = "";
+
+  // Prefer plausible odds bands; penalise longshots.
+  if (odds >= 1.45 && odds <= 3.8) score += 10;
+  else if (odds >= 1.25 && odds <= 6.5) score += 4;
+  if (odds > 8) score -= 8;
+  if (odds > 12) score -= 14;
+
+  // Prefer common goal lines for O/U totals.
+  if ((marketId === MARKET_ID_MATCH_GOALS || marketId === MARKET_ID_ALTERNATIVE_TOTAL_GOALS) && line != null) {
+    if (line >= 0.5 && line <= 6.5) score += 4;
+    const common = [0.5, 1.5, 2.5, 3.5, 4.5];
+    const dist = Math.min(...common.map((x) => Math.abs(x - line)));
+    if (dist <= 0.01) {
+      score += 6;
+    }
+  } else if (marketId === MARKET_ID_MATCH_RESULTS) {
+    reason = "";
+  } else if (marketId === MARKET_ID_BTTS) {
+    reason = "";
+  }
+
+  return { score: Math.max(0, score), reason };
+}
+
+/** Build team legs from normalised fixture odds markets (explicit allowlist; no rewrite). */
+export function getTeamLegsFromOdds(
+  bookmakers: OddsBookmakerInput[],
+  fixtureCornersContext: FixtureCornersContext | null,
+  headToHeadContext?: HeadToHeadFixtureContext | null
+): BuildLeg[] {
+  const byMarketIdRaw = new Map<number, number>();
+  const allowedRaw: Array<{ marketId: number; marketName: string; selectionLabel: string }> = [];
+
+  // Candidates bucketed by marketId so we can cap per-market.
+  const candidatesByMarketId = new Map<number, BuildLeg[]>();
+
+  // Corners (69) remains model-scored and capped separately.
+  const cornersLegs = getCornerLegsFromOdds(bookmakers, fixtureCornersContext, headToHeadContext);
+
+  const h2hApplied =
+    Boolean(headToHeadContext) &&
+    (headToHeadContext?.sampleSize ?? 0) >= MIN_H2H_SAMPLE_SIZE;
+  let h2hBoosted = 0;
+  let h2hPenalised = 0;
+  const h2hSamples: Array<{ delta: number; label: string; family: string; note: string | null }> = [];
+
+  for (const b of bookmakers) {
+    for (const m of b.markets) {
+      byMarketIdRaw.set(m.marketId, (byMarketIdRaw.get(m.marketId) ?? 0) + 1);
+      if (!BUILD_TEAM_MARKET_IDS.has(m.marketId)) continue;
+      if (m.marketId === MARKET_ID_ALTERNATIVE_CORNERS) continue; // already handled above
+
+      for (const sel of m.selections) {
+        const odds = sel.odds;
+        if (odds == null || !isOddsSane(odds) || odds > MAX_ODDS_PER_LEG) continue;
+        const rawLabel = String(sel.label ?? "").trim();
+        if (!rawLabel) continue;
+        allowedRaw.push({ marketId: m.marketId, marketName: m.marketName, selectionLabel: rawLabel });
+
+        if (m.marketId === MARKET_ID_MATCH_RESULTS) {
+          const out = parseMatchResultOutcome(rawLabel);
+          if (!out) continue;
+          const base = scoreTeamLegNoModel({ marketId: m.marketId, odds, line: null, outcomeLabel: out });
+          const leg: BuildLeg = {
+            id: `team-mr-${b.bookmakerId}-${out}-${odds}`,
+            type: "team",
+            marketId: m.marketId,
+            marketFamily: "team:match-results",
+            label: `${m.marketName} ${out}`,
+            marketName: m.marketName,
+            line: 0,
+            outcome: out,
+            odds,
+            bookmakerName: b.bookmakerName,
+            score: base.score,
+            reason: base.reason,
+          };
+          if (h2hApplied) {
+            const adj = applyH2HAdjustmentsToTeamLeg(leg, headToHeadContext);
+            if (adj.delta !== 0) {
+              leg.score = Math.max(0, leg.score + adj.delta);
+              if (adj.note) leg.reason = leg.reason ? `${leg.reason}; ${adj.note}` : adj.note;
+              if (adj.delta > 0) h2hBoosted += 1;
+              if (adj.delta < 0) h2hPenalised += 1;
+              if (import.meta.env?.DEV && h2hSamples.length < 6) h2hSamples.push({ delta: adj.delta, label: leg.label, family: leg.marketFamily, note: adj.note });
+            }
+          }
+          const arr = candidatesByMarketId.get(m.marketId) ?? [];
+          arr.push(leg);
+          candidatesByMarketId.set(m.marketId, arr);
+          continue;
+        }
+
+        if (m.marketId === MARKET_ID_BTTS) {
+          const out = parseBttsOutcome(rawLabel);
+          if (!out) continue;
+          const base = scoreTeamLegNoModel({ marketId: m.marketId, odds, line: null, outcomeLabel: out });
+          const leg: BuildLeg = {
+            id: `team-btts-${b.bookmakerId}-${out}-${odds}`,
+            type: "team",
+            marketId: m.marketId,
+            marketFamily: "team:btts",
+            label: `${m.marketName} ${out}`,
+            marketName: m.marketName,
+            line: 0,
+            outcome: out,
+            odds,
+            bookmakerName: b.bookmakerName,
+            score: base.score,
+            reason: base.reason,
+          };
+          if (h2hApplied) {
+            const adj = applyH2HAdjustmentsToTeamLeg(leg, headToHeadContext);
+            if (adj.delta !== 0) {
+              leg.score = Math.max(0, leg.score + adj.delta);
+              if (adj.note) leg.reason = leg.reason ? `${leg.reason}; ${adj.note}` : adj.note;
+              if (adj.delta > 0) h2hBoosted += 1;
+              if (adj.delta < 0) h2hPenalised += 1;
+              if (import.meta.env?.DEV && h2hSamples.length < 6) h2hSamples.push({ delta: adj.delta, label: leg.label, family: leg.marketFamily, note: adj.note });
+            }
+          }
+          const arr = candidatesByMarketId.get(m.marketId) ?? [];
+          arr.push(leg);
+          candidatesByMarketId.set(m.marketId, arr);
+          continue;
+        }
+
+        if (m.marketId === MARKET_ID_MATCH_GOALS || m.marketId === MARKET_ID_ALTERNATIVE_TOTAL_GOALS) {
+          const line = parseOverUnderLine(rawLabel);
+          if (line == null) continue;
+          const outcome: "Over" | "Under" = isOverLabel(rawLabel) ? "Over" : "Under";
+          const base = scoreTeamLegNoModel({
+            marketId: m.marketId,
+            odds,
+            line,
+            outcomeLabel: `${outcome} ${line}`,
+          });
+          const family = m.marketId === MARKET_ID_MATCH_GOALS ? "team:match-goals" : "team:alternative-total-goals";
+          const leg: BuildLeg = {
+            id: `team-ou-${m.marketId}-${b.bookmakerId}-${outcome}-${line}-${odds}`,
+            type: "team",
+            marketId: m.marketId,
+            marketFamily: family,
+            label: `${m.marketName} ${line} ${outcome}`,
+            marketName: m.marketName,
+            line,
+            outcome,
+            odds,
+            bookmakerName: b.bookmakerName,
+            score: base.score,
+            reason: base.reason,
+          };
+          if (h2hApplied) {
+            const adj = applyH2HAdjustmentsToTeamLeg(leg, headToHeadContext);
+            if (adj.delta !== 0) {
+              leg.score = Math.max(0, leg.score + adj.delta);
+              if (adj.note) leg.reason = leg.reason ? `${leg.reason}; ${adj.note}` : adj.note;
+              if (adj.delta > 0) h2hBoosted += 1;
+              if (adj.delta < 0) h2hPenalised += 1;
+              if (import.meta.env?.DEV && h2hSamples.length < 6) h2hSamples.push({ delta: adj.delta, label: leg.label, family: leg.marketFamily, note: adj.note });
+            }
+          }
+          const arr = candidatesByMarketId.get(m.marketId) ?? [];
+          arr.push(leg);
+          candidatesByMarketId.set(m.marketId, arr);
+          continue;
+        }
+      }
+    }
+  }
+
+  const nonCornerTeamLegs: BuildLeg[] = [];
+  for (const [marketId, legs] of candidatesByMarketId.entries()) {
+    legs.sort((a, b) => b.score - a.score);
+    // Light dedupe by label+bookmaker to avoid noisy repeats.
+    const seen = new Set<string>();
+    const kept: BuildLeg[] = [];
+    for (const l of legs) {
+      const key = `${l.marketFamily}|${l.label}|${l.bookmakerName}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      kept.push(l);
+      if (kept.length >= MAX_TEAM_LEGS_PER_MARKET) break;
+    }
+    nonCornerTeamLegs.push(...kept);
+  }
+
+  const allTeamLegs = [...nonCornerTeamLegs, ...cornersLegs];
+
+  if (import.meta.env?.DEV) {
+    const allowedCounts = new Map<number, number>();
+    for (const x of allowedRaw) allowedCounts.set(x.marketId, (allowedCounts.get(x.marketId) ?? 0) + 1);
+    const legsByFamily = new Map<string, number>();
+    for (const l of allTeamLegs) legsByFamily.set(l.marketFamily, (legsByFamily.get(l.marketFamily) ?? 0) + 1);
+    console.log("[build-value-bets] team markets intake", {
+      rawMarketsSeenById: Array.from(byMarketIdRaw.entries()).sort((a, b) => a[0] - b[0]),
+      allowedTeamMarketIds: Array.from(BUILD_TEAM_MARKET_IDS.values()).sort((a, b) => a - b),
+      allowedSelectionCountByMarketId: Array.from(allowedCounts.entries()).sort((a, b) => a[0] - b[0]),
+      finalTeamLegCount: allTeamLegs.length,
+      finalTeamLegsByFamily: Array.from(legsByFamily.entries()).sort((a, b) => b[1] - a[1]),
+      finalTeamLegSamples: allTeamLegs.slice(0, 10).map((l) => ({
+        marketName: l.marketName,
+        label: l.label,
+        odds: l.odds,
+        score: l.score,
+        family: l.marketFamily,
+      })),
+    });
+    console.log("[build-value-bets] H2H team-leg scoring", {
+      applied: h2hApplied,
+      sampleSize: headToHeadContext?.sampleSize ?? 0,
+      averageTotalGoals: headToHeadContext?.averageTotalGoals ?? null,
+      averageTotalCorners: headToHeadContext?.averageTotalCorners ?? null,
+      bttsRate: headToHeadContext?.bttsRate ?? null,
+      drawRate: headToHeadContext?.drawRate ?? null,
+      boostedLegs: h2hBoosted,
+      penalisedLegs: h2hPenalised,
+      samples: h2hSamples,
+      note: h2hApplied ? "H2H adjustments applied to team legs only" : "H2H missing/weak; team-leg scoring unchanged",
+    });
+  }
+
+  return allTeamLegs;
 }
 
 /** Get per90 and stat label for a player leg from rows (for explanation). */
@@ -733,8 +1998,6 @@ function getPer90AndLabelForLeg(
   return { per90, statLabel };
 }
 
-const MAX_RECENT_VALUES_DISPLAY = 5;
-
 /** Look up player recent evidence by normalized player name and market category. */
 function getPlayerEvidence(
   playerName: string,
@@ -749,68 +2012,321 @@ function getPlayerEvidence(
   return found ? { per90: found.per90, recentValues: found.recentValues } : null;
 }
 
+/** Evidence row for this player+market (even if recentValues empty) — for explanations. */
+function lookupPlayerEvidenceForExplanation(
+  playerName: string,
+  marketCategory: string,
+  evidence: BuildEvidenceContext["playerRecentStats"]
+): { per90: number; recentValues: number[] } | null {
+  if (!evidence?.length) return null;
+  const key = `${normalizePlayerNameForMatch(playerName)}|${marketCategory}`;
+  const found = evidence.find((e) => `${normalizePlayerNameForMatch(e.playerName)}|${e.marketCategory}` === key);
+  if (!found) return null;
+  const rv = Array.isArray(found.recentValues) ? found.recentValues : [];
+  return { per90: found.per90, recentValues: rv };
+}
+
+function getExpectedMinutesForPlayer(playerName: string, rows: PlayerCandidateInput[]): number | null {
+  const key = normalizePlayerNameForMatch(playerName);
+  for (const r of rows) {
+    if (normalizePlayerNameForMatch(r.playerName) !== key) continue;
+    const m = r.modelInputs?.expectedMinutes;
+    if (typeof m === "number" && Number.isFinite(m)) return m;
+  }
+  return null;
+}
+
+type MarketCat = NonNullable<ReturnType<typeof getMarketCategory>>;
+
+function statLabelForCategory(cat: MarketCat | null): string {
+  if (cat === "shots") return "shots";
+  if (cat === "shotsOnTarget") return "shots on target";
+  if (cat === "foulsCommitted") return "fouls committed";
+  if (cat === "foulsWon") return "fouls won";
+  return "";
+}
+
+function selectionTitleForPlayerLeg(leg: BuildLeg, cat: MarketCat | null, statLabel: string): string {
+  if (typeof leg.line !== "number" || !Number.isFinite(leg.line)) return leg.label;
+  if (cat === "shotsOnTarget") {
+    if (leg.outcome === "Over") return `${Math.round(leg.line + 0.5)}+ Shot on Target`;
+    return `Under ${leg.line % 1 === 0 ? `${leg.line}.0` : leg.line.toFixed(1)} Shot on Target`;
+  }
+  if (cat === "shots") {
+    if (leg.outcome === "Over") return `${Math.round(leg.line + 0.5)}+ Shots`;
+    return `Under ${leg.line % 1 === 0 ? `${leg.line}.0` : leg.line.toFixed(1)} Shots`;
+  }
+  if (cat === "foulsCommitted") {
+    if (leg.outcome === "Over") return `${Math.round(leg.line + 0.5)}+ Fouls Committed`;
+    return `Under ${leg.line % 1 === 0 ? `${leg.line}.0` : leg.line.toFixed(1)} Fouls Committed`;
+  }
+  if (cat === "foulsWon") {
+    if (leg.outcome === "Over") return "to be fouled";
+    return `Under ${leg.line % 1 === 0 ? `${leg.line}.0` : leg.line.toFixed(1)} Fouls Won`;
+  }
+  if (statLabel && (leg.outcome === "Over" || leg.outcome === "Under")) {
+    const st = statLabel
+      .split(" ")
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(" ");
+    if (leg.outcome === "Over") return `${Math.round(leg.line + 0.5)}+ ${st}`;
+    return `Under ${leg.line % 1 === 0 ? `${leg.line}.0` : leg.line.toFixed(1)} ${st}`;
+  }
+  return leg.label;
+}
+
+const TIPSTER_BANNED_REASON_FRAG = /\b(underlying rate|stable minutes|reliable sample|recent form|consistent involvement|limited signal|solid underlying|open football|physical opposition)\b/i;
+
+function shortFallbackContextLine(cat: MarketCat | null): string {
+  // One sentence only: tight, market-specific, and betting-style.
+  if (cat === "foulsCommitted") return "Recent foul counts support this line.";
+  if (cat === "foulsWon") return "Recent drawn-foul numbers support this line.";
+  if (cat === "shotsOnTarget") return "Recent SOT volume supports this line.";
+  if (cat === "shots") return "Recent shot volume supports this line.";
+  return "Recent involvement supports this angle.";
+}
+
+/**
+ * Use leg.reason segments that mention opponent / fouls / matchup / shot angle; drop generic filler.
+ */
+function extractTipsterContextFromReason(reason: string | null | undefined): string | null {
+  if (!reason?.trim()) return null;
+  const parts = reason
+    .split(";")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  for (const p of parts) {
+    if (TIPSTER_BANNED_REASON_FRAG.test(p)) continue;
+    if (/^\d+\.?\d*\s*%\s*edge\b/i.test(p)) continue;
+    const low = p.toLowerCase();
+    if (
+      low.includes("opponent") ||
+      low.includes("matchup") ||
+      low.includes("foul") ||
+      (low.includes("attacking") && (low.includes("shot") || low.includes("wing") || low.includes("angle"))) ||
+      (low.includes("draws") && low.includes("foul")) ||
+      (low.includes("commit") && low.includes("foul")) ||
+      low.includes("flank") ||
+      low.includes("role") && (low.includes("foul") || low.includes("shot"))
+    ) {
+      const t = p.endsWith(".") ? p : `${p}.`;
+      return t.charAt(0).toUpperCase() + t.slice(1);
+    }
+  }
+  return null;
+}
+
+function trimTrailingBlankLines(block: string[]): string[] {
+  const out = [...block];
+  while (out.length > 0 && out[out.length - 1] === "") out.pop();
+  return out;
+}
+
+/**
+ * Tipster-style block: ✍️ header, optional recent series (>=3 games, full join without spaces), context, optional opponentStatSeries.
+ */
+function buildPlayerLegTipsterExplanation(
+  leg: BuildLeg,
+  cat: MarketCat | null,
+  statLabel: string,
+  evidenceEntry: { per90: number; recentValues: number[] } | null,
+  playerRows: PlayerCandidateInput[]
+): string[] {
+  if (!leg.playerName) return [];
+
+  const title = selectionTitleForPlayerLeg(leg, cat, statLabel);
+  const out: string[] = [];
+  out.push(`✍️ ${leg.playerName} ${title}`);
+  out.push("");
+
+  const rawSeries =
+    evidenceEntry?.recentValues?.filter((v) => typeof v === "number" && Number.isFinite(v)) ?? [];
+  const hasRecentBlock = rawSeries.length >= 3;
+
+  if (import.meta.env?.DEV) {
+    console.log("[explanation-debug]", {
+      playerName: leg.playerName,
+      hasEvidenceEntry: Boolean(evidenceEntry),
+      hasRecent: hasRecentBlock,
+      seriesLength: rawSeries.length,
+    });
+  }
+
+  if (hasRecentBlock) {
+    const expMin = getExpectedMinutesForPlayer(leg.playerName, playerRows);
+    if (expMin != null && expMin >= 30) {
+      const displayValues = [...rawSeries].reverse();
+      out.push(`Recent apps (30+ mins): Recent:${displayValues.join(",")}`);
+    } else {
+      // Keep legacy "Recent starts:" two-line format.
+      out.push("Recent starts:");
+      out.push(rawSeries.join(","));
+    }
+    out.push("");
+  }
+
+  const fromReason = extractTipsterContextFromReason(leg.reason);
+  out.push(fromReason ?? shortFallbackContextLine(cat));
+
+  const opp = leg.opponentStatSeries;
+  if (
+    opp &&
+    typeof opp.label === "string" &&
+    opp.label.trim() !== "" &&
+    Array.isArray(opp.values) &&
+    opp.values.length > 0 &&
+    opp.values.every((v) => typeof v === "number" && Number.isFinite(v))
+  ) {
+    out.push("");
+    out.push(opp.label.trim());
+    out.push(opp.values.join(","));
+  }
+
+  return trimTrailingBlankLines(out);
+}
+
 /** Build factual explanation lines for a combo from available stats. Uses evidence context when provided for evidence-style lines. */
 function buildComboExplanation(
   combo: BuildCombo,
   playerRows: PlayerCandidateInput[],
   fixtureCornersContext: FixtureCornersContext | null,
-  evidenceContext: BuildEvidenceContext | null
+  evidenceContext: BuildEvidenceContext | null,
+  headToHeadContext?: HeadToHeadFixtureContext | null
 ): ComboExplanation {
   const lines: string[] = [];
 
-  for (const leg of combo.legs) {
-    if (leg.type === "player") {
-      const cat = getMarketCategory(leg.marketName);
-      const evidence = evidenceContext ? getPlayerEvidence(leg.playerName!, cat ?? "", evidenceContext.playerRecentStats) : null;
-      const data = getPer90AndLabelForLeg(leg, playerRows);
-      const per90 = evidence?.per90 ?? data?.per90;
-      const statLabel = data?.statLabel ?? (cat === "shots" ? "shots" : cat === "shotsOnTarget" ? "shots on target" : cat === "foulsCommitted" ? "fouls committed" : cat === "foulsWon" ? "fouls won" : "");
+  const homeName = evidenceContext?.homeTeamName?.trim() || "Home";
+  const awayName = evidenceContext?.awayTeamName?.trim() || "Away";
 
-      if (per90 != null && statLabel) {
-        if (evidence?.recentValues?.length) {
-          const recent = evidence.recentValues.slice(-MAX_RECENT_VALUES_DISPLAY).join(", ");
-          lines.push(`${leg.playerName} averages ${per90.toFixed(1)} ${statLabel} per 90, with recent starts of ${recent}.`);
-        } else {
-          lines.push(`${leg.playerName} averages ${per90.toFixed(1)} ${statLabel} per 90.`);
-        }
-      }
-      if (leg.reason && leg.reason.trim()) {
-        lines.push(leg.reason.trim());
-      }
-    } else if (leg.type === "team" && leg.marketName?.toLowerCase().includes("corner")) {
-      if (fixtureCornersContext != null) {
-        const home = fixtureCornersContext.homeCornersFor;
-        const away = fixtureCornersContext.awayCornersFor;
-        if (Number.isFinite(home) && Number.isFinite(away)) {
-          const homeName = evidenceContext?.homeTeamName?.trim() || "Home";
-          const awayName = evidenceContext?.awayTeamName?.trim() || "Away";
-          lines.push(`${homeName} average ${home.toFixed(1)} corners per game and ${awayName} average ${away.toFixed(1)}.`);
-        }
-      }
-      if (evidenceContext?.cornersH2hTotals?.length) {
-        const h2h = evidenceContext.cornersH2hTotals.slice(-6).join(", ");
-        lines.push(`Recent head-to-head total corners: ${h2h}.`);
-      }
-      const fixtureExpected = getFixtureExpectedCorners(fixtureCornersContext);
-      if (Number.isFinite(fixtureExpected)) {
-        lines.push(`Fixture projection: ${fixtureExpected.toFixed(1)} total corners.`);
-      }
-      if (leg.reason && leg.reason.trim()) {
-        lines.push(leg.reason.trim());
+  const h2hSample = headToHeadContext?.sampleSize ?? 0;
+  const h2hOk = headToHeadContext != null && h2hSample >= MIN_H2H_SAMPLE_SIZE;
+
+  const h2hGoalsCountsByLine = new Map<number, { over: number; under: number; sampleSize: number }>();
+  if (h2hOk && Array.isArray(headToHeadContext?.goalsLineCounts)) {
+    for (const row of headToHeadContext!.goalsLineCounts!) {
+      if (typeof row?.line === "number" && Number.isFinite(row.line)) {
+        h2hGoalsCountsByLine.set(row.line, { over: row.over, under: row.under, sampleSize: row.sampleSize });
       }
     }
   }
 
-  const out = lines.filter((s) => s.length > 0);
-  if (import.meta.env?.DEV && combo.legs.length > 0 && out.length > 0) {
+  function isWeakGenericReason(reason: string): boolean {
+    const r = (reason ?? "").toLowerCase();
+    if (!r.trim()) return true;
+    return (
+      r.includes("common total-goals line") ||
+      r.includes("reasonable total-goals line") ||
+      r.includes("less common total-goals line") ||
+      r.includes("best-rated corners line") ||
+      r.includes("fixture corners projection supports this line") ||
+      r.includes("line sits close to model expectation") ||
+      r.includes("team market leg")
+    );
+  }
+
+  for (const leg of combo.legs) {
+    if (leg.type === "player") {
+      const cat = getMarketCategory(leg.marketName);
+      const evidenceEntry =
+        evidenceContext?.playerRecentStats?.length && cat != null
+          ? lookupPlayerEvidenceForExplanation(leg.playerName!, cat, evidenceContext.playerRecentStats)
+          : null;
+      const data = getPer90AndLabelForLeg(leg, playerRows);
+      const statLabel = data?.statLabel || statLabelForCategory(cat);
+
+      if (!leg.playerName) continue;
+      const legLines = buildPlayerLegTipsterExplanation(leg, cat, statLabel, evidenceEntry, playerRows);
+      if (legLines.length > 0) {
+        if (lines.length > 0) lines.push("");
+        lines.push(...legLines);
+      }
+    } else if (leg.type === "team" && leg.marketName?.toLowerCase().includes("corner")) {
+      // Prefer concrete H2H corners sequences when available; otherwise keep quiet (avoid filler).
+      const cornerBits: string[] = [];
+      if (leg.legRole !== "filler") {
+        cornerBits.push(`✍️ ${leg.label}`);
+        cornerBits.push("");
+        if (evidenceContext?.cornersH2hTotals?.length) {
+          const recent = evidenceContext.cornersH2hTotals.slice(-6);
+          cornerBits.push("Recent H2H totals:");
+          cornerBits.push(recent.join(","));
+        }
+      }
+      if (leg.legRole !== "filler" && leg.reason && leg.reason.trim()) {
+        const rr = leg.reason.trim();
+        if (!isWeakGenericReason(rr) && rr.toLowerCase().includes("h2h")) cornerBits.push(rr);
+      }
+      while (cornerBits.length > 0 && cornerBits[cornerBits.length - 1] === "") {
+        cornerBits.pop();
+      }
+      if (cornerBits.length > 0) {
+        if (lines.length > 0) lines.push("");
+        lines.push(...cornerBits);
+      }
+    } else if (leg.type === "team") {
+      if (leg.legRole === "filler") {
+        // Avoid attaching high-confidence support language to filler legs.
+        continue;
+      }
+      const teamLines: string[] = [];
+      // Team-leg evidence-style lines from compact H2H counts when available.
+      if (h2hOk && leg.marketFamily === "team:btts") {
+        const yes = headToHeadContext?.bttsYesCount;
+        const n = headToHeadContext?.bttsSampleSize ?? h2hSample;
+        if (typeof yes === "number" && typeof n === "number" && n > 0) {
+          teamLines.push(`In their last ${n} meetings, ${yes}/${n} have resulted in BTTS.`);
+        }
+      } else if (h2hOk && (leg.marketFamily === "team:match-goals" || leg.marketFamily === "team:alternative-total-goals")) {
+        const row = h2hGoalsCountsByLine.get(leg.line);
+        if (row && row.sampleSize > 0 && (leg.outcome === "Over" || leg.outcome === "Under")) {
+          const hit = leg.outcome === "Over" ? row.over : row.under;
+          const lineStr = leg.line % 1 === 0 ? `${leg.line}.0` : leg.line.toFixed(1);
+          teamLines.push(`In their last ${row.sampleSize} meetings, ${hit}/${row.sampleSize} finished ${leg.outcome.toLowerCase()} ${lineStr} goals.`);
+        }
+      } else if (h2hOk && leg.marketFamily === "team:match-results") {
+        const n = headToHeadContext?.resultSampleSize ?? h2hSample;
+        const homeWins = headToHeadContext?.team1WinCount;
+        const awayWins = headToHeadContext?.team2WinCount;
+        const draws = headToHeadContext?.drawCount;
+        if (typeof n === "number" && n > 0 && typeof draws === "number" && typeof homeWins === "number" && typeof awayWins === "number") {
+          if (leg.outcome === "Home") teamLines.push(`${homeName} have won ${homeWins} of the last ${n} meetings.`);
+          else if (leg.outcome === "Away") teamLines.push(`${awayName} have won ${awayWins} of the last ${n} meetings.`);
+          else if (leg.outcome === "Draw") teamLines.push(`${draws} of their last ${n} meetings have finished level.`);
+        }
+      }
+
+      if (leg.reason && leg.reason.trim() && !isWeakGenericReason(leg.reason)) {
+        teamLines.push(leg.reason.trim());
+      }
+
+      if (teamLines.length > 0) {
+        if (lines.length > 0) lines.push("");
+        lines.push(`✍️ ${leg.label}`);
+        lines.push("");
+        lines.push(...teamLines);
+      }
+    }
+  }
+
+  const out = lines.some((s) => s.length > 0) ? lines : [];
+  if (BUILDER_DEBUG_VERBOSE && combo.legs.length > 0 && out.length > 0) {
     const playerEvidenceUsed = combo.legs
       .filter((l) => l.type === "player")
-      .map((l) => ({
-        player: l.playerName,
-        market: getMarketCategory(l.marketName),
-        hasRecent: Boolean(evidenceContext && getPlayerEvidence(l.playerName!, getMarketCategory(l.marketName) ?? "", evidenceContext.playerRecentStats)),
-      }));
-    console.log("[build-value-bets] explanation payload", {
+      .map((l) => {
+        const cat = getMarketCategory(l.marketName);
+        const ent =
+          cat != null && evidenceContext?.playerRecentStats?.length
+            ? lookupPlayerEvidenceForExplanation(l.playerName!, cat, evidenceContext.playerRecentStats)
+            : null;
+        const rv = ent?.recentValues?.filter((v) => typeof v === "number" && Number.isFinite(v)) ?? [];
+        return {
+          player: l.playerName,
+          market: cat,
+          hasRecent: rv.length >= 3,
+          seriesLength: rv.length,
+        };
+      });
+    console.log("[build-value-bets][verbose] explanation payload", {
       legCount: combo.legs.length,
       lines: out,
       playerEvidenceUsed,
@@ -826,7 +2342,47 @@ function hasSameFamilyOverlap(legs: BuildLeg[]): boolean {
   return families.size < legs.length;
 }
 
-/** Generate 2-leg and 3-leg combos, rank by distance to target then combo score. Rejects same-family overlap. */
+function getCorrelationPenalty(a: BuildLeg, b: BuildLeg): number {
+  // SAME PLAYER (strong correlation)
+  if (a.playerId && b.playerId && a.playerId === b.playerId) return 0.15;
+
+  // SAME TEAM + similar team-goals markets (medium correlation)
+  if (
+    a.type === "team" &&
+    b.type === "team" &&
+    ((a.teamId && b.teamId && a.teamId === b.teamId) ||
+      ((a.marketFamily === "team:match-goals" || a.marketFamily === "team:alternative-total-goals") &&
+        (b.marketFamily === "team:match-goals" || b.marketFamily === "team:alternative-total-goals")))
+  ) {
+    return 0.08;
+  }
+
+  // GOALS + BTTS overlap
+  const aIsGoals = a.marketId === MARKET_ID_MATCH_GOALS || a.marketId === MARKET_ID_ALTERNATIVE_TOTAL_GOALS;
+  const bIsGoals = b.marketId === MARKET_ID_MATCH_GOALS || b.marketId === MARKET_ID_ALTERNATIVE_TOTAL_GOALS;
+  const aIsBtts = a.marketId === MARKET_ID_BTTS;
+  const bIsBtts = b.marketId === MARKET_ID_BTTS;
+  if ((aIsGoals && bIsBtts) || (aIsBtts && bIsGoals)) return 0.1;
+
+  return 0;
+}
+
+/**
+ * Kelly stake fraction (½ Kelly): b = odds − 1, p = win prob, q = 1 − p,
+ * full Kelly = (b·p − q) / b. Non-positive or invalid → 0; full Kelly capped at 5%; then × ½.
+ */
+function computeKellyStakePct(combinedOdds: number, combinedProb: number): number {
+  const b = combinedOdds - 1;
+  if (!Number.isFinite(combinedOdds) || !Number.isFinite(combinedProb) || b <= 1e-12) return 0;
+  const p = Math.max(0, Math.min(1, combinedProb));
+  const q = 1 - p;
+  const kelly = (b * p - q) / b;
+  if (!Number.isFinite(kelly) || kelly <= 0) return 0;
+  const capped = Math.min(kelly, KELLY_FULL_CAP);
+  return capped * KELLY_FRACTIONAL;
+}
+
+/** Generate 2-leg and 3-leg combos, rank by distance, then EV, then combo score. Rejects same-family overlap. */
 export function generateCombos(
   legs: BuildLeg[],
   targetOdds: number,
@@ -849,10 +2405,41 @@ export function generateCombos(
         const combinedOdds = selected.reduce((acc, leg) => acc * leg.odds, 1);
         const distanceFromTarget = Math.abs(combinedOdds - targetOdds);
         const comboScore = selected.reduce((s, leg) => s + leg.score, 0);
+        const comboEdge = selected.reduce((s, leg) => s + (Number.isFinite(leg.edge as number) ? (leg.edge as number) : 0), 0);
+        const combinedProbRaw = selected.reduce((acc, leg) => {
+          const fallbackProb = leg.odds > 0 ? 1 / leg.odds : 0;
+          const legProb = Number.isFinite(leg.probability as number) ? (leg.probability as number) : fallbackProb;
+          return acc * clamp01(legProb);
+        }, 1);
+        let correlationPenalty = 0;
+        for (let i = 0; i < selected.length; i++) {
+          for (let j = i + 1; j < selected.length; j++) {
+            correlationPenalty += getCorrelationPenalty(selected[i]!, selected[j]!);
+          }
+        }
+        const boundedPenalty = Math.max(0, Math.min(0.9, correlationPenalty));
+        const combinedProb = clamp01(combinedProbRaw * (1 - boundedPenalty));
+        const impliedProb = combinedOdds > 0 ? 1 / combinedOdds : 0;
+        const comboEV = combinedProb - impliedProb;
+        const comboEVPercent = combinedProb * combinedOdds - 1;
+        const kellyStakePct = computeKellyStakePct(combinedOdds, combinedProb);
+        const adjustedComboEdge = comboEdge * (1 - boundedPenalty);
         const key = indices.slice().sort((a, b) => a - b).join(",");
         if (!used.has(key)) {
           used.add(key);
-          combos.push({ legs: selected, combinedOdds, distanceFromTarget, comboScore });
+          combos.push({
+            legs: selected,
+            combinedOdds,
+            distanceFromTarget,
+            comboScore,
+            comboEdge,
+            adjustedComboEdge,
+            combinedProb,
+            impliedProb,
+            comboEV,
+            comboEVPercent,
+            kellyStakePct,
+          });
         }
         return;
       }
@@ -869,12 +2456,30 @@ export function generateCombos(
     console.log("[build-value-bets] combos rejected for same-family overlap", rejectedOverlap);
   }
 
-  combos.sort((a, b) => {
+  const evFiltered = combos.filter((c) => c.comboEV >= MIN_COMBO_EV);
+  const baseCombos = evFiltered.length > 0 ? evFiltered : combos;
+
+  // If a nearby positive-edge combo exists (within +/-0.1 distance), deprioritize negative-edge alternatives.
+  const DISTANCE_EDGE_WINDOW = 0.1;
+  const nearbyPositiveExists = baseCombos.some(
+    (c) =>
+      c.comboEV > 0 &&
+      baseCombos.some(
+        (other) =>
+          other !== c &&
+          other.comboEV < 0 &&
+          Math.abs(other.distanceFromTarget - c.distanceFromTarget) <= DISTANCE_EDGE_WINDOW
+      )
+  );
+  const rankedSource = nearbyPositiveExists ? baseCombos.filter((c) => c.comboEV >= 0) : baseCombos;
+
+  rankedSource.sort((a, b) => {
     if (a.distanceFromTarget !== b.distanceFromTarget) return a.distanceFromTarget - b.distanceFromTarget;
+    if (a.comboEV !== b.comboEV) return b.comboEV - a.comboEV;
     return b.comboScore - a.comboScore;
   });
 
-  return combos.slice(0, maxCombos);
+  return rankedSource.slice(0, maxCombos);
 }
 
 /** Full pipeline: filter player candidates, add model-based corner legs, apply matchup boost, generate and rank combos (no same-family overlap). */
@@ -887,45 +2492,934 @@ export function buildValueBetCombos(
     fixtureCornersContext?: FixtureCornersContext | null;
     lineupContext?: LineupContext | null;
     evidenceContext?: BuildEvidenceContext | null;
+    headToHeadContext?: HeadToHeadFixtureContext | null;
   } = {}
 ): { combos: BuildCombo[]; candidateCount: number; legCount: number } {
-  const { fixtureCornersContext = null, lineupContext = null, evidenceContext = null } = options;
-  const playerLegs = filterPlayerCandidates(playerRows);
+  const { fixtureCornersContext = null, lineupContext = null, evidenceContext = null, headToHeadContext = null } = options;
+  const playerLegs = filterPlayerCandidates(playerRows, evidenceContext);
   applyFoulMatchupBoost(playerLegs, playerRows, lineupContext);
   applyShotMatchupBoost(playerLegs, playerRows, lineupContext);
   const teamLegs =
     fixtureOddsBookmakers != null
-      ? getCornerLegsFromOdds(fixtureOddsBookmakers, fixtureCornersContext)
+      ? getTeamLegsFromOdds(fixtureOddsBookmakers, fixtureCornersContext, headToHeadContext)
       : [];
   const allLegs = [...playerLegs, ...teamLegs];
 
+  type PlayerCat = "shots" | "shotsOnTarget" | "foulsWon" | "foulsCommitted";
+  const playerCats: PlayerCat[] = ["shots", "shotsOnTarget", "foulsWon", "foulsCommitted"];
+  const countByPlayerCat = (legs: Array<BuildLeg>): Record<PlayerCat, number> => {
+    const out = { shots: 0, shotsOnTarget: 0, foulsWon: 0, foulsCommitted: 0 };
+    for (const l of legs) {
+      if (l.type !== "player") continue;
+      const cat = getMarketCategory(l.marketName);
+      if (cat && (playerCats as string[]).includes(cat)) out[cat as PlayerCat] += 1;
+    }
+    return out;
+  };
+  const countCombosByPlayerCatPresence = (combosArr: BuildCombo[]): Record<PlayerCat, number> => {
+    const out = { shots: 0, shotsOnTarget: 0, foulsWon: 0, foulsCommitted: 0 };
+    for (const c of combosArr) {
+      const catsInCombo = new Set<PlayerCat>();
+      for (const l of c.legs) {
+        if (l.type !== "player") continue;
+        const cat = getMarketCategory(l.marketName);
+        if (cat && (playerCats as string[]).includes(cat)) catsInCombo.add(cat as PlayerCat);
+      }
+      for (const cat of catsInCombo) out[cat] += 1;
+    }
+    return out;
+  };
+  const rawRowsByPlayerCat: Record<PlayerCat, number> = { shots: 0, shotsOnTarget: 0, foulsWon: 0, foulsCommitted: 0 };
+  for (const r of playerRows) {
+    const cat = getMarketCategory(r.marketName);
+    if (cat && (playerCats as string[]).includes(cat)) rawRowsByPlayerCat[cat as PlayerCat] += 1;
+  }
+
   if (import.meta.env?.DEV) {
+    const byMarket = new Map<string, number>();
+    for (const r of playerRows) {
+      const cat = getMarketCategory(r.marketName) ?? "other";
+      byMarket.set(cat, (byMarket.get(cat) ?? 0) + 1);
+    }
+    const byMarketAfter = new Map<string, number>();
+    for (const l of playerLegs) {
+      const cat = getMarketCategory(l.marketName) ?? "other";
+      byMarketAfter.set(cat, (byMarketAfter.get(cat) ?? 0) + 1);
+    }
+    const sortedByScore = [...allLegs].sort((a, b) => b.score - a.score);
     console.log("[build-value-bets] candidates", {
       playerRows: playerRows.length,
       playerLegsAfterFilter: playerLegs.length,
       teamLegs: teamLegs.length,
       totalLegs: allLegs.length,
+      playerRowsByMarket: Array.from(byMarket.entries()),
+      playerLegsByMarketAfterFilter: Array.from(byMarketAfter.entries()),
+      topLegsByScore: sortedByScore.slice(0, 8).map((l) => ({
+        label: l.label,
+        score: l.score,
+        marketCategory: getMarketCategory(l.marketName) ?? "other",
+        playerTier: l.playerQuality?.playerTier,
+        playerLegQualityScore: l.playerQuality?.qualityScore,
+        sampleReliability: l.playerQuality?.sampleReliability,
+        minutesReliability: l.playerQuality?.minutesReliability,
+        recencyScore: l.playerQuality?.recencyScore,
+        roleConsistencyScore: l.playerQuality?.roleConsistencyScore,
+        marketSpecificScore: l.playerQuality?.marketSpecificScore,
+        weakSignalFlags: l.playerQuality?.weakSignalFlags,
+        explanationSourceFlags: l.playerQuality?.explanationSourceFlags,
+      })),
     });
     if (playerLegs.length > 0) {
       console.log("[build-value-bets] top player legs", playerLegs.slice(0, 5).map((l) => ({ label: l.label, odds: l.odds, score: l.score })));
+      console.log(
+        "[player-tiering]",
+        playerLegs.slice(0, 5).map((l) => ({
+          player: l.playerName,
+          market: getMarketCategory(l.marketName),
+          line: l.line,
+          tier: l.playerQuality?.playerTier,
+          qualityScore: l.playerQuality?.qualityScore,
+          sampleReliability: l.playerQuality?.sampleReliability,
+          minutesReliability: l.playerQuality?.minutesReliability,
+          recencyScore: l.playerQuality?.recencyScore,
+        }))
+      );
     }
   }
 
-  let combos = generateCombos(allLegs, targetOdds, { maxCombos: options.maxCombos ?? 30 });
+  const finalMaxRequested = options.maxCombos ?? 30;
+  const finalMax = Math.min(3, finalMaxRequested);
+  const internalMax = Math.max(finalMax, finalMax * DIVERSITY_INTERNAL_MULTIPLIER);
+  let combos = generateCombos(allLegs, targetOdds, { maxCombos: internalMax });
+  const generatedCount = combos.length;
+
+  const h2hOkForCounts = headToHeadContext?.sampleSize != null && headToHeadContext?.sampleSize >= MIN_H2H_SAMPLE_SIZE;
+  const roundLine = (x: number) => Number(x.toFixed(1));
+  const h2hGoalsLineCountsByRoundedLine = new Map<number, { over: number; under: number; sampleSize: number }>();
+  if (h2hOkForCounts && Array.isArray(headToHeadContext?.goalsLineCounts)) {
+    for (const row of headToHeadContext!.goalsLineCounts!) {
+      if (typeof row?.line === "number" && Number.isFinite(row.line)) {
+        h2hGoalsLineCountsByRoundedLine.set(roundLine(row.line), {
+          over: row.over,
+          under: row.under,
+          sampleSize: row.sampleSize,
+        });
+      }
+    }
+  }
+
+  function isSupportedTeamLeg(leg: BuildLeg): boolean {
+    if (leg.type !== "team") return true;
+
+    // H2H-supported when we have enough sample for the specific market family.
+    if (h2hOkForCounts) {
+      if (leg.marketFamily === "team:match-results") {
+        const n = headToHeadContext?.resultSampleSize ?? headToHeadContext?.sampleSize ?? 0;
+        if (n >= MIN_H2H_SAMPLE_SIZE) {
+          if (leg.outcome === "Home") return (headToHeadContext?.team1WinCount ?? 0) > 0;
+          if (leg.outcome === "Away") return (headToHeadContext?.team2WinCount ?? 0) > 0;
+          if (leg.outcome === "Draw") return (headToHeadContext?.drawCount ?? 0) > 0;
+        }
+      }
+      if (leg.marketFamily === "team:btts") {
+        const n = headToHeadContext?.bttsSampleSize ?? headToHeadContext?.sampleSize ?? 0;
+        if (n >= MIN_H2H_SAMPLE_SIZE) {
+          if (leg.outcome === "Yes") return (headToHeadContext?.bttsYesCount ?? 0) > 0;
+          if (leg.outcome === "No") return (n - (headToHeadContext?.bttsYesCount ?? 0)) > 0;
+        }
+      }
+      if (leg.marketFamily === "team:match-goals" || leg.marketFamily === "team:alternative-total-goals") {
+        const row = h2hGoalsLineCountsByRoundedLine.get(roundLine(leg.line));
+        if (row && row.sampleSize >= MIN_H2H_SAMPLE_SIZE) {
+          if (leg.outcome === "Over") return row.over > 0;
+          if (leg.outcome === "Under") return row.under > 0;
+        }
+      }
+    }
+
+    // Fallback: treat legs with meaningful internal plausibility score as "supported".
+    if (leg.marketFamily === CORNERS_MARKET_FAMILY) {
+      return Boolean(fixtureCornersContext) || Boolean(evidenceContext?.cornersH2hTotals?.length);
+    }
+    // If we have enough head-to-head sample, do not "guess" support using odds band alone.
+    if (h2hOkForCounts) return false;
+    return leg.score >= 14;
+  }
+
+  function getLegRole(leg: BuildLeg): "core" | "supporting" | "filler" {
+    if (leg.type === "player") return "core";
+    return isSupportedTeamLeg(leg) ? "supporting" : "filler";
+  }
+
+  // Central role classification used by scoring and explanation alignment.
+  for (const leg of allLegs) {
+    leg.legRole = getLegRole(leg);
+  }
+
+  function computeSupportedTeamCounts(combo: BuildCombo): { supported: number; unsupported: number } {
+    const teamLegs = combo.legs.filter((l) => l.type === "team");
+    let supported = 0;
+    for (const l of teamLegs) {
+      const role = l.legRole ?? getLegRole(l);
+      if (role === "supporting") supported += 1;
+    }
+    return { supported, unsupported: teamLegs.length - supported };
+  }
+
+  function computeLegRoleBreakdown(combo: BuildCombo): { core: number; supporting: number; filler: number } {
+    const out = { core: 0, supporting: 0, filler: 0 };
+    for (const l of combo.legs) {
+      const role = l.legRole ?? getLegRole(l);
+      out[role] += 1;
+    }
+    return out;
+  }
+
+  type TeamLegMarginalValue = "additive" | "weaklyAdditive" | "lowMarginalValue";
+
+  function isBroadAlternativeGoalsLeg(leg: BuildLeg): boolean {
+    if (leg.marketFamily !== "team:alternative-total-goals") return false;
+    if (leg.outcome === "Over") return leg.line <= 1.5;
+    if (leg.outcome === "Under") return leg.line >= 4.5;
+    return false;
+  }
+
+  function getPlayerMarketCategories(combo: BuildCombo): Set<string> {
+    const out = new Set<string>();
+    for (const l of combo.legs) {
+      if (l.type !== "player") continue;
+      const cat = getMarketCategory(l.marketName);
+      if (cat) out.add(cat);
+    }
+    return out;
+  }
+
+  function isTeamLegReinforcingPlayerStory(combo: BuildCombo, leg: BuildLeg): boolean {
+    if (leg.type !== "team") return false;
+    const playerCats = getPlayerMarketCategories(combo);
+    if (playerCats.size === 0) return false;
+    const impl = getTeamLegImplications(leg);
+    const hasShotsLike = playerCats.has("shots") || playerCats.has("shotsOnTarget");
+    const hasFoulsLike = playerCats.has("foulsCommitted") || playerCats.has("foulsWon");
+
+    if (hasShotsLike) {
+      if (impl.some((i) => i.kind === "btts" && i.value === true)) return true;
+      if (impl.some((i) => i.kind === "minGoals" && i.value >= 2)) return true;
+      if (impl.some((i) => i.kind === "result" && (i.value === "home" || i.value === "away"))) return true;
+    }
+    if (hasFoulsLike) {
+      if (impl.some((i) => i.kind === "result" && i.value === "draw")) return true;
+      if (impl.some((i) => i.kind === "maxGoals" && i.value <= 3)) return true;
+    }
+    return false;
+  }
+
+  function classifyTeamLegMarginalValue(combo: BuildCombo, leg: BuildLeg): TeamLegMarginalValue {
+    if (leg.type !== "team") return "additive";
+    const role = leg.legRole ?? getLegRole(leg);
+    const ownImpl = getTeamLegImplications(leg);
+    const otherImplKinds = new Set<string>();
+    for (const other of combo.legs) {
+      if (other === leg || other.type !== "team") continue;
+      for (const i of getTeamLegImplications(other)) otherImplKinds.add(i.kind);
+    }
+    const addsNewKind = ownImpl.some((i) => !otherImplKinds.has(i.kind));
+    const reinforces = isTeamLegReinforcingPlayerStory(combo, leg);
+    const broadAlt = isBroadAlternativeGoalsLeg(leg);
+
+    if (role === "filler") {
+      if (broadAlt || !reinforces) return "lowMarginalValue";
+      return "weaklyAdditive";
+    }
+
+    if (role === "supporting") {
+      if (addsNewKind || reinforces) return broadAlt && !reinforces ? "weaklyAdditive" : "additive";
+      return broadAlt ? "lowMarginalValue" : "weaklyAdditive";
+    }
+
+    return addsNewKind || reinforces ? "additive" : "weaklyAdditive";
+  }
+
+  function getTeamLegConfidenceScore(combo: BuildCombo, leg: BuildLeg): number {
+    if (leg.type !== "team") return 0;
+    const role = leg.legRole ?? getLegRole(leg);
+    if (role !== "supporting") return 0;
+
+    let score = 0;
+    const reinforces = isTeamLegReinforcingPlayerStory(combo, leg);
+    if (reinforces) score += 2;
+    if (classifyTeamLegMarginalValue(combo, leg) === "additive") score += 2;
+
+    // Stronger H2H confidence only when sample is available and signal is meaningfully one-sided.
+    if (h2hOkForCounts) {
+      if (leg.marketFamily === "team:btts") {
+        const n = headToHeadContext?.bttsSampleSize ?? headToHeadContext?.sampleSize ?? 0;
+        const yes = headToHeadContext?.bttsYesCount ?? 0;
+        if (n >= MIN_H2H_SAMPLE_SIZE) {
+          const rate = leg.outcome === "Yes" ? yes / n : (n - yes) / n;
+          if (rate >= 0.6) score += 2;
+          if (rate >= 0.75) score += 1;
+        }
+      } else if (leg.marketFamily === "team:match-results") {
+        const n = headToHeadContext?.resultSampleSize ?? headToHeadContext?.sampleSize ?? 0;
+        if (n >= MIN_H2H_SAMPLE_SIZE) {
+          let rate = 0;
+          if (leg.outcome === "Home") rate = (headToHeadContext?.team1WinCount ?? 0) / n;
+          else if (leg.outcome === "Away") rate = (headToHeadContext?.team2WinCount ?? 0) / n;
+          else if (leg.outcome === "Draw") rate = (headToHeadContext?.drawCount ?? 0) / n;
+          if (rate >= 0.5) score += 2;
+          if (rate >= 0.65) score += 1;
+        }
+      } else if (leg.marketFamily === "team:match-goals" || leg.marketFamily === "team:alternative-total-goals") {
+        const row = h2hGoalsLineCountsByRoundedLine.get(roundLine(leg.line));
+        if (row && row.sampleSize >= MIN_H2H_SAMPLE_SIZE) {
+          const rate = leg.outcome === "Over" ? row.over / row.sampleSize : row.under / row.sampleSize;
+          if (rate >= 0.6) score += 2;
+          if (rate >= 0.75) score += 1;
+        }
+      }
+    }
+
+    return score;
+  }
+
+  function isHighConfidenceSupportingTeamLeg(combo: BuildCombo, leg: BuildLeg): boolean {
+    if (leg.type !== "team") return false;
+    const role = leg.legRole ?? getLegRole(leg);
+    if (role !== "supporting") return false;
+    return getTeamLegConfidenceScore(combo, leg) >= 5;
+  }
+
+  function computeComboQualitySignals(c: BuildCombo): {
+    lowMarginalValueTeamLegCount: number;
+    additiveTeamLegCount: number;
+    weaklyAdditiveTeamLegCount: number;
+    highConfidenceTeamLegCount: number;
+    teamLegQualityScore: number;
+    oddsFittingPenalty: number;
+    playerLedQualityBonus: number;
+    mixedComboBonusApplied: number;
+    tokenTeamLegPenalty: number;
+    shapePreferenceScore: number;
+    isPlayerOnly: boolean;
+  } {
+    const teamLegs = c.legs.filter((l) => l.type === "team");
+    const roleCounts = computeLegRoleBreakdown(c);
+    const playerLegCount = c.legs.filter((l) => l.type === "player").length;
+    const isPlayerOnly = teamLegs.length === 0;
+    let low = 0;
+    let additive = 0;
+    let weak = 0;
+    let highConfidence = 0;
+    let qualityScore = 0;
+    let reinforcingTeamLegCount = 0;
+    for (const t of teamLegs) {
+      const mv = classifyTeamLegMarginalValue(c, t);
+      if (mv === "lowMarginalValue") low += 1;
+      else if (mv === "additive") additive += 1;
+      else weak += 1;
+      const legQuality = getTeamLegConfidenceScore(c, t);
+      qualityScore += legQuality;
+      if (isHighConfidenceSupportingTeamLeg(c, t)) highConfidence += 1;
+      if (isTeamLegReinforcingPlayerStory(c, t)) reinforcingTeamLegCount += 1;
+    }
+
+    let oddsFittingPenalty = 0;
+    if (playerLegCount === 1 && roleCounts.supporting + roleCounts.filler >= 1) oddsFittingPenalty += SCORING_CONFIG.comboQuality.onePlayerWithAnyTeamPenalty;
+    if (low >= 1) oddsFittingPenalty += SCORING_CONFIG.comboQuality.oneLowMarginalPenalty;
+    if (low >= 2) oddsFittingPenalty += SCORING_CONFIG.comboQuality.twoLowMarginalPenalty;
+    if (playerLegCount === 1 && roleCounts.filler >= 1 && additive === 0) oddsFittingPenalty += SCORING_CONFIG.comboQuality.onePlayerFillerNoAdditivePenalty;
+    // Soft max-1 team leg preference: 2+ team legs are expensive unless both are high-confidence.
+    if (teamLegs.length >= 2 && highConfidence < 2) oddsFittingPenalty += SCORING_CONFIG.comboQuality.multiTeamNotAllHighConfidencePenalty;
+    if (teamLegs.length >= 2 && highConfidence >= 2) oddsFittingPenalty += SCORING_CONFIG.comboQuality.multiTeamAllHighConfidencePenalty;
+
+    let playerLedQualityBonus = 0;
+    if (playerLegCount >= 2 && roleCounts.filler === 0) playerLedQualityBonus += SCORING_CONFIG.comboQuality.playerLedNoFillerBonus;
+    if (playerLegCount >= 2 && additive >= 1) playerLedQualityBonus += SCORING_CONFIG.comboQuality.playerLedAdditiveBonus;
+    if (playerLegCount >= 2 && low === 0) playerLedQualityBonus += SCORING_CONFIG.comboQuality.playerLedNoLowMarginalBonus;
+    // Explicit protection for clean player-only builds.
+    if (isPlayerOnly && playerLegCount >= 2 && roleCounts.filler === 0) playerLedQualityBonus += SCORING_CONFIG.comboQuality.playerOnlyProtectionBonus;
+
+    // Mixed-combo bonus is conditional, not structural.
+    // Only apply when the single team leg is truly high-confidence, additive, and story-reinforcing.
+    let mixedComboBonusApplied = 0;
+    if (playerLegCount >= 1 && teamLegs.length === 1 && highConfidence >= 1 && additive >= 1 && reinforcingTeamLegCount >= 1 && low === 0) {
+      mixedComboBonusApplied = SCORING_CONFIG.comboQuality.mixedSingleTeamLegBonus;
+    }
+
+    // Token team-leg penalty: team leg present but contributes little scenario value.
+    let tokenTeamLegPenalty = 0;
+    if (teamLegs.length > 0 && (additive === 0 || highConfidence === 0 || reinforcingTeamLegCount === 0)) {
+      tokenTeamLegPenalty += SCORING_CONFIG.comboQuality.tokenTeamLegPenalty;
+    }
+    if (teamLegs.length > 0 && low >= 1) tokenTeamLegPenalty += SCORING_CONFIG.comboQuality.tokenLowMarginalExtraPenalty;
+
+    const shapePreferenceScore = playerLedQualityBonus + mixedComboBonusApplied - tokenTeamLegPenalty;
+
+    return {
+      lowMarginalValueTeamLegCount: low,
+      additiveTeamLegCount: additive,
+      weaklyAdditiveTeamLegCount: weak,
+      highConfidenceTeamLegCount: highConfidence,
+      teamLegQualityScore: qualityScore,
+      oddsFittingPenalty,
+      playerLedQualityBonus,
+      mixedComboBonusApplied,
+      tokenTeamLegPenalty,
+      shapePreferenceScore,
+      isPlayerOnly,
+    };
+  }
+
+  function computeComboScoreBreakdown(c: BuildCombo): ComboScoreBreakdown {
+    const playerLegs = c.legs.filter((l) => l.type === "player");
+    const playerCount = playerLegs.length;
+    if (playerCount === 0) {
+      return {
+        multiPlayerBase: 0,
+        fillerPenalty: 0,
+        fillerAltGoalsPenalty: 0,
+        scenarioCohesionBonus: 0,
+        onePlayerAllFillerPenalty: 0,
+        supportSignal: 0,
+        qualitySignals: 0,
+        playerCoherence: 0,
+        eliteCoherenceBonus: 0,
+        tierComboShaping: 0,
+        total: -20,
+      };
+    }
+    const eliteLegCount = playerLegs.filter((l) => l.playerQuality?.playerTier === "elite").length;
+    const weakLegCount = playerLegs.filter((l) => l.playerQuality?.playerTier === "weak").length;
+    const okLegCount = playerLegs.filter((l) => l.playerQuality?.playerTier === "ok").length;
+
+    const { supported, unsupported } = computeSupportedTeamCounts(c);
+    const roleCounts = computeLegRoleBreakdown(c);
+    const fillerLegCount = roleCounts.filler;
+    const coreLegCount = roleCounts.core;
+    const supportingTeamLegCount = supported;
+    const allTeamLegsAreFiller = c.legs.filter((l) => l.type === "team").every((l) => (l.legRole ?? getLegRole(l)) === "filler");
+    const quality = computeComboQualitySignals(c);
+    const playerCoherence = computePlayerLegCoherenceSignals(c);
+
+    let multiPlayerBase = 0;
+    let fillerPenalty = 0;
+    let fillerAltGoalsPenalty = 0;
+    let scenarioCohesionBonus = 0;
+    let onePlayerAllFillerPenalty = 0;
+    let supportSignal = 0;
+    let qualitySignals = 0;
+    let eliteCoherenceBonus = 0;
+    let tierComboShaping = 0;
+
+    // Existing signal: reward multi-player structure without forcing it.
+    if (playerCount >= 2) {
+      multiPlayerBase += Math.min(
+        SCORING_CONFIG.combo.multiPlayerBaseCap,
+        (playerCount - 1) * SCORING_CONFIG.combo.multiPlayerBasePerLeg
+      );
+    }
+
+    // Filler dependence penalty (scaled).
+    if (fillerLegCount >= 1) fillerPenalty -= SCORING_CONFIG.combo.fillerPenaltyOne;
+    if (fillerLegCount >= 2) fillerPenalty -= SCORING_CONFIG.combo.fillerPenaltyTwoPlus;
+    if (coreLegCount === 1 && fillerLegCount >= 2) fillerPenalty -= SCORING_CONFIG.combo.singleCoreTwoPlusFillerPenalty; // directly targets 1 core + 2 padding legs.
+
+    // Specific filler padding hotspot: alternative goals totals used without evidence support.
+    const fillerAltGoalsCount = c.legs.filter((l) => l.type === "team" && l.marketFamily === "team:alternative-total-goals")
+      .filter((l) => classifyTeamLegMarginalValue(c, l) === "lowMarginalValue").length;
+    fillerAltGoalsPenalty -= fillerAltGoalsCount * SCORING_CONFIG.combo.fillerAltGoalsPenalty;
+
+    // Scenario cohesion bonus: >=2 core legs plus at least one supporting team leg.
+    if (coreLegCount >= 2 && supportingTeamLegCount >= 1) scenarioCohesionBonus += SCORING_CONFIG.combo.scenarioCohesionBonus;
+
+    // Weak shape penalty: one player prop + random filler team legs.
+    if (playerCount === 1 && allTeamLegsAreFiller) onePlayerAllFillerPenalty -= SCORING_CONFIG.combo.onePlayerAllFillerPenalty;
+
+    // Keep support-aware signal as soft ranking (not hard gate).
+    supportSignal += Math.min(SCORING_CONFIG.combo.supportingTeamBonusCap, supportingTeamLegCount * SCORING_CONFIG.combo.supportingTeamPerLegBonus);
+    supportSignal -= unsupported * SCORING_CONFIG.combo.unsupportedTeamPerLegPenalty;
+
+    // Marginal-value and odds-fitting quality layer.
+    qualitySignals += quality.playerLedQualityBonus;
+    qualitySignals += quality.mixedComboBonusApplied;
+    qualitySignals -= quality.tokenTeamLegPenalty;
+    qualitySignals -= quality.oddsFittingPenalty;
+    qualitySignals += quality.additiveTeamLegCount * SCORING_CONFIG.combo.additiveTeamLegBonus;
+    qualitySignals -= quality.lowMarginalValueTeamLegCount * SCORING_CONFIG.combo.lowMarginalTeamLegPenalty;
+
+    // Player-leg coherence layer (story over collection).
+    const playerCoherenceComponent = playerCoherence.coherenceScore;
+    if (eliteLegCount >= 1 && playerCoherence.coherenceScore >= 8) eliteCoherenceBonus += SCORING_CONFIG.combo.eliteCoherenceBonus;
+    if (eliteLegCount >= 2 && playerCoherence.coherenceScore >= 12) eliteCoherenceBonus += SCORING_CONFIG.combo.multiEliteCoherenceBonus;
+
+    // Tier-based combo shaping: elite legs should separate top combos; weak/flat clusters should sink.
+    if (playerCount >= 2 && eliteLegCount >= 1) tierComboShaping += SCORING_CONFIG.combo.eliteComboBonus;
+    if (eliteLegCount >= 2) tierComboShaping += SCORING_CONFIG.combo.multiEliteBonus;
+    if (weakLegCount >= 1) tierComboShaping -= weakLegCount * SCORING_CONFIG.combo.weakLegPenaltyPerLeg;
+    if (playerCount >= 2 && weakLegCount + okLegCount >= 2) tierComboShaping -= SCORING_CONFIG.combo.flatComboPenalty;
+
+    const total =
+      multiPlayerBase +
+      fillerPenalty +
+      fillerAltGoalsPenalty +
+      scenarioCohesionBonus +
+      onePlayerAllFillerPenalty +
+      supportSignal +
+      qualitySignals +
+      playerCoherenceComponent +
+      eliteCoherenceBonus +
+      tierComboShaping;
+
+    return {
+      multiPlayerBase,
+      fillerPenalty,
+      fillerAltGoalsPenalty,
+      scenarioCohesionBonus,
+      onePlayerAllFillerPenalty,
+      supportSignal,
+      qualitySignals,
+      playerCoherence: playerCoherenceComponent,
+      eliteCoherenceBonus,
+      tierComboShaping,
+      total,
+    };
+  }
+
+  function computeComboCoherenceDelta(c: BuildCombo): number {
+    return computeComboScoreBreakdown(c).total;
+  }
+
+  function computePlayerLegCoherenceSignals(combo: BuildCombo): {
+    sameTeamClusterCount: number;
+    attackingClusterCount: number;
+    defensiveClusterCount: number;
+    mixedTeamSpread: number;
+    coherenceScore: number;
+  } {
+    const playerLegs = combo.legs.filter((l) => l.type === "player");
+    if (playerLegs.length <= 1) {
+      return { sameTeamClusterCount: 0, attackingClusterCount: 0, defensiveClusterCount: 0, mixedTeamSpread: 0, coherenceScore: 0 };
+    }
+
+    const byTeam = new Map<string, BuildLeg[]>();
+    for (const l of playerLegs) {
+      const teamKey = l.marketFamily.split("|")[0] ?? "unknown-team";
+      const arr = byTeam.get(teamKey) ?? [];
+      arr.push(l);
+      byTeam.set(teamKey, arr);
+    }
+
+    let sameTeamClusterCount = 0;
+    let attackingClusterCount = 0;
+    let defensiveClusterCount = 0;
+    let coherenceScore = 0;
+
+    for (const legs of byTeam.values()) {
+      if (legs.length >= 2) {
+        sameTeamClusterCount += 1;
+        coherenceScore += SCORING_CONFIG.playerCoherence.sameTeamBaseBonus;
+      }
+      if (legs.length >= 3) coherenceScore += SCORING_CONFIG.playerCoherence.sameTeamTripleBonus;
+
+      const cats = legs.map((l) => getMarketCategory(l.marketName) ?? "other");
+      const shotsCount = cats.filter((c) => c === "shots").length;
+      const sotCount = cats.filter((c) => c === "shotsOnTarget").length;
+      const foulsCommittedCount = cats.filter((c) => c === "foulsCommitted").length;
+      const foulsWonCount = cats.filter((c) => c === "foulsWon").length;
+
+      if (shotsCount >= 1 && sotCount >= 1) {
+        attackingClusterCount += 1;
+        coherenceScore += SCORING_CONFIG.playerCoherence.attackingShotsSotBonus;
+      }
+      if (shotsCount + sotCount >= 2) {
+        attackingClusterCount += 1;
+        coherenceScore += SCORING_CONFIG.playerCoherence.attackingMultiBonus;
+      }
+      if (foulsCommittedCount >= 2 || foulsWonCount >= 2 || (foulsCommittedCount >= 1 && foulsWonCount >= 1)) {
+        defensiveClusterCount += 1;
+        coherenceScore += SCORING_CONFIG.playerCoherence.defensiveClusterBonus;
+      }
+    }
+
+    const mixedTeamSpread = byTeam.size >= playerLegs.length ? 1 : 0;
+    if (mixedTeamSpread && attackingClusterCount === 0 && defensiveClusterCount === 0 && sameTeamClusterCount === 0) {
+      coherenceScore -= SCORING_CONFIG.playerCoherence.randomSpreadPenalty;
+    }
+
+    // Compress into practical bands (0/4/8/12 style) while preserving small negatives.
+    let banded = 0;
+    if (coherenceScore >= SCORING_CONFIG.playerCoherence.bands.veryStrongMin) banded = SCORING_CONFIG.playerCoherence.bands.veryStrongScore;
+    else if (coherenceScore >= SCORING_CONFIG.playerCoherence.bands.strongMin) banded = SCORING_CONFIG.playerCoherence.bands.strongScore;
+    else if (coherenceScore >= SCORING_CONFIG.playerCoherence.bands.decentMin) banded = SCORING_CONFIG.playerCoherence.bands.decentScore;
+    else if (coherenceScore <= SCORING_CONFIG.playerCoherence.bands.negativeMax) banded = SCORING_CONFIG.playerCoherence.bands.negativeScore;
+
+    return {
+      sameTeamClusterCount,
+      attackingClusterCount,
+      defensiveClusterCount,
+      mixedTeamSpread,
+      coherenceScore: banded,
+    };
+  }
+
+  // Fouls-first preference: boost combos that contain fouls legs (338/339) when available.
+  const hasAnyFoulsLegs = allLegs.some(
+    (l) => l.type === "player" && ["foulsCommitted", "foulsWon"].includes(getMarketCategory(l.marketName) ?? "")
+  );
+  if (hasAnyFoulsLegs) {
+    combos = combos.map((c) => {
+      const foulsLegCount = c.legs.filter(
+        (l) => l.type === "player" && ["foulsCommitted", "foulsWon"].includes(getMarketCategory(l.marketName) ?? "")
+      ).length;
+      let bonus = 0;
+      if (foulsLegCount >= 1) bonus += 18;
+      if (foulsLegCount >= 2) bonus += 6;
+      return {
+        ...c,
+        comboScore: c.comboScore + bonus,
+      };
+    });
+    combos.sort((a, b) => b.comboScore - a.comboScore);
+  }
+
+  // Coherence tuning: shift comboScore towards more meaningful multi-player builds.
+  // This is a soft ranking adjustment only; it does not change generation, and all sanity/diversity protections still apply.
+  combos = combos.map((c) => {
+    const delta = computeComboCoherenceDelta(c);
+    return { ...c, comboScore: c.comboScore + delta };
+  });
+  // Re-order for ranking after score adjustment.
+  combos.sort((a, b) => {
+    if (a.comboScore !== b.comboScore) return b.comboScore - a.comboScore;
+    return a.distanceFromTarget - b.distanceFromTarget;
+  });
+
+  const generatedCombosByPlayerCatPresence = countCombosByPlayerCatPresence(combos);
+
+  // Sanity filter: remove unrealistic/overly narrow or redundant market stacks (post-generation, pre-diversity).
+  const sanityBefore = combos.length;
+  const sanityReasons: Record<ComboSanityRejectReason, number> = {
+    multipleGoalsTotals: 0,
+    narrowGoalWindow: 0,
+    redundantImpliedMarket: 0,
+    redundantImpliedMarketUnder: 0,
+    contradictoryImplication: 0,
+    duplicateBtts: 0,
+    duplicateResult: 0,
+  };
+  const sanitySamples: Array<{ reason: ComboSanityRejectReason; score: number; legs: string[] }> = [];
+  combos = combos.filter((c) => {
+    const reason = getComboSanityRejectReason(c);
+    if (!reason) return true;
+    sanityReasons[reason] += 1;
+    if (BUILDER_DEBUG_VERBOSE && sanitySamples.length < 3) {
+      const goalsNorm = c.legs.map(normaliseGoalsTotalLeg).filter((x): x is NormalisedGoalsTotalLeg => x != null);
+      sanitySamples.push({
+        reason,
+        score: c.comboScore,
+        legs: [
+          ...c.legs.map((l) => `${l.label} [${l.marketFamily} | ${String(l.outcome)} | ${String(l.line)}]`),
+          ...(goalsNorm.length > 0
+            ? [`goalsNormalised=${goalsNorm.map((g) => `${g.direction}:${g.line}`).join(",")}`]
+            : []),
+        ],
+      });
+    }
+    return false;
+  });
+  const sanityRejected = sanityBefore - combos.length;
+  const postSanityCombosByPlayerCatPresence = countCombosByPlayerCatPresence(combos);
+  const postSanityCombosSnapshot = combos;
+  const postSanityCount = combos.length;
+
+  // Diversity pass: remove near-duplicates (same market families) and select a varied final top N.
+  const preDiversityCount = combos.length;
+  const { selected, nearDuplicatesRemoved } = selectDiverseTopCombos(combos, finalMax);
+  combos = selected;
+  const postDiversityCombosByPlayerCatPresence = countCombosByPlayerCatPresence(combos);
+  const postDiversityCombosSnapshot = combos;
+  const postDiversityCount = combos.length;
+
+  // Final guard: ensure *returned* combos are sensible even if any upstream step changes.
+  // (This should be a no-op when the pipeline is correct, but guarantees the UI never sees invalid combos.)
+  const postDiversityBefore = combos.length;
+  combos = combos.filter(isComboSensible);
+  const finalGuardRemoved = postDiversityBefore - combos.length;
+  const postFinalGuardCountStrict = combos.length;
+
+  let postFinalGuardCombosByPlayerCatPresence = countCombosByPlayerCatPresence(combos);
+
+  // Guarded fallback: if strict filtering collapses to 0 combos,
+  // recover from the best earlier stage while still respecting sanity.
+  let fallbackActivated = false;
+  let fallbackSourceStage: "postDiversity" | "postSanity" | null = null;
+  if (combos.length === 0 && generatedCount > 0) {
+    fallbackActivated = true;
+    if (postDiversityCombosSnapshot.length > 0) {
+      fallbackSourceStage = "postDiversity";
+      combos = postDiversityCombosSnapshot;
+    } else if (postSanityCombosSnapshot.length > 0) {
+      fallbackSourceStage = "postSanity";
+      combos = [...postSanityCombosSnapshot]
+        .sort((a, b) => {
+          if (a.distanceFromTarget !== b.distanceFromTarget) return a.distanceFromTarget - b.distanceFromTarget;
+          return b.comboScore - a.comboScore;
+        })
+        .slice(0, finalMax);
+    }
+  }
+
+  // Keep stage counters consistent when fallback rehydrates the combo set.
+  postFinalGuardCombosByPlayerCatPresence = countCombosByPlayerCatPresence(combos);
+
+  // Final output cap: keep only the best 2–3 combos.
+  // We already capped with `finalMax` (<=3) and diversity, but do a conservative quality cut for the 3rd-best combo.
+  combos = [...combos].sort((a, b) => {
+    if (a.comboScore !== b.comboScore) return b.comboScore - a.comboScore;
+    return a.distanceFromTarget - b.distanceFromTarget;
+  });
+  if (combos.length === 3) {
+    const top = combos[0]!;
+    const third = combos[2]!;
+    const qualityGap = top.comboScore - third.comboScore;
+    const distanceGap = third.distanceFromTarget - top.distanceFromTarget;
+    if (qualityGap > 8 || distanceGap > 0.25) {
+      combos = combos.slice(0, 2);
+    }
+  }
+  const finalReturnedCombosByPlayerCatPresence = countCombosByPlayerCatPresence(combos);
+
+  const scoreMinFinal = combos.length > 0 ? Math.min(...combos.map((c) => c.comboScore)) : 0;
+  const scoreMaxFinal = combos.length > 0 ? Math.max(...combos.map((c) => c.comboScore)) : 0;
+  const getNormalizedFinal = (score: number): number => {
+    return getCompressedNormalizedScore(score, scoreMinFinal, scoreMaxFinal);
+  };
 
   combos = combos.map((c) => ({
     ...c,
-    explanation: buildComboExplanation(c, playerRows, fixtureCornersContext, evidenceContext),
+    normalizedScore: getNormalizedFinal(c.comboScore),
+    scoreBreakdown: computeComboScoreBreakdown(c),
+    explanation: buildComboExplanation(c, playerRows, fixtureCornersContext, evidenceContext, headToHeadContext),
   }));
 
-  if (import.meta.env?.DEV && combos.length > 0) {
-    console.log("[build-value-bets] combos", combos.length, "top", combos.slice(0, 3).map((c) => ({
-      combinedOdds: c.combinedOdds.toFixed(2),
-      distance: c.distanceFromTarget.toFixed(2),
-      score: c.comboScore,
-      legs: c.legs.map((l) => l.label),
-      explanationLines: c.explanation?.lines.length ?? 0,
-    })));
+  // HARD ASSERT (dev only): ensure nothing with narrow goal-window slips through to UI.
+  if (import.meta.env?.DEV) {
+    for (const c of combos) {
+      if (hasNarrowGoalWindow(c)) {
+        console.error("[FATAL] invalid combo passed filter (narrowGoalWindow)", {
+          combinedOdds: c.combinedOdds,
+          distanceFromTarget: c.distanceFromTarget,
+          comboScore: c.comboScore,
+          legs: c.legs.map((l) => ({
+            label: l.label,
+            marketFamily: l.marketFamily,
+            outcome: l.outcome,
+            line: l.line,
+          })),
+          goalsNormalised: c.legs
+            .map(normaliseGoalsTotalLeg)
+            .filter((x): x is NormalisedGoalsTotalLeg => x != null)
+            .map((g) => ({ direction: g.direction, line: g.line, label: g.label })),
+        });
+      }
+    }
+  }
+
+  if (BUILDER_DEBUG_VERBOSE && combos.length > 0) {
+    const combosWithFouls = combos.filter((c) =>
+      c.legs.some((l) => l.type === "player" && ["foulsCommitted", "foulsWon"].includes(getMarketCategory(l.marketName) ?? ""))
+    );
+    console.log("[build-value-bets] combo fouls stats", {
+      totalCombos: combos.length,
+      combosWithFouls: combosWithFouls.length,
+      combosWithoutFouls: combos.length - combosWithFouls.length,
+    });
+    const cornersCount = combos.filter((c) => comboHasCorners(c)).length;
+    const playerCounts = new Map<string, number>();
+    const marketCounts = new Map<string, number>();
+    const marketFamilyCounts = new Map<string, number>();
+    for (const c of combos) {
+      for (const p of comboPlayerKeys(c)) playerCounts.set(p, (playerCounts.get(p) ?? 0) + 1);
+      for (const l of c.legs) {
+        const cat =
+          l.marketFamily === CORNERS_MARKET_FAMILY
+            ? "corners"
+            : l.type === "player"
+              ? getMarketCategory(l.marketName) ?? "playerOther"
+              : "teamOther";
+        marketCounts.set(cat, (marketCounts.get(cat) ?? 0) + 1);
+        marketFamilyCounts.set(l.marketFamily, (marketFamilyCounts.get(l.marketFamily) ?? 0) + 1);
+      }
+    }
+    const topRepeatedPlayers = Array.from(playerCounts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6)
+      .map(([player, count]) => ({ player, count }));
+    const topMarketFamilies = Array.from(marketFamilyCounts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([marketFamily, count]) => ({ marketFamily, count }));
+    console.log("[build-value-bets] diversity stats", {
+      generatedBeforeDiversity: preDiversityCount,
+      returnedAfterDiversity: combos.length,
+      nearDuplicatesRemoved,
+      returnedCombosWithCorners: cornersCount,
+      returnedCombosWithoutCorners: combos.length - cornersCount,
+      returnedLegsByMarketCategory: Array.from(marketCounts.entries()).sort((a, b) => b[1] - a[1]),
+      topRepeatedPlayers,
+      topMarketFamilies,
+    });
+    console.log(
+      "[build-value-bets] combos",
+      combos.length,
+      "top",
+      combos.slice(0, 3).map((c) => ({
+        combinedOdds: c.combinedOdds.toFixed(2),
+        distance: c.distanceFromTarget.toFixed(2),
+        score: c.comboScore,
+        playerLegCount: c.legs.filter((l) => l.type === "player").length,
+        legs: c.legs.map((l) => l.label),
+        hasFoulsLeg: c.legs.some(
+          (l) => l.type === "player" && ["foulsCommitted", "foulsWon"].includes(getMarketCategory(l.marketName) ?? "")
+        ),
+        explanationLines: c.explanation?.lines.length ?? 0,
+      }))
+    );
+  }
+
+  if (import.meta.env?.DEV) {
+    const scoreMin = combos.length > 0 ? Math.min(...combos.map((c) => c.comboScore)) : 0;
+    const scoreMax = combos.length > 0 ? Math.max(...combos.map((c) => c.comboScore)) : 0;
+    const scoreRange = scoreMax - scoreMin;
+    const getNormalizedScore = (score: number): number => {
+      return getCompressedNormalizedScore(score, scoreMin, scoreMax);
+    };
+
+    const returnedPlayerLegStats = {
+      byCategory: {} as Record<string, number>,
+      byMarketFamily: {} as Record<string, number>,
+      foulsLegCount: 0,
+    };
+    for (const c of combos) {
+      for (const p of c.legs) {
+        if (p.type !== "player") continue;
+        const cat = getMarketCategory(p.marketName) ?? "other";
+        returnedPlayerLegStats.byCategory[cat] = (returnedPlayerLegStats.byCategory[cat] ?? 0) + 1;
+        returnedPlayerLegStats.byMarketFamily[p.marketFamily] = (returnedPlayerLegStats.byMarketFamily[p.marketFamily] ?? 0) + 1;
+        if (cat === "foulsCommitted" || cat === "foulsWon") returnedPlayerLegStats.foulsLegCount += 1;
+      }
+    }
+
+    console.log("[build-value-bets] summary", {
+      generated: generatedCount,
+      rejectedBySanity: sanityRejected,
+      finalGuardRemoved,
+      nearDuplicatesRemoved,
+      returned: combos.length,
+      sanityReasonsBreakdown: sanityReasons,
+      returnedPlayerLegsByCategory: returnedPlayerLegStats.byCategory,
+      returnedFoulsPlayerLegCount: returnedPlayerLegStats.foulsLegCount,
+      pipelineSummary: {
+        rowsByFamily: rawRowsByPlayerCat,
+        candidateLegsByFamily: countByPlayerCat(playerLegs),
+        generatedCombosByFamilyPresence: generatedCombosByPlayerCatPresence,
+        postSanityCombosByFamilyPresence: postSanityCombosByPlayerCatPresence,
+        postSanityCount,
+        postDiversityCombosByFamilyPresence: postDiversityCombosByPlayerCatPresence,
+        postDiversityCount,
+        postFinalGuardCombosByFamilyPresence: postFinalGuardCombosByPlayerCatPresence,
+        postFinalGuardCountStrict: postFinalGuardCountStrict,
+        finalReturnedCombosByFamilyPresence: finalReturnedCombosByPlayerCatPresence,
+        finalReturnedCount: combos.length,
+        rejectedForContradiction: sanityReasons.contradictoryImplication,
+        rejectedForNarrowGoalWindow: sanityReasons.narrowGoalWindow,
+        rejectedForRedundancy: sanityReasons.redundantImpliedMarket + sanityReasons.redundantImpliedMarketUnder,
+        downrankedForUnsupportedTeamLeg: combos.filter((c) => computeSupportedTeamCounts(c).unsupported > 0).length,
+        fallbackActivated,
+        fallbackSourceStage,
+        fallbackReturnedCount: fallbackActivated ? combos.length : 0,
+        finalComboEvidence: combos.map((c) => {
+          const playerLegCount = c.legs.filter((l) => l.type === "player").length;
+          const eliteLegCount = c.legs.filter((l) => l.type === "player" && l.playerQuality?.playerTier === "elite").length;
+          const weakLegCount = c.legs.filter((l) => l.type === "player" && l.playerQuality?.playerTier === "weak").length;
+          const { supported, unsupported } = computeSupportedTeamCounts(c);
+          const roleBreakdown = computeLegRoleBreakdown(c);
+          const quality = computeComboQualitySignals(c);
+          const scoreBreakdown = computeComboScoreBreakdown(c);
+          const playerCoherence = computePlayerLegCoherenceSignals(c);
+          const families = Array.from(new Set(c.legs.map((l) => l.marketFamily)));
+          return {
+            odds: c.combinedOdds,
+            totalScore: c.comboScore,
+            normalizedScore: getNormalizedScore(c.comboScore),
+            playerLegCount,
+            supportedTeamLegCount: supported,
+            unsupportedTeamLegCount: unsupported,
+            teamLegUsed: (supported + unsupported) > 0,
+            fillerLegCount: roleBreakdown.filler,
+            legRoles: roleBreakdown,
+            lowMarginalValueTeamLegCount: quality.lowMarginalValueTeamLegCount,
+            additiveTeamLegCount: quality.additiveTeamLegCount,
+            highConfidenceTeamLegCount: quality.highConfidenceTeamLegCount,
+            teamLegQualityScore: quality.teamLegQualityScore,
+            eliteLegCount,
+            weakLegCount,
+            playerCoherenceScore: playerCoherence.coherenceScore,
+            sameTeamClusterCount: playerCoherence.sameTeamClusterCount,
+            attackingClusterCount: playerCoherence.attackingClusterCount,
+            defensiveClusterCount: playerCoherence.defensiveClusterCount,
+            mixedTeamSpread: playerCoherence.mixedTeamSpread,
+            isPlayerOnly: quality.isPlayerOnly,
+            mixedComboBonusApplied: quality.mixedComboBonusApplied,
+            tokenTeamLegPenalty: quality.tokenTeamLegPenalty,
+            shapePreferenceScore: quality.shapePreferenceScore,
+            oddsFittingPenalty: quality.oddsFittingPenalty,
+            playerLedQualityBonus: quality.playerLedQualityBonus,
+            families,
+            coherenceDelta: computeComboCoherenceDelta(c),
+            scoreBreakdown,
+            topPlayerLegQuality: c.legs
+              .filter((l) => l.type === "player" && l.playerQuality)
+              .slice(0, 3)
+              .map((l) => ({
+                player: l.playerName,
+                market: getMarketCategory(l.marketName),
+                line: l.line,
+                playerTier: l.playerQuality?.playerTier,
+                qualityScore: l.playerQuality?.qualityScore,
+                sampleReliability: l.playerQuality?.sampleReliability,
+                minutesReliability: l.playerQuality?.minutesReliability,
+                recencyScore: l.playerQuality?.recencyScore,
+                roleConsistencyScore: l.playerQuality?.roleConsistencyScore,
+                marketSpecificScore: l.playerQuality?.marketSpecificScore,
+                weakSignalFlags: l.playerQuality?.weakSignalFlags,
+                explanationSourceFlags: l.playerQuality?.explanationSourceFlags,
+              })),
+          };
+        }),
+      },
+    });
+    console.log("[build-value-bets] score normalization", {
+      scoreMin,
+      scoreMax,
+      scoreRange,
+      combos: combos.map((c) => ({
+        totalScore: c.comboScore,
+        normalizedScore: getNormalizedScore(c.comboScore),
+        odds: c.combinedOdds,
+      })),
+    });
+    const top3ScoreComparison = combos.slice(0, 3).map((c) => ({
+      odds: c.combinedOdds,
+      totalScore: c.comboScore,
+      normalizedScore: getNormalizedScore(c.comboScore),
+      breakdown: computeComboScoreBreakdown(c),
+    }));
+    console.log("[build-value-bets] top score comparison", top3ScoreComparison);
+    if (BUILDER_DEBUG_VERBOSE && sanitySamples.length > 0) {
+      console.log("[build-value-bets][verbose] sanity samples", sanitySamples);
+    }
   }
 
   return {

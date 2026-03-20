@@ -1,14 +1,1 @@
-{
-  "100": {
-    "playerResults": [
-      {
-        "playerId": 1,
-        "playerName": "Test Player",
-        "shots": 2,
-        "shotsOnTarget": 1,
-        "foulsCommitted": 0,
-        "foulsWon": 1
-      }
-    ]
-  }
-}
+{}

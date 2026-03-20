@@ -21,13 +21,14 @@ import { getPlayerDetails } from "../src/api/playerDetails.js";
 import { getLeagueCurrentSeason } from "../src/api/leagueSearch.js";
 import { getStatsContext } from "../src/api/statsContext.js";
 import { getPlayerSeasonStatsForProps } from "../src/api/playerSeasonStats.js";
+import { getHeadToHeadFixtureContext } from "../src/api/headToHeadContext.js";
 import * as cache from "./cache.js";
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import type { StoredBacktestRow, BacktestDataset } from "../src/lib/backtestDataset.js";
 import { makeBacktestRowKey } from "../src/lib/backtestDataset.js";
-import { getRecentPlayerStats } from "./recentPlayerStats.js";
+import { resolveRecentPlayerStats } from "./recentPlayerStats.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, "..");
@@ -200,6 +201,54 @@ app.get("/api/fixtures/:id/player-odds", async (req, res) => {
         playerCount: 0,
       },
     });
+  }
+});
+
+/**
+ * Compact fixture head-to-head context (derived on backend, frontend-safe).
+ * Uses Sportmonks: GET /v3/football/fixtures/head-to-head/{team1}/{team2}?include=participants;statistics
+ */
+app.get("/api/head-to-head/:team1/:team2/context", async (req, res) => {
+  const team1 = parseInt(req.params.team1, 10);
+  const team2 = parseInt(req.params.team2, 10);
+  if (Number.isNaN(team1) || team1 <= 0 || Number.isNaN(team2) || team2 <= 0) {
+    res.status(400).json({ error: "Invalid team IDs." });
+    return;
+  }
+  const cacheKey = cache.getHeadToHeadContextCacheKey(team1, team2);
+  const cached = cache.get<unknown>(cacheKey);
+  if (cached != null) {
+    if (process.env.NODE_ENV !== "production") {
+      console.log("[h2h] cache hit", { team1, team2, cacheKey });
+    }
+    return res.json({ data: cached });
+  }
+  try {
+    const context = await getHeadToHeadFixtureContext(team1, team2);
+    const payload = {
+      team1Id: team1,
+      team2Id: team2,
+      context,
+    };
+    cache.set(cacheKey, payload, cache.getHeadToHeadContextTtlMs());
+    if (process.env.NODE_ENV !== "production") {
+      console.log("[h2h] context response", {
+        team1,
+        team2,
+        hasContext: context != null,
+        sampleSize: context?.sampleSize ?? 0,
+      });
+    }
+    res.json({ data: payload });
+  } catch (err) {
+    if (process.env.NODE_ENV !== "production") {
+      console.error("[h2h] GET /api/head-to-head/:team1/:team2/context failed", {
+        team1,
+        team2,
+        errorMessage: err instanceof Error ? err.message : String(err),
+      });
+    }
+    res.json({ data: { team1Id: team1, team2Id: team2, context: null } });
   }
 });
 
@@ -444,11 +493,25 @@ app.get("/api/backtest-snapshots/debug", (_req, res) => {
   });
 });
 
-app.post("/api/recent-player-stats", (req, res) => {
+app.post("/api/recent-player-stats", async (req, res) => {
   try {
-    const body = req.body as { playerNames?: string[] };
-    const names = Array.isArray(body?.playerNames) ? body.playerNames : [];
-    const stats = getRecentPlayerStats(names);
+    console.log("=== RECENT STATS ROUTE HIT ===", {
+      time: new Date().toISOString(),
+      pid: process.pid,
+      playersCount: Array.isArray(req.body?.players) ? req.body.players.length : null,
+    });
+    const body = req.body ?? {};
+    if (process.env.NODE_ENV !== "production") {
+      console.log("[recent-stats API body]", (body as { players?: unknown }).players);
+    }
+    const stats = await resolveRecentPlayerStats(body);
+    if (process.env.NODE_ENV !== "production") {
+      console.log("[recent-stats result]", stats);
+    }
+    console.log("=== RECENT STATS ROUTE RETURN ===", {
+      time: new Date().toISOString(),
+      pid: process.pid,
+    });
     res.json(stats);
   } catch (err) {
     if (process.env.NODE_ENV !== "production") {

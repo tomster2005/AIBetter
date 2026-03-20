@@ -1,11 +1,12 @@
 import { useState, useEffect } from "react";
 import { CalendarPage } from "./pages/CalendarPage.js";
-import { OddsPage } from "./pages/OddsPage.js";
+import { BetHistoryPage } from "./pages/BetHistoryPage.js";
+import { BetTrackerPage } from "./pages/BetTrackerPage.js";
 import { setCalibrationTable } from "./lib/valueBetCalibration.js";
 import type { CalibrationBucket } from "./lib/valueBetCalibration.js";
 import "./App.css";
 
-type AppTab = "calendar" | "odds";
+type AppTab = "calendar" | "betTracker" | "betHistory";
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<AppTab>("calendar");
@@ -33,15 +34,23 @@ export default function App() {
         </button>
         <button
           type="button"
-          className={`app-nav__tab ${activeTab === "odds" ? "app-nav__tab--active" : ""}`}
-          onClick={() => setActiveTab("odds")}
+          className={`app-nav__tab ${activeTab === "betTracker" ? "app-nav__tab--active" : ""}`}
+          onClick={() => setActiveTab("betTracker")}
         >
-          Odds
+          Bet Tracker
+        </button>
+        <button
+          type="button"
+          className={`app-nav__tab ${activeTab === "betHistory" ? "app-nav__tab--active" : ""}`}
+          onClick={() => setActiveTab("betHistory")}
+        >
+          Bet History
         </button>
       </nav>
       <main className="app-main">
         {activeTab === "calendar" && <CalendarPage />}
-        {activeTab === "odds" && <OddsPage />}
+        {activeTab === "betTracker" && <BetTrackerPage />}
+        {activeTab === "betHistory" && <BetHistoryPage />}
       </main>
     </div>
   );

@@ -23,6 +23,8 @@ const TTL = {
   STATS_CONTEXT: 5 * 60 * 1000,
   /** Player odds (Phase 1): 45 seconds */
   PLAYER_ODDS: 45 * 1000,
+  /** Head-to-head context: 30 minutes (stable, low urgency) */
+  H2H_CONTEXT: 30 * 60 * 1000,
   /** Past fixtures: never expire (use a very large number for "indefinite") */
   INDEFINITE: Number.MAX_SAFE_INTEGER,
 } as const;
@@ -88,6 +90,16 @@ export function getPlayerOddsTtlMs(): number {
 
 export function getPlayerOddsCacheKey(fixtureId: number): string {
   return `player-odds-${fixtureId}`;
+}
+
+export function getHeadToHeadContextTtlMs(): number {
+  return TTL.H2H_CONTEXT;
+}
+
+export function getHeadToHeadContextCacheKey(team1Id: number, team2Id: number): string {
+  const a = Math.min(team1Id, team2Id);
+  const b = Math.max(team1Id, team2Id);
+  return `h2h-context-${a}-${b}`;
 }
 
 export function get<T>(key: string): T | null {
