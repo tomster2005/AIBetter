@@ -1,3 +1,8 @@
 node_modules/
 dist/
 .env
+
+# Backtest datasets (local only; not needed for front-end runtime)
+data/backtestRows.json
+data/fixtureOutcomes.json
+backtest-data.example.json
