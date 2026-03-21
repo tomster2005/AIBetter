@@ -215,6 +215,8 @@ export interface ComboScoreBreakdown {
 
 export interface BuildCombo {
   legs: BuildLeg[];
+  /** Deterministic content identity for combo-level dedupe/sorting/debug. */
+  fingerprint?: string;
   combinedOdds: number;
   distanceFromTarget: number;
   comboScore: number;
@@ -230,6 +232,29 @@ export interface BuildCombo {
   scoreBreakdown?: ComboScoreBreakdown;
   /** Short factual "Why this build" lines derived from stats. */
   explanation?: ComboExplanation;
+}
+
+function legFingerprintToken(leg: BuildLeg): string {
+  const line = Number.isFinite(leg.line) ? leg.line.toFixed(2) : "na";
+  const odds = Number.isFinite(leg.odds) ? leg.odds.toFixed(4) : "na";
+  const player = normalizePlayerNameForMatch(leg.playerName ?? "");
+  const label = String(leg.label ?? "").trim().toLowerCase();
+  return [
+    leg.type,
+    String(leg.marketId),
+    leg.marketFamily,
+    String(leg.outcome ?? ""),
+    line,
+    odds,
+    String(leg.playerId ?? ""),
+    player,
+    label,
+    String(leg.bookmakerName ?? "").trim().toLowerCase(),
+  ].join("|");
+}
+
+function comboFingerprintFromLegs(legs: BuildLeg[]): string {
+  return legs.map(legFingerprintToken).slice().sort().join("||");
 }
 
 /** Player row shape used by the builder (subset of ValueBetRow). modelInputs extended for matchup boost. */
@@ -563,9 +588,18 @@ function selectDiverseTopCombos(
   for (const c of combos) {
     const sig = comboMarketFamilySignature(c);
     const prev = bestBySig.get(sig);
-    if (!prev || c.comboScore > prev.comboScore) bestBySig.set(sig, c);
+    if (
+      !prev ||
+      c.comboScore > prev.comboScore ||
+      (c.comboScore === prev.comboScore && (c.fingerprint ?? "") < (prev.fingerprint ?? ""))
+    ) {
+      bestBySig.set(sig, c);
+    }
   }
-  const deduped = Array.from(bestBySig.values()).sort((a, b) => b.comboScore - a.comboScore);
+  const deduped = Array.from(bestBySig.values()).sort((a, b) => {
+    if (a.comboScore !== b.comboScore) return b.comboScore - a.comboScore;
+    return (a.fingerprint ?? "").localeCompare(b.fingerprint ?? "");
+  });
   const nearDuplicatesRemoved = combos.length - deduped.length;
 
   // 2) Greedy diversity selection: only use diversity to break ties among similarly strong combos.
@@ -2278,10 +2312,42 @@ function buildComboExplanation(
         }
       } else if (h2hOk && (leg.marketFamily === "team:match-goals" || leg.marketFamily === "team:alternative-total-goals")) {
         const row = h2hGoalsCountsByLine.get(leg.line);
+        const lineStr = leg.line % 1 === 0 ? `${leg.line}.0` : leg.line.toFixed(1);
+        const t1For = headToHeadContext?.team1AvgGoalsScored;
+        const t1Against = headToHeadContext?.team1AvgGoalsConceded;
+        const t2For = headToHeadContext?.team2AvgGoalsScored;
+        const t2Against = headToHeadContext?.team2AvgGoalsConceded;
+        if (
+          typeof t1For === "number" &&
+          typeof t1Against === "number" &&
+          typeof t2For === "number" &&
+          typeof t2Against === "number" &&
+          Number.isFinite(t1For) &&
+          Number.isFinite(t1Against) &&
+          Number.isFinite(t2For) &&
+          Number.isFinite(t2Against)
+        ) {
+          const expectedGoals = (t1For + t2Against) / 2 + (t2For + t1Against) / 2;
+          const direction = expectedGoals >= leg.line ? "leans over" : "leans under";
+          teamLines.push(
+            `Expected goals ~${expectedGoals.toFixed(2)} vs line ${lineStr} (${direction}).`
+          );
+          teamLines.push(
+            `${homeName} avg ${t1For.toFixed(2)} scored / ${t1Against.toFixed(2)} conceded; ${awayName} avg ${t2For.toFixed(2)} scored / ${t2Against.toFixed(2)} conceded.`
+          );
+        }
         if (row && row.sampleSize > 0 && (leg.outcome === "Over" || leg.outcome === "Under")) {
           const hit = leg.outcome === "Over" ? row.over : row.under;
-          const lineStr = leg.line % 1 === 0 ? `${leg.line}.0` : leg.line.toFixed(1);
-          teamLines.push(`In their last ${row.sampleSize} meetings, ${hit}/${row.sampleSize} finished ${leg.outcome.toLowerCase()} ${lineStr} goals.`);
+          teamLines.push(`${hit}/${row.sampleSize} H2H meetings finished ${leg.outcome.toLowerCase()} ${lineStr}.`);
+        }
+        if (Array.isArray(headToHeadContext?.recentTotalGoals) && headToHeadContext!.recentTotalGoals!.length > 0) {
+          const recent = headToHeadContext!.recentTotalGoals!.slice(0, 5);
+          const overHits = recent.filter((v) => v > leg.line).length;
+          teamLines.push(
+            `Recent H2H totals (${recent.length}): ${recent.join(", ")} — ${overHits}/${recent.length} over ${lineStr}.`
+          );
+        } else if (!row || row.sampleSize === 0) {
+          teamLines.push("Limited data available for this fixture.");
         }
       } else if (h2hOk && leg.marketFamily === "team:match-results") {
         const n = headToHeadContext?.resultSampleSize ?? h2hSample;
@@ -2297,6 +2363,10 @@ function buildComboExplanation(
 
       if (leg.reason && leg.reason.trim() && !isWeakGenericReason(leg.reason)) {
         teamLines.push(leg.reason.trim());
+      }
+
+      if (teamLines.length === 0 && (leg.marketFamily === "team:match-goals" || leg.marketFamily === "team:alternative-total-goals")) {
+        teamLines.push("Limited data available for this fixture.");
       }
 
       if (teamLines.length > 0) {
@@ -2427,8 +2497,10 @@ export function generateCombos(
         const key = indices.slice().sort((a, b) => a - b).join(",");
         if (!used.has(key)) {
           used.add(key);
+          const fingerprint = comboFingerprintFromLegs(selected);
           combos.push({
             legs: selected,
+            fingerprint,
             combinedOdds,
             distanceFromTarget,
             comboScore,
@@ -2476,7 +2548,8 @@ export function generateCombos(
   rankedSource.sort((a, b) => {
     if (a.distanceFromTarget !== b.distanceFromTarget) return a.distanceFromTarget - b.distanceFromTarget;
     if (a.comboEV !== b.comboEV) return b.comboEV - a.comboEV;
-    return b.comboScore - a.comboScore;
+    if (a.comboScore !== b.comboScore) return b.comboScore - a.comboScore;
+    return (a.fingerprint ?? "").localeCompare(b.fingerprint ?? "");
   });
 
   return rankedSource.slice(0, maxCombos);
@@ -3092,7 +3165,8 @@ export function buildValueBetCombos(
   // Re-order for ranking after score adjustment.
   combos.sort((a, b) => {
     if (a.comboScore !== b.comboScore) return b.comboScore - a.comboScore;
-    return a.distanceFromTarget - b.distanceFromTarget;
+    if (a.distanceFromTarget !== b.distanceFromTarget) return a.distanceFromTarget - b.distanceFromTarget;
+    return (a.fingerprint ?? "").localeCompare(b.fingerprint ?? "");
   });
 
   const generatedCombosByPlayerCatPresence = countCombosByPlayerCatPresence(combos);
@@ -3177,7 +3251,8 @@ export function buildValueBetCombos(
   // We already capped with `finalMax` (<=3) and diversity, but do a conservative quality cut for the 3rd-best combo.
   combos = [...combos].sort((a, b) => {
     if (a.comboScore !== b.comboScore) return b.comboScore - a.comboScore;
-    return a.distanceFromTarget - b.distanceFromTarget;
+    if (a.distanceFromTarget !== b.distanceFromTarget) return a.distanceFromTarget - b.distanceFromTarget;
+    return (a.fingerprint ?? "").localeCompare(b.fingerprint ?? "");
   });
   if (combos.length === 3) {
     const top = combos[0]!;
@@ -3198,10 +3273,62 @@ export function buildValueBetCombos(
 
   combos = combos.map((c) => ({
     ...c,
+    fingerprint: c.fingerprint ?? comboFingerprintFromLegs(c.legs),
     normalizedScore: getNormalizedFinal(c.comboScore),
     scoreBreakdown: computeComboScoreBreakdown(c),
     explanation: buildComboExplanation(c, playerRows, fixtureCornersContext, evidenceContext, headToHeadContext),
   }));
+
+  // Deterministic exact-content dedupe and invariant checks for EV/stake.
+  {
+    const byFp = new Map<string, BuildCombo[]>();
+    for (const c of combos) {
+      const fp = c.fingerprint ?? comboFingerprintFromLegs(c.legs);
+      const arr = byFp.get(fp);
+      if (arr) arr.push(c);
+      else byFp.set(fp, [c]);
+    }
+    if (import.meta.env?.DEV) {
+      for (const [fp, arr] of byFp.entries()) {
+        if (arr.length <= 1) continue;
+        const base = arr[0]!;
+        for (let i = 1; i < arr.length; i++) {
+          const other = arr[i]!;
+          const evMismatch = Math.abs(base.comboEVPercent - other.comboEVPercent) > 1e-9;
+          const stakeMismatch = Math.abs((base.kellyStakePct ?? 0) - (other.kellyStakePct ?? 0)) > 1e-9;
+          if (evMismatch || stakeMismatch) {
+            console.error("[build-bet invariant violation] same fingerprint with mismatched EV/stake", {
+              fingerprint: fp,
+              base: {
+                comboEVPercent: base.comboEVPercent,
+                kellyStakePct: base.kellyStakePct,
+                combinedOdds: base.combinedOdds,
+              },
+              other: {
+                comboEVPercent: other.comboEVPercent,
+                kellyStakePct: other.kellyStakePct,
+                combinedOdds: other.combinedOdds,
+              },
+            });
+          }
+        }
+      }
+    }
+    combos = [...byFp.entries()]
+      .map(([, arr]) =>
+        arr.sort((a, b) => {
+          if (a.comboScore !== b.comboScore) return b.comboScore - a.comboScore;
+          if (a.comboEVPercent !== b.comboEVPercent) return b.comboEVPercent - a.comboEVPercent;
+          if (a.distanceFromTarget !== b.distanceFromTarget) return a.distanceFromTarget - b.distanceFromTarget;
+          return (a.fingerprint ?? "").localeCompare(b.fingerprint ?? "");
+        })[0]!
+      )
+      .sort((a, b) => {
+        if (a.comboScore !== b.comboScore) return b.comboScore - a.comboScore;
+        if (a.distanceFromTarget !== b.distanceFromTarget) return a.distanceFromTarget - b.distanceFromTarget;
+        return (a.fingerprint ?? "").localeCompare(b.fingerprint ?? "");
+      });
+  }
 
   // HARD ASSERT (dev only): ensure nothing with narrow goal-window slips through to UI.
   if (import.meta.env?.DEV) {

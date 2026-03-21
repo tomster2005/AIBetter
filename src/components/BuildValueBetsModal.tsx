@@ -308,6 +308,30 @@ export function BuildValueBetsModal({
         });
       }
       setResult({ combos, candidateCount, legCount });
+      if (import.meta.env.DEV) {
+        for (const c of combos) {
+          console.log("[build-bet combo]", {
+            fingerprint: c.fingerprint,
+            combinedOdds: c.combinedOdds,
+            comboEVPercent: c.comboEVPercent,
+            kellyStakePct: c.kellyStakePct,
+            combinedProb: c.combinedProb,
+            impliedProb: c.impliedProb,
+            adjustedComboEdge: c.adjustedComboEdge,
+            legs: c.legs.map((l) => ({
+              id: l.id,
+              label: l.label,
+              marketId: l.marketId,
+              line: l.line,
+              outcome: l.outcome,
+              odds: l.odds,
+              probability: l.probability,
+              edge: l.edge,
+              score: l.score,
+            })),
+          });
+        }
+      }
       if (combos.length === 0 && import.meta.env.DEV) {
         console.log("[build-value-bets] no combos; candidateCount", candidateCount, "legCount", legCount);
       }
@@ -484,7 +508,7 @@ export function BuildValueBetsModal({
               ) : (
                 <ul className="build-value-bets-modal__combo-list">
                   {result.combos.map((combo, i) => (
-                    <li key={i} className="build-value-bets-modal__combo-card">
+                    <li key={combo.fingerprint ?? `${combo.combinedOdds}-${i}`} className="build-value-bets-modal__combo-card">
                       <div className="build-value-bets-modal__combo-header">
                         <span className="build-value-bets-modal__combo-odds">
                           {combo.combinedOdds.toFixed(2)}×

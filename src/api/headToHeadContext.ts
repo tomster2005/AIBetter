@@ -31,6 +31,7 @@ type RawH2hStatistic = {
 
 type RawH2hFixture = {
   id?: number;
+  starting_at?: string;
   participants?: RawH2hParticipant[] | { data?: RawH2hParticipant[] };
   scores?: RawH2hScore[] | { data?: RawH2hScore[] };
   statistics?: RawH2hStatistic[] | { data?: RawH2hStatistic[] };
@@ -201,6 +202,12 @@ export async function getHeadToHeadFixtureContext(
   let team2Wins = 0;
   let draws = 0;
   let resultCount = 0;
+  let team1GoalsForSum = 0;
+  let team1GoalsAgainstSum = 0;
+  let team2GoalsForSum = 0;
+  let team2GoalsAgainstSum = 0;
+  let teamGoalsSample = 0;
+  const recentTotalGoals: number[] = [];
 
   for (const f of fixtures) {
     used += 1;
@@ -208,6 +215,7 @@ export async function getHeadToHeadFixtureContext(
     if (totalGoals != null) {
       goalsSum += totalGoals;
       goalsCount += 1;
+      if (recentTotalGoals.length < 5) recentTotalGoals.push(totalGoals);
       for (const line of GOALS_LINES) {
         goalsLineSample.set(line, (goalsLineSample.get(line) ?? 0) + 1);
         if (totalGoals > line) goalsLineOver.set(line, (goalsLineOver.get(line) ?? 0) + 1);
@@ -230,6 +238,11 @@ export async function getHeadToHeadFixtureContext(
       const team1Goals = teams.team1Side === "home" ? home : teams.team1Side === "away" ? away : null;
       const team2Goals = teams.team2Side === "home" ? home : teams.team2Side === "away" ? away : null;
       if (team1Goals != null && team2Goals != null) {
+        teamGoalsSample += 1;
+        team1GoalsForSum += team1Goals;
+        team1GoalsAgainstSum += team2Goals;
+        team2GoalsForSum += team2Goals;
+        team2GoalsAgainstSum += team1Goals;
         resultCount += 1;
         if (team1Goals > team2Goals) team1Wins += 1;
         else if (team2Goals > team1Goals) team2Wins += 1;
@@ -261,6 +274,11 @@ export async function getHeadToHeadFixtureContext(
             sampleSize: goalsLineSample.get(line) ?? 0,
           }))
         : undefined,
+    team1AvgGoalsScored: teamGoalsSample > 0 ? team1GoalsForSum / teamGoalsSample : null,
+    team1AvgGoalsConceded: teamGoalsSample > 0 ? team1GoalsAgainstSum / teamGoalsSample : null,
+    team2AvgGoalsScored: teamGoalsSample > 0 ? team2GoalsForSum / teamGoalsSample : null,
+    team2AvgGoalsConceded: teamGoalsSample > 0 ? team2GoalsAgainstSum / teamGoalsSample : null,
+    recentTotalGoals: recentTotalGoals.length > 0 ? recentTotalGoals : undefined,
   };
 
   if (isDev()) {

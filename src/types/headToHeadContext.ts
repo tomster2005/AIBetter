@@ -32,5 +32,13 @@ export interface HeadToHeadFixtureContext {
     under: number;
     sampleSize: number;
   }>;
+  /** Team1 average goals scored/conceded in H2H sample (team1 = request order). */
+  team1AvgGoalsScored?: number | null;
+  team1AvgGoalsConceded?: number | null;
+  /** Team2 average goals scored/conceded in H2H sample (team2 = request order). */
+  team2AvgGoalsScored?: number | null;
+  team2AvgGoalsConceded?: number | null;
+  /** Recent H2H total goals values, newest first when available. */
+  recentTotalGoals?: number[];
 }
 
