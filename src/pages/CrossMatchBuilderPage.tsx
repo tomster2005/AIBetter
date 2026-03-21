@@ -13,19 +13,20 @@ import {
   getPlayerSingleReason,
   rankPlayerSingles,
   rankTeamSingles,
-  valueBetRowToCandidate,
   type CrossMatchPlayerSingle,
   type CrossMatchTeamSingle,
 } from "../lib/crossMatchRanking.js";
-import { tagLegForCrossFixture, buildCrossFixtureCombos } from "../lib/crossMatchCombos.js";
-import { filterPlayerCandidates, type BuildCombo, type BuildLeg } from "../lib/valueBetBuilder.js";
+import {
+  buildCrossFixtureCombos,
+  buildStratifiedCrossMatchLegPool,
+} from "../lib/crossMatchCombos.js";
+import type { BuildCombo, BuildLeg } from "../lib/valueBetBuilder.js";
 import "./CrossMatchBuilderPage.css";
 
 const LONDON = "Europe/London";
 const MAX_FIXTURES_SCAN = 48;
-const COMBO_PLAYER_CAP = 44;
-const COMBO_TEAM_CAP = 24;
-const COMBO_LEG_POOL_CAP = 72;
+const FIXTURE_PICKER_PAGE = 40;
+const COMBO_RENDER_CAP = 20;
 
 type DateScope = "today" | "24h" | "48h" | "manual";
 type LeagueScope = "all" | "favourites";
@@ -68,33 +69,9 @@ function parseNum(v: string, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function buildComboLegPool(players: CrossMatchPlayerSingle[], teams: CrossMatchTeamSingle[]): BuildLeg[] {
-  const out: BuildLeg[] = [];
-  const pSlice = players.slice(0, COMBO_PLAYER_CAP);
-  const tSlice = teams.slice(0, COMBO_TEAM_CAP);
-  for (const row of pSlice) {
-    const legs = filterPlayerCandidates([valueBetRowToCandidate(row)], null);
-    const l = legs[0];
-    if (l) out.push(tagLegForCrossFixture(l, row.fixtureId));
-  }
-  for (const t of tSlice) {
-    out.push(tagLegForCrossFixture(t.leg, t.fixtureId));
-  }
-  out.sort((a, b) => b.score - a.score);
-  return out.slice(0, COMBO_LEG_POOL_CAP);
-}
-
-function comboFixtureSummary(c: BuildCombo, idToLabel: Map<number, string>): string {
-  const labels = new Set<string>();
-  for (const leg of c.legs) {
-    const m = /^xf:(\d+):/.exec(leg.marketFamily);
-    if (m) {
-      const id = Number(m[1]);
-      labels.add(idToLabel.get(id) ?? `Fixture ${id}`);
-    }
-  }
-  const sorted = [...labels].sort((a, b) => a.localeCompare(b));
-  return `${sorted.length} matches: ${sorted.join(" · ")}`;
+function fixtureIdFromTaggedLeg(leg: BuildLeg): number | null {
+  const m = /^xf:(\d+):/.exec(leg.marketFamily);
+  return m ? Number(m[1]) : null;
 }
 
 export function CrossMatchBuilderPage() {
@@ -120,6 +97,10 @@ export function CrossMatchBuilderPage() {
   const [scanProgress, setScanProgress] = useState<{ done: number; total: number } | null>(null);
   const [scanResult, setScanResult] = useState<CrossMatchScanResult | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
+
+  const [selectedFixtureIds, setSelectedFixtureIds] = useState<number[]>([]);
+  const [fixturePickerExpanded, setFixturePickerExpanded] = useState(false);
+  const [fixturePickerShowAll, setFixturePickerShowAll] = useState(false);
 
   const fetchRange = useMemo(() => {
     const today = toLondonDateKey(new Date());
@@ -181,6 +162,47 @@ export function CrossMatchBuilderPage() {
     return list.slice(0, MAX_FIXTURES_SCAN);
   }, [fixtures, leagueScope, dateScope, manualDateKey, favouriteIds]);
 
+  const eligibleFixtureIdsKey = useMemo(
+    () =>
+      eligibleFixtures
+        .map((f) => f.id)
+        .sort((a, b) => a - b)
+        .join(","),
+    [eligibleFixtures]
+  );
+
+  useEffect(() => {
+    const ids = eligibleFixtureIdsKey
+      ? eligibleFixtureIdsKey.split(",").map(Number).filter((n) => Number.isFinite(n))
+      : [];
+    setSelectedFixtureIds(ids);
+    setFixturePickerShowAll(false);
+  }, [eligibleFixtureIdsKey]);
+
+  const selectedSet = useMemo(() => new Set(selectedFixtureIds), [selectedFixtureIds]);
+
+  const fixturesToScan = useMemo(
+    () => eligibleFixtures.filter((f) => selectedSet.has(f.id)),
+    [eligibleFixtures, selectedSet]
+  );
+
+  const toggleFixture = useCallback((id: number) => {
+    setSelectedFixtureIds((prev) => {
+      const s = new Set(prev);
+      if (s.has(id)) s.delete(id);
+      else s.add(id);
+      return [...s].sort((a, b) => a - b);
+    });
+  }, []);
+
+  const selectAllFixtures = useCallback(() => {
+    setSelectedFixtureIds(eligibleFixtures.map((f) => f.id).sort((a, b) => a - b));
+  }, [eligibleFixtures]);
+
+  const clearAllFixtures = useCallback(() => {
+    setSelectedFixtureIds([]);
+  }, []);
+
   const singleFilters = useMemo(
     () => ({
       minOdds: parseNum(minOdds, 1.01),
@@ -197,15 +219,26 @@ export function CrossMatchBuilderPage() {
     return Number.isFinite(t) && t > 1 ? t : null;
   }, [targetOddsInput]);
 
-  const filteredPlayer = useMemo(() => {
+  const playerRowsInSelection = useMemo(() => {
     if (!scanResult) return [];
-    return filterPlayerSingles(scanResult.playerRows, singleFilters);
-  }, [scanResult, singleFilters]);
+    return scanResult.playerRows.filter((r) => selectedSet.has(r.fixtureId));
+  }, [scanResult, selectedSet]);
+
+  const teamRowsInSelection = useMemo(() => {
+    if (!scanResult) return [];
+    return scanResult.teamItems.filter((t) => selectedSet.has(t.fixtureId));
+  }, [scanResult, selectedSet]);
+
+  const eligibleLegCountBeforeSingleFilters =
+    (marketMode !== "team" ? playerRowsInSelection.length : 0) + (marketMode !== "player" ? teamRowsInSelection.length : 0);
+
+  const filteredPlayer = useMemo(() => {
+    return filterPlayerSingles(playerRowsInSelection, singleFilters);
+  }, [playerRowsInSelection, singleFilters]);
 
   const filteredTeam = useMemo(() => {
-    if (!scanResult) return [];
-    return filterTeamSingles(scanResult.teamItems, singleFilters, parseNum(minTeamLegScore, 0));
-  }, [scanResult, singleFilters, minTeamLegScore]);
+    return filterTeamSingles(teamRowsInSelection, singleFilters, parseNum(minTeamLegScore, 0));
+  }, [teamRowsInSelection, singleFilters, minTeamLegScore]);
 
   const rankedPlayer = useMemo(
     () => rankPlayerSingles(filteredPlayer, targetOddsNumber),
@@ -216,20 +249,117 @@ export function CrossMatchBuilderPage() {
     [filteredTeam, targetOddsNumber]
   );
 
-  const fixtureIdToLabel = useMemo(() => {
-    const m = new Map<number, string>();
+  const eligibleLegCountAfterFilters = rankedPlayer.length + rankedTeam.length;
+
+  const distinctSinglesFixtureCount = useMemo(() => {
+    const s = new Set<number>();
+    for (const r of rankedPlayer) s.add(r.fixtureId);
+    for (const t of rankedTeam) s.add(t.fixtureId);
+    return s.size;
+  }, [rankedPlayer, rankedTeam]);
+
+  const fixtureMetaById = useMemo(() => {
+    const m = new Map<number, { matchLabel: string; leagueName: string; kickoff: string }>();
     for (const f of eligibleFixtures) {
-      m.set(f.id, `${f.homeTeam.name} vs ${f.awayTeam.name}`);
+      m.set(f.id, {
+        matchLabel: `${f.homeTeam.name} vs ${f.awayTeam.name}`,
+        leagueName: f.league?.name ?? "",
+        kickoff: f.startingAt?.trim() ?? "",
+      });
+    }
+    if (scanResult) {
+      for (const r of scanResult.playerRows) {
+        if (!m.has(r.fixtureId)) {
+          m.set(r.fixtureId, { matchLabel: r.matchLabel, leagueName: r.leagueName, kickoff: r.kickoff });
+        }
+      }
+      for (const t of scanResult.teamItems) {
+        if (!m.has(t.fixtureId)) {
+          m.set(t.fixtureId, { matchLabel: t.matchLabel, leagueName: t.leagueName, kickoff: t.kickoff });
+        }
+      }
     }
     return m;
-  }, [eligibleFixtures]);
+  }, [eligibleFixtures, scanResult]);
 
-  const crossCombos = useMemo(() => {
-    if (targetOddsNumber == null) return [];
-    const pool = buildComboLegPool(rankedPlayer, rankedTeam);
-    if (pool.length < 2) return [];
-    return buildCrossFixtureCombos(pool, targetOddsNumber, { maxCombos: 20, maxLegs: 3 });
-  }, [rankedPlayer, rankedTeam, targetOddsNumber]);
+  const { crossCombos, finalComboRenderCount, comboPipelineMetrics } = useMemo(() => {
+    const emptyMetrics = {
+      stratifiedPlayerLegsBuilt: 0,
+      stratifiedTeamLegsBuilt: 0,
+      legPoolSize: 0,
+      distinctFixturesInPool: 0,
+      generateCombos: {
+        preEvComboCount: 0,
+        postMinEvComboCount: 0,
+        afterPositiveNearFilterCount: 0,
+        returnedCount: 0,
+        rejectedSameFamilyOverlap: 0,
+      },
+      afterDistinctFixtureFilter: 0,
+      finalRenderedCap: 0,
+    };
+    if (targetOddsNumber == null) {
+      return { crossCombos: [] as BuildCombo[], finalComboRenderCount: 0, comboPipelineMetrics: emptyMetrics };
+    }
+    const { legs, stratifiedPlayerLegsBuilt, stratifiedTeamLegsBuilt } = buildStratifiedCrossMatchLegPool(
+      rankedPlayer,
+      rankedTeam,
+      marketMode
+    );
+    if (legs.length < 2) {
+      if (import.meta.env.DEV) {
+        console.log("[cross-match-builder] combo path skipped: leg pool < 2", {
+          stratifiedPlayerLegsBuilt,
+          stratifiedTeamLegsBuilt,
+          rankedPlayer: rankedPlayer.length,
+          rankedTeam: rankedTeam.length,
+        });
+      }
+      return { crossCombos: [] as BuildCombo[], finalComboRenderCount: 0, comboPipelineMetrics: emptyMetrics };
+    }
+    const metrics = { ...emptyMetrics };
+    const combos = buildCrossFixtureCombos(legs, targetOddsNumber, {
+      maxCombos: COMBO_RENDER_CAP,
+      maxLegs: 3,
+      metrics,
+      stratifiedLegCounts: { player: stratifiedPlayerLegsBuilt, team: stratifiedTeamLegsBuilt },
+    });
+    const rendered = combos.slice(0, COMBO_RENDER_CAP);
+    metrics.finalRenderedCap = rendered.length;
+    if (import.meta.env.DEV) {
+      const g = metrics.generateCombos;
+      console.log("[cross-match-builder] combo pipeline", {
+        fixturesInScope: eligibleFixtures.length,
+        fixturesSelected: selectedFixtureIds.length,
+        fixturesScanned: fixturesToScan.length,
+        eligibleLegsBeforeSingleFilters: eligibleLegCountBeforeSingleFilters,
+        eligibleLegsAfterSingleFilters: eligibleLegCountAfterFilters,
+        distinctFixturesAmongSingles: distinctSinglesFixtureCount,
+        stratifiedPlayerLegsBuilt,
+        stratifiedTeamLegsBuilt,
+        legPoolSize: metrics.legPoolSize,
+        distinctFixturesInLegPool: metrics.distinctFixturesInPool,
+        combosGeneratedPreDistinct: g.preEvComboCount,
+        generateCombosReturnedAfterRanking: g.returnedCount,
+        combosAfterDistinctFixtureFilter: metrics.afterDistinctFixtureFilter,
+        combosAfterEvAndPositiveNearFilter: g.afterPositiveNearFilterCount,
+        rejectedSameFamilyOverlap: g.rejectedSameFamilyOverlap,
+        finalCombosRendered: rendered.length,
+      });
+    }
+    return { crossCombos: rendered, finalComboRenderCount: rendered.length, comboPipelineMetrics: metrics };
+  }, [
+    targetOddsNumber,
+    rankedPlayer,
+    rankedTeam,
+    marketMode,
+    eligibleFixtures.length,
+    selectedFixtureIds.length,
+    fixturesToScan.length,
+    eligibleLegCountBeforeSingleFilters,
+    eligibleLegCountAfterFilters,
+    distinctSinglesFixtureCount,
+  ]);
 
   const bookmakerOptions = useMemo(() => {
     if (!scanResult) return ["all"] as string[];
@@ -244,16 +374,16 @@ export function CrossMatchBuilderPage() {
   }, [scanResult]);
 
   const runScan = useCallback(async () => {
-    if (eligibleFixtures.length === 0) {
-      setScanError("No fixtures match your scope.");
+    if (fixturesToScan.length === 0) {
+      setScanError("Select at least one fixture to scan.");
       return;
     }
     setScanning(true);
     setScanError(null);
     setScanResult(null);
-    setScanProgress({ done: 0, total: eligibleFixtures.length });
+    setScanProgress({ done: 0, total: fixturesToScan.length });
     try {
-      const res = await scanCrossMatchFixtures(eligibleFixtures, {
+      const res = await scanCrossMatchFixtures(fixturesToScan, {
         marketMode,
         maxConcurrent: 3,
         onProgress: (done, total) => setScanProgress({ done, total }),
@@ -265,10 +395,14 @@ export function CrossMatchBuilderPage() {
       setScanning(false);
       setScanProgress(null);
     }
-  }, [eligibleFixtures, marketMode]);
+  }, [fixturesToScan, marketMode]);
 
   const failedTraces = scanResult?.traces.filter((t) => !t.ok) ?? [];
   const softTraces = scanResult?.traces.filter((t) => t.ok && t.reason) ?? [];
+
+  const showCombosPrimary = targetOddsNumber != null;
+  const fixturesPickerVisible = eligibleFixtures.length;
+  const fixturesPickerList = fixturePickerShowAll ? eligibleFixtures : eligibleFixtures.slice(0, FIXTURE_PICKER_PAGE);
 
   return (
     <div className="cross-match-page">
@@ -383,11 +517,64 @@ export function CrossMatchBuilderPage() {
         </div>
       </section>
 
+      {fixturesPickerVisible > 0 ? (
+        <section className="cross-match-page__fixture-picker" aria-label="Fixture selection">
+          <button
+            type="button"
+            className="cross-match-page__fixture-picker-toggle"
+            onClick={() => setFixturePickerExpanded((v) => !v)}
+            aria-expanded={fixturePickerExpanded}
+          >
+            {fixturePickerExpanded ? "▼" : "▶"} Matches in scope ({eligibleFixtures.length}) — {selectedFixtureIds.length}{" "}
+            selected
+          </button>
+          {fixturePickerExpanded ? (
+            <div className="cross-match-page__fixture-picker-body">
+              <div className="cross-match-page__fixture-picker-actions">
+                <button type="button" className="cross-match-page__fixture-picker-btn" onClick={selectAllFixtures}>
+                  Select all
+                </button>
+                <button type="button" className="cross-match-page__fixture-picker-btn" onClick={clearAllFixtures}>
+                  Clear all
+                </button>
+              </div>
+              <ul className="cross-match-page__fixture-picker-list">
+                {fixturesPickerList.map((f) => {
+                  const checked = selectedSet.has(f.id);
+                  return (
+                    <li key={f.id} className="cross-match-page__fixture-picker-row">
+                      <label className="cross-match-page__fixture-picker-label">
+                        <input type="checkbox" checked={checked} onChange={() => toggleFixture(f.id)} />
+                        <span className="cross-match-page__fixture-picker-match">
+                          {f.homeTeam.name} <span className="cross-match-page__fixture-picker-vs">vs</span> {f.awayTeam.name}
+                        </span>
+                        <span className="cross-match-page__fixture-picker-meta">
+                          {f.league?.name ?? "—"} · {f.startingAt?.trim() || "—"}
+                        </span>
+                      </label>
+                    </li>
+                  );
+                })}
+              </ul>
+              {eligibleFixtures.length > FIXTURE_PICKER_PAGE ? (
+                <button
+                  type="button"
+                  className="cross-match-page__fixture-picker-more"
+                  onClick={() => setFixturePickerShowAll((v) => !v)}
+                >
+                  {fixturePickerShowAll ? "Show fewer" : `Show all ${eligibleFixtures.length} fixtures`}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
       <div className="cross-match-page__actions">
         <button
           type="button"
           className="cross-match-page__scan"
-          disabled={scanning || fixturesLoading || eligibleFixtures.length === 0}
+          disabled={scanning || fixturesLoading || fixturesToScan.length === 0}
           onClick={() => void runScan()}
         >
           {scanning ? "Scanning…" : "Run cross-match scan"}
@@ -435,109 +622,236 @@ export function CrossMatchBuilderPage() {
 
       {scanResult && !scanning ? (
         <>
-          <section className="cross-match-page__results" aria-label="Singles">
-            <h2>Singles</h2>
-            <p className="cross-match-page__hint">
-              Player rows reuse the value-bet model; reasoning lines come from the same builder text as the Build Value Bets
-              flow. Team rows use the team-leg scorer from fixture odds. Target odds refines ordering after edge and quality.
-            </p>
-            {marketMode !== "team" && rankedPlayer.length === 0 ? (
-              <p className="cross-match-page__empty">No player singles match filters.</p>
+          <p className="cross-match-page__summary" role="status">
+            {eligibleFixtures.length} fixtures in scope · {selectedFixtureIds.length} selected for build ·{" "}
+            {eligibleLegCountBeforeSingleFilters} raw legs from scan (selection + mode) · {eligibleLegCountAfterFilters}{" "}
+            legs after filters · {distinctSinglesFixtureCount} distinct fixtures among filtered singles
+            {showCombosPrimary ? (
+              <>
+                {" "}
+                · {finalComboRenderCount} cross-match combo{finalComboRenderCount === 1 ? "" : "s"} shown
+                {comboPipelineMetrics.legPoolSize > 0 ? (
+                  <>
+                    {" "}
+                    (pool {comboPipelineMetrics.legPoolSize} legs, {comboPipelineMetrics.distinctFixturesInPool} fixtures)
+                  </>
+                ) : null}
+              </>
             ) : null}
-            {marketMode !== "team" && rankedPlayer.length > 0 ? (
-              <ul className="cross-match-page__card-list">
-                {rankedPlayer.slice(0, 80).map((row, idx) => (
-                  <li key={`${row.fixtureId}-${row.playerName}-${row.marketName}-${row.line}-${row.outcome}-${row.bookmakerName}-${idx}`} className="cross-match-card cross-match-card--player">
-                    <div className="cross-match-card__head">
-                      <span className="cross-match-card__fixture">{row.matchLabel}</span>
-                      <span className="cross-match-card__league">{row.leagueName}</span>
-                    </div>
-                    <div className="cross-match-card__pick">
-                      {row.playerName} · {row.marketName} {row.line} {row.outcome} @ {row.odds.toFixed(2)}{" "}
-                      <span className="cross-match-card__bm">({row.bookmakerName})</span>
-                    </div>
-                    <div className="cross-match-card__stats">
-                      Edge {(row.modelEdge ?? row.edge ?? 0) * 100 >= 0 ? "+" : ""}
-                      {((row.modelEdge ?? row.edge ?? 0) * 100).toFixed(1)}% · Quality {row.betQualityScore.toFixed(0)} (
-                      {row.betQuality}) · Model {row.probabilityPct}
-                      {targetOddsNumber != null ? (
-                        <>
-                          {" "}
-                          · Δ target {Math.abs(row.odds - targetOddsNumber).toFixed(2)}
-                        </>
-                      ) : null}
-                    </div>
-                    <p className="cross-match-card__reason">{getPlayerSingleReason(row)}</p>
-                  </li>
-                ))}
-              </ul>
-            ) : null}
+          </p>
 
-            {marketMode !== "player" && rankedTeam.length === 0 ? (
-              <p className="cross-match-page__empty">No team singles match filters.</p>
-            ) : null}
-            {marketMode !== "player" && rankedTeam.length > 0 ? (
-              <ul className="cross-match-page__card-list">
-                {rankedTeam.slice(0, 60).map((t, idx) => (
-                  <li key={`${t.fixtureId}-${t.leg.id}-${idx}`} className="cross-match-card cross-match-card--team">
-                    <div className="cross-match-card__head">
-                      <span className="cross-match-card__fixture">{t.matchLabel}</span>
-                      <span className="cross-match-card__league">{t.leagueName}</span>
-                    </div>
-                    <div className="cross-match-card__pick">
-                      {t.leg.label} @ {t.leg.odds.toFixed(2)}{" "}
-                      <span className="cross-match-card__bm">({t.leg.bookmakerName})</span>
-                    </div>
-                    <div className="cross-match-card__stats">
-                      Builder score {t.leg.score.toFixed(0)}
-                      {typeof t.leg.edge === "number" ? <> · Edge {(t.leg.edge * 100).toFixed(1)}%</> : null}
-                      {targetOddsNumber != null ? (
-                        <>
-                          {" "}
-                          · Δ target {Math.abs(t.leg.odds - targetOddsNumber).toFixed(2)}
-                        </>
-                      ) : null}
-                    </div>
-                    {t.leg.reason ? <p className="cross-match-card__reason">{t.leg.reason}</p> : null}
-                  </li>
-                ))}
-              </ul>
-            ) : null}
-          </section>
+          {!showCombosPrimary ? (
+            <>
+              <section className="cross-match-page__results cross-match-page__results--singles" aria-label="Best singles">
+                <h2 className="cross-match-page__section-title">Best Singles</h2>
+                <p className="cross-match-page__hint">
+                  Primary view when target odds is unset. Enable target odds to surface cross-match combos first.
+                </p>
+                {marketMode !== "team" && rankedPlayer.length === 0 ? (
+                  <p className="cross-match-page__empty">No player singles match filters.</p>
+                ) : null}
+                {marketMode !== "team" && rankedPlayer.length > 0 ? (
+                  <ul className="cross-match-page__card-list">
+                    {rankedPlayer.slice(0, 80).map((row, idx) => (
+                      <li
+                        key={`${row.fixtureId}-${row.playerName}-${row.marketName}-${row.line}-${row.outcome}-${row.bookmakerName}-${idx}`}
+                        className="cross-match-card cross-match-card--player"
+                      >
+                        <div className="cross-match-card__head">
+                          <span className="cross-match-card__fixture">{row.matchLabel}</span>
+                          <span className="cross-match-card__league">{row.leagueName}</span>
+                        </div>
+                        <div className="cross-match-card__pick">
+                          {row.playerName} · {row.marketName} {row.line} {row.outcome} @ {row.odds.toFixed(2)}{" "}
+                          <span className="cross-match-card__bm">({row.bookmakerName})</span>
+                        </div>
+                        <div className="cross-match-card__stats">
+                          Edge {(row.modelEdge ?? row.edge ?? 0) * 100 >= 0 ? "+" : ""}
+                          {((row.modelEdge ?? row.edge ?? 0) * 100).toFixed(1)}% · Quality {row.betQualityScore.toFixed(0)} (
+                          {row.betQuality}) · Model {row.probabilityPct}
+                        </div>
+                        <p className="cross-match-card__reason">{getPlayerSingleReason(row)}</p>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
 
-          <section className="cross-match-page__results" aria-label="Cross-match combos">
-            <h2>Cross-match combos</h2>
-            {targetOddsNumber == null ? (
-              <p className="cross-match-page__hint">Set a valid target odds (&gt;1) to rank combos near that combined price.</p>
-            ) : crossCombos.length === 0 ? (
-              <p className="cross-match-page__empty">
-                No multi-fixture combos passed the shared EV / distance rules. Try widening odds, lowering min edge, or
-                scanning more matches.
-              </p>
-            ) : (
-              <ul className="cross-match-page__card-list">
-                {crossCombos.map((c, idx) => (
-                  <li key={c.fingerprint ?? `combo-${idx}`} className="cross-match-card cross-match-card--combo">
-                    <div className="cross-match-card__head">
-                      <span className="cross-match-card__fixture">{comboFixtureSummary(c, fixtureIdToLabel)}</span>
-                      <span className="cross-match-card__stats">
-                        Combined {c.combinedOdds.toFixed(2)} · Δ vs target {c.distanceFromTarget.toFixed(2)} · EV{" "}
-                        {(c.comboEV * 100).toFixed(1)}% · Stake ~{(c.kellyStakePct * 100).toFixed(2)}%
-                      </span>
-                    </div>
-                    <ol className="cross-match-combo__legs">
-                      {c.legs.map((leg) => (
-                        <li key={leg.id}>
-                          <strong>{leg.label}</strong> @ {leg.odds.toFixed(2)} ({leg.bookmakerName})
-                          {leg.reason ? <span className="cross-match-combo__leg-reason"> — {leg.reason}</span> : null}
-                        </li>
-                      ))}
-                    </ol>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
+                {marketMode !== "player" && rankedTeam.length === 0 ? (
+                  <p className="cross-match-page__empty">No team singles match filters.</p>
+                ) : null}
+                {marketMode !== "player" && rankedTeam.length > 0 ? (
+                  <ul className="cross-match-page__card-list">
+                    {rankedTeam.slice(0, 60).map((t, idx) => (
+                      <li key={`${t.fixtureId}-${t.leg.id}-${idx}`} className="cross-match-card cross-match-card--team">
+                        <div className="cross-match-card__head">
+                          <span className="cross-match-card__fixture">{t.matchLabel}</span>
+                          <span className="cross-match-card__league">{t.leagueName}</span>
+                        </div>
+                        <div className="cross-match-card__pick">
+                          {t.leg.label} @ {t.leg.odds.toFixed(2)}{" "}
+                          <span className="cross-match-card__bm">({t.leg.bookmakerName})</span>
+                        </div>
+                        <div className="cross-match-card__stats">
+                          Builder score {t.leg.score.toFixed(0)}
+                          {typeof t.leg.edge === "number" ? <> · Edge {(t.leg.edge * 100).toFixed(1)}%</> : null}
+                        </div>
+                        {t.leg.reason ? <p className="cross-match-card__reason">{t.leg.reason}</p> : null}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </section>
+
+              <section className="cross-match-page__results cross-match-page__results--combos-secondary" aria-label="Cross-match combos unavailable">
+                <h2 className="cross-match-page__section-title">Cross-Match Combos</h2>
+                <p className="cross-match-page__hint">
+                  Set a valid target odds (greater than 1) to rank and build 2–3 leg cross-match combos from different
+                  fixtures.
+                </p>
+              </section>
+            </>
+          ) : (
+            <>
+              <section
+                className="cross-match-page__results cross-match-page__results--combos-primary"
+                aria-label="Cross-match combos"
+              >
+                <h2 className="cross-match-page__section-title cross-match-page__section-title--combos">Cross-Match Combos</h2>
+                <p className="cross-match-page__hint">
+                  2–3 legs, each from a different fixture; ordered by closeness to target odds, then EV. Uses the same
+                  deterministic combo rules as Build Value Bets (including distinct-fixture enforcement here).
+                </p>
+                {distinctSinglesFixtureCount < 2 ? (
+                  <p className="cross-match-page__empty cross-match-page__empty--prominent">
+                    Cross-match combos need legs from at least two different fixtures. Select more matches or relax filters
+                    (odds, edge, bookmaker, quality).
+                  </p>
+                ) : crossCombos.length === 0 ? (
+                  <p className="cross-match-page__empty cross-match-page__empty--prominent">
+                    No valid cross-match combos found for current filters.
+                  </p>
+                ) : (
+                  <ul className="cross-match-page__card-list">
+                    {crossCombos.map((c, idx) => (
+                      <li
+                        key={c.fingerprint ?? `combo-${idx}`}
+                        className="cross-match-card cross-match-card--combo cross-match-card--combo-hero"
+                      >
+                        <div className="cross-match-card__combo-metrics">
+                          <span className="cross-match-card__combo-metric">
+                            <abbr title="Combined decimal odds">Combined</abbr> {c.combinedOdds.toFixed(2)}
+                          </span>
+                          <span className="cross-match-card__combo-metric">Δ target {c.distanceFromTarget.toFixed(2)}</span>
+                          <span className="cross-match-card__combo-metric">EV {(c.comboEV * 100).toFixed(1)}%</span>
+                          <span className="cross-match-card__combo-metric">Stake ~{(c.kellyStakePct * 100).toFixed(2)}%</span>
+                          <span className="cross-match-card__combo-metric">{c.legs.length} legs</span>
+                        </div>
+                        <ol className="cross-match-combo__legs cross-match-combo__legs--detailed">
+                          {c.legs.map((leg) => {
+                            const fid = fixtureIdFromTaggedLeg(leg);
+                            const meta = fid != null ? fixtureMetaById.get(fid) : undefined;
+                            const fixtureTitle = meta?.matchLabel ?? (fid != null ? `Fixture ${fid}` : "Fixture");
+                            return (
+                              <li key={leg.id}>
+                                <div className="cross-match-combo__leg-fixture">
+                                  <strong>{fixtureTitle}</strong>
+                                  {meta?.leagueName ? (
+                                    <span className="cross-match-combo__leg-league"> · {meta.leagueName}</span>
+                                  ) : null}
+                                  {meta?.kickoff ? (
+                                    <span className="cross-match-combo__leg-kickoff"> · {meta.kickoff}</span>
+                                  ) : null}
+                                </div>
+                                <div className="cross-match-combo__leg-pick">
+                                  <strong>{leg.label}</strong> @ {leg.odds.toFixed(2)}{" "}
+                                  <span className="cross-match-card__bm">({leg.bookmakerName})</span>
+                                </div>
+                                {leg.reason ? (
+                                  <p className="cross-match-combo__leg-reason-block">{leg.reason}</p>
+                                ) : null}
+                              </li>
+                            );
+                          })}
+                        </ol>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+
+              <section className="cross-match-page__results cross-match-page__results--singles" aria-label="Best singles">
+                <h2 className="cross-match-page__section-title">Best Singles</h2>
+                <p className="cross-match-page__hint">
+                  Supporting picks from the same scan; target odds refines ordering after edge and quality.
+                </p>
+                {marketMode !== "team" && rankedPlayer.length === 0 ? (
+                  <p className="cross-match-page__empty">No player singles match filters.</p>
+                ) : null}
+                {marketMode !== "team" && rankedPlayer.length > 0 ? (
+                  <ul className="cross-match-page__card-list">
+                    {rankedPlayer.slice(0, 80).map((row, idx) => (
+                      <li
+                        key={`${row.fixtureId}-${row.playerName}-${row.marketName}-${row.line}-${row.outcome}-${row.bookmakerName}-${idx}`}
+                        className="cross-match-card cross-match-card--player"
+                      >
+                        <div className="cross-match-card__head">
+                          <span className="cross-match-card__fixture">{row.matchLabel}</span>
+                          <span className="cross-match-card__league">{row.leagueName}</span>
+                        </div>
+                        <div className="cross-match-card__pick">
+                          {row.playerName} · {row.marketName} {row.line} {row.outcome} @ {row.odds.toFixed(2)}{" "}
+                          <span className="cross-match-card__bm">({row.bookmakerName})</span>
+                        </div>
+                        <div className="cross-match-card__stats">
+                          Edge {(row.modelEdge ?? row.edge ?? 0) * 100 >= 0 ? "+" : ""}
+                          {((row.modelEdge ?? row.edge ?? 0) * 100).toFixed(1)}% · Quality {row.betQualityScore.toFixed(0)} (
+                          {row.betQuality}) · Model {row.probabilityPct}
+                          {targetOddsNumber != null ? (
+                            <>
+                              {" "}
+                              · Δ target {Math.abs(row.odds - targetOddsNumber).toFixed(2)}
+                            </>
+                          ) : null}
+                        </div>
+                        <p className="cross-match-card__reason">{getPlayerSingleReason(row)}</p>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+
+                {marketMode !== "player" && rankedTeam.length === 0 ? (
+                  <p className="cross-match-page__empty">No team singles match filters.</p>
+                ) : null}
+                {marketMode !== "player" && rankedTeam.length > 0 ? (
+                  <ul className="cross-match-page__card-list">
+                    {rankedTeam.slice(0, 60).map((t, idx) => (
+                      <li key={`${t.fixtureId}-${t.leg.id}-${idx}`} className="cross-match-card cross-match-card--team">
+                        <div className="cross-match-card__head">
+                          <span className="cross-match-card__fixture">{t.matchLabel}</span>
+                          <span className="cross-match-card__league">{t.leagueName}</span>
+                        </div>
+                        <div className="cross-match-card__pick">
+                          {t.leg.label} @ {t.leg.odds.toFixed(2)}{" "}
+                          <span className="cross-match-card__bm">({t.leg.bookmakerName})</span>
+                        </div>
+                        <div className="cross-match-card__stats">
+                          Builder score {t.leg.score.toFixed(0)}
+                          {typeof t.leg.edge === "number" ? <> · Edge {(t.leg.edge * 100).toFixed(1)}%</> : null}
+                          {targetOddsNumber != null ? (
+                            <>
+                              {" "}
+                              · Δ target {Math.abs(t.leg.odds - targetOddsNumber).toFixed(2)}
+                            </>
+                          ) : null}
+                        </div>
+                        {t.leg.reason ? <p className="cross-match-card__reason">{t.leg.reason}</p> : null}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </section>
+            </>
+          )}
         </>
       ) : null}
     </div>

@@ -201,3 +201,204 @@
   font-weight: 400;
   color: #6b7280;
 }
+
+.cross-match-page__summary {
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: #374151;
+  margin: 0 0 1rem 0;
+  padding: 0.5rem 0.65rem;
+  background: #f3f4f6;
+  border-radius: 6px;
+  border: 1px solid #e5e7eb;
+}
+
+.cross-match-page__section-title {
+  margin: 1.25rem 0 0.35rem 0;
+  font-size: 1.05rem;
+  color: #111827;
+}
+
+.cross-match-page__section-title--combos {
+  font-size: 1.15rem;
+  color: #0f172a;
+}
+
+.cross-match-page__results--combos-primary {
+  padding: 0.75rem 0.85rem 1rem;
+  margin-bottom: 0.5rem;
+  background: linear-gradient(180deg, #eef2ff 0%, #f8fafc 100%);
+  border: 1px solid #c7d2fe;
+  border-radius: 10px;
+}
+
+.cross-match-page__results--combos-secondary {
+  opacity: 0.95;
+}
+
+.cross-match-page__empty--prominent {
+  font-weight: 500;
+  color: #4338ca;
+  background: #eef2ff;
+  padding: 0.65rem 0.75rem;
+  border-radius: 6px;
+  border: 1px solid #c7d2fe;
+}
+
+.cross-match-card--combo-hero {
+  border-color: #a5b4fc;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+
+.cross-match-card__combo-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.85rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.78rem;
+  color: #1e293b;
+}
+
+.cross-match-card__combo-metric {
+  font-weight: 600;
+}
+
+.cross-match-combo__legs--detailed {
+  list-style: decimal;
+  margin: 0.25rem 0 0 1.25rem;
+  padding: 0;
+}
+
+.cross-match-combo__leg-fixture {
+  font-size: 0.8rem;
+  color: #0f172a;
+  margin-bottom: 0.15rem;
+}
+
+.cross-match-combo__leg-league,
+.cross-match-combo__leg-kickoff {
+  font-weight: 400;
+  color: #64748b;
+}
+
+.cross-match-combo__leg-pick {
+  font-size: 0.82rem;
+  margin-bottom: 0.2rem;
+}
+
+.cross-match-combo__leg-reason-block {
+  font-size: 0.76rem;
+  line-height: 1.45;
+  color: #475569;
+  margin: 0.2rem 0 0.35rem 0;
+}
+
+.cross-match-page__fixture-picker {
+  margin-bottom: 0.85rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.cross-match-page__fixture-picker-toggle {
+  width: 100%;
+  text-align: left;
+  padding: 0.55rem 0.75rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #1f2937;
+  background: #f9fafb;
+  border: none;
+  cursor: pointer;
+}
+
+.cross-match-page__fixture-picker-toggle:hover {
+  background: #f3f4f6;
+}
+
+.cross-match-page__fixture-picker-body {
+  padding: 0.5rem 0.65rem 0.65rem;
+  border-top: 1px solid #e5e7eb;
+  max-height: 14rem;
+  overflow-y: auto;
+}
+
+.cross-match-page__fixture-picker-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.45rem;
+}
+
+.cross-match-page__fixture-picker-btn {
+  font-size: 0.75rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  border: 1px solid #d1d5db;
+  background: #fff;
+  cursor: pointer;
+}
+
+.cross-match-page__fixture-picker-btn:hover {
+  background: #f9fafb;
+}
+
+.cross-match-page__fixture-picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.cross-match-page__fixture-picker-row {
+  margin: 0;
+  padding: 0.2rem 0;
+  border-bottom: 1px solid #f3f4f6;
+}
+
+.cross-match-page__fixture-picker-row:last-child {
+  border-bottom: none;
+}
+
+.cross-match-page__fixture-picker-label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 0.35rem 0.5rem;
+  font-size: 0.78rem;
+  cursor: pointer;
+  color: #374151;
+}
+
+.cross-match-page__fixture-picker-label input {
+  margin-top: 0.2rem;
+  flex-shrink: 0;
+}
+
+.cross-match-page__fixture-picker-match {
+  font-weight: 600;
+  min-width: 0;
+}
+
+.cross-match-page__fixture-picker-vs {
+  font-weight: 500;
+  color: #6b7280;
+}
+
+.cross-match-page__fixture-picker-meta {
+  width: 100%;
+  flex-basis: 100%;
+  margin-left: 1.35rem;
+  font-size: 0.72rem;
+  color: #6b7280;
+}
+
+.cross-match-page__fixture-picker-more {
+  margin-top: 0.4rem;
+  font-size: 0.75rem;
+  padding: 0.2rem 0.45rem;
+  border: none;
+  background: none;
+  color: #2563eb;
+  cursor: pointer;
+  text-decoration: underline;
+}

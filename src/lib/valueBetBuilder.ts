@@ -2457,17 +2457,26 @@ function hasSameFamilyOverlap(legs: BuildLeg[]): boolean {
   return families.size < legs.length;
 }
 
+/** Strip cross-match `xf:{fixtureId}:` prefix so team-market correlation matches tagged legs. */
+function marketFamilyForCorrelation(mf: string): string {
+  const m = /^xf:\d+:(.+)$/.exec(mf);
+  return m ? m[1]! : mf;
+}
+
 function getCorrelationPenalty(a: BuildLeg, b: BuildLeg): number {
   // SAME PLAYER (strong correlation)
   if (a.playerId && b.playerId && a.playerId === b.playerId) return 0.15;
+
+  const aMf = marketFamilyForCorrelation(a.marketFamily);
+  const bMf = marketFamilyForCorrelation(b.marketFamily);
 
   // SAME TEAM + similar team-goals markets (medium correlation)
   if (
     a.type === "team" &&
     b.type === "team" &&
     ((a.teamId && b.teamId && a.teamId === b.teamId) ||
-      ((a.marketFamily === "team:match-goals" || a.marketFamily === "team:alternative-total-goals") &&
-        (b.marketFamily === "team:match-goals" || b.marketFamily === "team:alternative-total-goals")))
+      ((aMf === "team:match-goals" || aMf === "team:alternative-total-goals") &&
+        (bMf === "team:match-goals" || bMf === "team:alternative-total-goals")))
   ) {
     return 0.08;
   }
@@ -2497,13 +2506,28 @@ function computeKellyStakePct(combinedOdds: number, combinedProb: number): numbe
   return capped * KELLY_FRACTIONAL;
 }
 
+/** Optional counters filled by {@link generateCombos} for diagnostics (cross-match builder, dev logs). */
+export interface GenerateCombosMetrics {
+  preEvComboCount: number;
+  postMinEvComboCount: number;
+  afterPositiveNearFilterCount: number;
+  returnedCount: number;
+  rejectedSameFamilyOverlap: number;
+}
+
 /** Generate 2-leg and 3-leg combos, rank by distance, then EV, then combo score. Rejects same-family overlap. */
 export function generateCombos(
   legs: BuildLeg[],
   targetOdds: number,
-  options: { maxCombos?: number; maxLegs?: number } = {}
+  options: {
+    maxCombos?: number;
+    maxLegs?: number;
+    /** Defaults to {@link MIN_COMBO_EV}. Cross-match uses 0 so combos are not dropped before distinct-fixture filtering. */
+    minComboEV?: number;
+    metrics?: GenerateCombosMetrics;
+  } = {}
 ): BuildCombo[] {
-  const { maxCombos = 50, maxLegs = 3 } = options;
+  const { maxCombos = 50, maxLegs = 3, minComboEV = MIN_COMBO_EV, metrics } = options;
   const combos: BuildCombo[] = [];
   const used = new Set<string>();
   let rejectedOverlap = 0;
@@ -2573,7 +2597,7 @@ export function generateCombos(
     console.log("[build-value-bets] combos rejected for same-family overlap", rejectedOverlap);
   }
 
-  const evFiltered = combos.filter((c) => c.comboEV >= MIN_COMBO_EV);
+  const evFiltered = combos.filter((c) => c.comboEV >= minComboEV);
   const baseCombos = evFiltered.length > 0 ? evFiltered : combos;
 
   // If a nearby positive-edge combo exists (within +/-0.1 distance), deprioritize negative-edge alternatives.
@@ -2597,7 +2621,15 @@ export function generateCombos(
     return (a.fingerprint ?? "").localeCompare(b.fingerprint ?? "");
   });
 
-  return rankedSource.slice(0, maxCombos);
+  const result = rankedSource.slice(0, maxCombos);
+  if (metrics) {
+    metrics.preEvComboCount = combos.length;
+    metrics.postMinEvComboCount = evFiltered.length;
+    metrics.afterPositiveNearFilterCount = rankedSource.length;
+    metrics.returnedCount = result.length;
+    metrics.rejectedSameFamilyOverlap = rejectedOverlap;
+  }
+  return result;
 }
 
 /** Full pipeline: filter player candidates, add model-based corner legs, apply matchup boost, generate and rank combos (no same-family overlap). */
