@@ -124,6 +124,13 @@ export default function App() {
         >
           Bet History
         </button>
+        <button
+          type="button"
+          className={`app-nav__tab ${activeTab === "crossMatch" ? "app-nav__tab--active" : ""}`}
+          onClick={() => setActiveTab("crossMatch")}
+        >
+          Cross-Match Builder
+        </button>
         <button type="button" className="app-nav__tab app-nav__logout" onClick={handleLogout}>
           Log out
         </button>
