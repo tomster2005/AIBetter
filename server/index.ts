@@ -6,6 +6,7 @@
 import "dotenv/config";
 import cors from "cors";
 import express from "express";
+import session from "express-session";
 import { getFixturesBetween } from "../src/api/sportmonks.js";
 
 const token = process.env.SPORTMONKS_API_TOKEN ?? process.env.SPORTMONKS_TOKEN;
@@ -30,6 +31,12 @@ import type { StoredBacktestRow, BacktestDataset } from "../src/lib/backtestData
 import { makeBacktestRowKey } from "../src/lib/backtestDataset.js";
 import { resolveRecentPlayerStats } from "./recentPlayerStats.js";
 
+declare module "express-session" {
+  interface SessionData {
+    authenticated?: boolean;
+  }
+}
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, "..");
 /** Vite output lives at repo root; use cwd so Render (and `npm start` from root) resolves dist/ reliably. */
@@ -37,6 +44,21 @@ const DIST_DIR = resolve(process.cwd(), "dist");
 const SPA_INDEX = join(DIST_DIR, "index.html");
 const BACKTEST_DATASET_PATH = join(PROJECT_ROOT, "data", "backtestRows.json");
 const SHARED_BETS_PATH = join(PROJECT_ROOT, "server", "data", "bets.json");
+const APP_LOGIN_USERNAME = process.env.APP_LOGIN_USERNAME;
+const APP_LOGIN_PASSWORD = process.env.APP_LOGIN_PASSWORD;
+const SESSION_SECRET = process.env.SESSION_SECRET;
+const IS_PRODUCTION = process.env.NODE_ENV === "production";
+
+if (!APP_LOGIN_USERNAME || !APP_LOGIN_PASSWORD) {
+  console.warn(
+    "\n⚠️  APP_LOGIN_USERNAME / APP_LOGIN_PASSWORD is not set. Login will fail until these are configured.\n"
+  );
+}
+if (!SESSION_SECRET || SESSION_SECRET.length < 16) {
+  console.warn(
+    "\n⚠️  SESSION_SECRET is missing or too short. Set a long random secret in your environment.\n"
+  );
+}
 
 type SharedBetRecord = {
   id: string;
@@ -132,6 +154,7 @@ const allowedOrigins =
     : [];
 
 const JSON_LIMIT = "2mb";
+app.set("trust proxy", 1);
 app.use(express.json({ limit: JSON_LIMIT }));
 if (allowedOrigins.length > 0) {
   app.use(cors({ origin: allowedOrigins }));
@@ -140,6 +163,63 @@ if (allowedOrigins.length > 0) {
     console.log("[api] express.json limit:", JSON_LIMIT);
   }
 }
+app.use(
+  session({
+    name: "aibetter.sid",
+    secret: SESSION_SECRET || "dev-only-insecure-session-secret",
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: IS_PRODUCTION,
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    },
+  })
+);
+
+app.post("/api/auth/login", (req, res) => {
+  const body = req.body as { username?: unknown; password?: unknown };
+  const username = typeof body?.username === "string" ? body.username : "";
+  const password = typeof body?.password === "string" ? body.password : "";
+  if (!APP_LOGIN_USERNAME || !APP_LOGIN_PASSWORD) {
+    res.status(500).json({ error: "Login is not configured on this server." });
+    return;
+  }
+  if (username !== APP_LOGIN_USERNAME || password !== APP_LOGIN_PASSWORD) {
+    res.status(401).json({ error: "Invalid username or password." });
+    return;
+  }
+  req.session.authenticated = true;
+  req.session.save((err) => {
+    if (err) {
+      res.status(500).json({ error: "Failed to create session." });
+      return;
+    }
+    res.json({ authenticated: true });
+  });
+});
+
+app.post("/api/auth/logout", (req, res) => {
+  req.session.destroy(() => {
+    res.clearCookie("aibetter.sid");
+    res.json({ authenticated: false });
+  });
+});
+
+app.get("/api/auth/me", (req, res) => {
+  res.json({ authenticated: req.session?.authenticated === true });
+});
+
+app.use("/api", (req, res, next) => {
+  if (req.path === "/auth/login" || req.path === "/auth/logout" || req.path === "/auth/me") {
+    return next();
+  }
+  if (req.session?.authenticated === true) {
+    return next();
+  }
+  res.status(401).json({ error: "Authentication required." });
+});
 
 app.get("/health", (_req, res) => {
   res.type("text/plain").send("ok");
