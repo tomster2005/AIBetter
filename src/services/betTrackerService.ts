@@ -443,7 +443,16 @@ export function adjustBalance(
 }
 
 function readTrackedBets(): TrackedBetRecord[] {
-  const sanitized = read<TrackedBetRecord>(TRACKED_BETS_STORAGE_KEY)
+  let rawSnapshot: string | null = null;
+  if (canUseStorage()) {
+    try {
+      rawSnapshot = window.localStorage.getItem(TRACKED_BETS_STORAGE_KEY);
+    } catch {
+      rawSnapshot = null;
+    }
+  }
+  const parsed = read<TrackedBetRecord>(TRACKED_BETS_STORAGE_KEY);
+  const sanitized = parsed
     .map(sanitizeTrackedBet)
     .filter((b): b is TrackedBetRecord => b != null);
   let repairedAny = false;
@@ -462,7 +471,25 @@ function readTrackedBets(): TrackedBetRecord[] {
   if (repairedAny) {
     writeTrackedBets(repaired);
   }
-  return repaired.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  const sorted = repaired.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  if (import.meta.env.DEV) {
+    console.log("[bet-tracker storage read]", {
+      key: TRACKED_BETS_STORAGE_KEY,
+      rawPresent: rawSnapshot != null,
+      rawLength: rawSnapshot?.length ?? 0,
+      parsedCount: parsed.length,
+      sanitizedCount: sanitized.length,
+      finalCount: sorted.length,
+      sample: sorted.slice(0, 2).map((b) => ({
+        id: b.id,
+        status: b.status,
+        bookmakerId: b.bookmakerId,
+        matchLabel: b.matchLabel,
+        legs: Array.isArray(b.legs) ? b.legs.length : 0,
+      })),
+    });
+  }
+  return sorted;
 }
 
 function writeTrackedBets(value: TrackedBetRecord[]): void {
@@ -525,7 +552,34 @@ export async function refreshTrackedBetsFromServer(): Promise<TrackedBetRecord[]
     const res = await fetch(getSharedBetsApiUrl());
     if (!res.ok) return null;
     const json = await res.json();
-    return replaceTrackedBets(json);
+    const server = sanitizeTrackedBetsList(json);
+    const local = readTrackedBets();
+    const mergedById = new Map<string, TrackedBetRecord>();
+    for (const b of local) mergedById.set(b.id, b);
+    for (const b of server) {
+      const existing = mergedById.get(b.id);
+      if (!existing) {
+        mergedById.set(b.id, b);
+        continue;
+      }
+      const existingTs = Date.parse(existing.updatedAt || existing.createdAt);
+      const incomingTs = Date.parse(b.updatedAt || b.createdAt);
+      mergedById.set(
+        b.id,
+        Number.isFinite(incomingTs) && incomingTs >= (Number.isFinite(existingTs) ? existingTs : -Infinity) ? b : existing
+      );
+    }
+    const merged = [...mergedById.values()].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+    writeTrackedBets(merged);
+    if (import.meta.env.DEV) {
+      console.log("[bet-tracker sync]", {
+        serverCount: server.length,
+        localCountBefore: local.length,
+        mergedCount: merged.length,
+        hiddenOrDropped: Math.max(0, local.length - merged.length),
+      });
+    }
+    return merged;
   } catch {
     return null;
   }

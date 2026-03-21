@@ -451,6 +451,21 @@ export function BetTrackerPage() {
     return withDerived;
   }, [bets, minScore, selectedBookmakerId, selectedStatus, sortMode]);
 
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    console.log("[bet-tracker visibility]", {
+      totalBets: bets.length,
+      visibleBets: filteredAndSortedBets.length,
+      hiddenByFilters: Math.max(0, bets.length - filteredAndSortedBets.length),
+      filters: {
+        status: selectedStatus,
+        bookmakerId: selectedBookmakerId,
+        minScore: minScore.trim() === "" ? null : minScore,
+        sortMode,
+      },
+    });
+  }, [bets.length, filteredAndSortedBets.length, minScore, selectedBookmakerId, selectedStatus, sortMode]);
+
   const onAddBookmaker = useCallback(() => {
     const n = name.trim();
     const balance = Number(startingBalance);
