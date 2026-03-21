@@ -28,6 +28,7 @@ import {
   type TrackedBetStatus,
 } from "../services/betTrackerService.js";
 import { BankrollChart } from "../components/BankrollChart.js";
+import { evaluateValueBet, type ValueEvalMarket, type ValueEvalResult } from "../services/valueEvaluatorService.js";
 import "./BetTrackerPage.css";
 
 function fmtMoney(v: number): string {
@@ -49,6 +50,19 @@ function fmtDate(v: string): string {
   const t = Date.parse(v);
   if (!Number.isFinite(t)) return v;
   return new Date(t).toLocaleString();
+}
+
+function fmtRelativeDate(v: string): string {
+  const t = Date.parse(v);
+  if (!Number.isFinite(t)) return fmtDate(v);
+  const d = new Date(t);
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const startOfYesterday = startOfToday - 24 * 60 * 60 * 1000;
+  const hhmm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (t >= startOfToday) return `Today ${hhmm}`;
+  if (t >= startOfYesterday) return `Yesterday ${hhmm}`;
+  return d.toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" }) + ` ${hhmm}`;
 }
 
 export type QuickAddSelectionDraft = {
@@ -311,6 +325,17 @@ export function BetTrackerPage() {
   const [quickAddSelections, setQuickAddSelections] = useState<QuickAddSelectionDraft[]>([createSelectionDraft()]);
   const [quickAddErrors, setQuickAddErrors] = useState<QuickAddErrors>({});
   const [expandedBetIds, setExpandedBetIds] = useState<Set<string>>(new Set());
+  const [deletingBetIds, setDeletingBetIds] = useState<Set<string>>(new Set());
+  const [statusPulseBetIds, setStatusPulseBetIds] = useState<Set<string>>(new Set());
+  const [toast, setToast] = useState<{ id: number; text: string } | null>(null);
+  const [initialSyncLoading, setInitialSyncLoading] = useState(true);
+  const [evalPlayerName, setEvalPlayerName] = useState("");
+  const [evalMarket, setEvalMarket] = useState<ValueEvalMarket>("shotsOnTarget");
+  const [evalLine, setEvalLine] = useState("0.5");
+  const [evalOdds, setEvalOdds] = useState("1.98");
+  const [evalLoading, setEvalLoading] = useState(false);
+  const [evalError, setEvalError] = useState<string | null>(null);
+  const [evalResult, setEvalResult] = useState<ValueEvalResult | null>(null);
   const [debugStorageCount, setDebugStorageCount] = useState(0);
   const [debugBackupExists, setDebugBackupExists] = useState(false);
   const [debugBackupCount, setDebugBackupCount] = useState(0);
@@ -368,7 +393,10 @@ export function BetTrackerPage() {
       await refreshTrackedBetsFromServer();
       if (cancelled) return;
       await settlePendingTrackedBets();
-      if (!cancelled) refresh();
+      if (!cancelled) {
+        refresh();
+        setInitialSyncLoading(false);
+      }
     };
     void pull();
     const t = window.setInterval(() => {
@@ -379,6 +407,12 @@ export function BetTrackerPage() {
       window.clearInterval(t);
     };
   }, [refresh]);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = window.setTimeout(() => setToast(null), 2200);
+    return () => window.clearTimeout(t);
+  }, [toast]);
 
   useEffect(() => {
     if (!adjustModalOpen) return;
@@ -394,6 +428,107 @@ export function BetTrackerPage() {
     [bets, bookmakers, timelineBookmakerId]
   );
   const scoreBands = useMemo<ScoreBandAnalysisRow[]>(() => getScoreBandAnalysis(), [bets]);
+  const settledBets = useMemo(() => bets.filter((b) => b.status !== "pending"), [bets]);
+  const totals = useMemo(() => {
+    const totalStaked = settledBets.reduce((sum, b) => sum + b.stake, 0);
+    const totalReturned = settledBets.reduce((sum, b) => sum + (b.status === "win" ? b.returnAmount : 0), 0);
+    const totalProfit = totalReturned - totalStaked;
+    const roi = totalStaked > 0 ? totalProfit / totalStaked : 0;
+    return { totalStaked, totalReturned, totalProfit, roi };
+  }, [settledBets]);
+  const bookmakerPerformance = useMemo(() => {
+    return bookmakers
+      .map((b) => ({
+        name: b.bookmakerName,
+        bets: b.settledCount,
+        profit: b.realizedProfit,
+        roi: b.roi,
+      }))
+      .sort((a, b) => b.profit - a.profit);
+  }, [bookmakers]);
+  const oddsRangePerformance = useMemo(() => {
+    const ranges = [
+      { label: "1.0-2.0", min: 1, max: 2 },
+      { label: "2.0-3.0", min: 2, max: 3 },
+      { label: "3.0-5.0", min: 3, max: 5 },
+      { label: "5.0+", min: 5, max: Number.POSITIVE_INFINITY },
+    ];
+    return ranges.map((r) => {
+      const inRange = settledBets.filter((b) => b.oddsTaken >= r.min && b.oddsTaken < r.max);
+      const wins = inRange.filter((b) => b.status === "win").length;
+      const profit = inRange.reduce((sum, b) => sum + (b.status === "win" ? b.returnAmount - b.stake : -b.stake), 0);
+      return {
+        label: r.label,
+        bets: inRange.length,
+        winRate: inRange.length > 0 ? wins / inRange.length : 0,
+        profit,
+      };
+    });
+  }, [settledBets]);
+  const streakStats = useMemo(() => {
+    const ordered = [...settledBets].sort(
+      (a, b) => Date.parse(a.updatedAt || a.createdAt) - Date.parse(b.updatedAt || b.createdAt)
+    );
+    let current = 0;
+    let currentType: "win" | "loss" | null = null;
+    let longestWin = 0;
+    let longestLoss = 0;
+    let run = 0;
+    let runType: "win" | "loss" | null = null;
+    for (const b of ordered) {
+      const t = b.status === "win" ? "win" : "loss";
+      if (runType === t) run += 1;
+      else {
+        runType = t;
+        run = 1;
+      }
+      if (t === "win") longestWin = Math.max(longestWin, run);
+      else longestLoss = Math.max(longestLoss, run);
+    }
+    if (ordered.length > 0) {
+      const last = ordered[ordered.length - 1]!.status === "win" ? "win" : "loss";
+      currentType = last;
+      current = 0;
+      for (let i = ordered.length - 1; i >= 0; i--) {
+        const t = ordered[i]!.status === "win" ? "win" : "loss";
+        if (t !== last) break;
+        current += 1;
+      }
+    }
+    return { current, currentType, longestWin, longestLoss };
+  }, [settledBets]);
+  const bestWorst = useMemo(() => {
+    if (settledBets.length === 0) {
+      return { best: null as TrackedBetRecord | null, worst: null as TrackedBetRecord | null, highestOddsWin: null as TrackedBetRecord | null };
+    }
+    const profitOf = (b: TrackedBetRecord) => (b.status === "win" ? b.returnAmount - b.stake : -b.stake);
+    const best = [...settledBets].sort((a, b) => profitOf(b) - profitOf(a))[0] ?? null;
+    const worst = [...settledBets].sort((a, b) => profitOf(a) - profitOf(b))[0] ?? null;
+    const highestOddsWin =
+      [...settledBets].filter((b) => b.status === "win").sort((a, b) => b.oddsTaken - a.oddsTaken)[0] ?? null;
+    return { best, worst, highestOddsWin };
+  }, [settledBets]);
+  const recentPerformance = useMemo(() => {
+    const ordered = [...settledBets].sort((a, b) => Date.parse(b.updatedAt || b.createdAt) - Date.parse(a.updatedAt || a.createdAt));
+    const calc = (n: number) => {
+      const sample = ordered.slice(0, n);
+      const wins = sample.filter((b) => b.status === "win").length;
+      const profit = sample.reduce((sum, b) => sum + (b.status === "win" ? b.returnAmount - b.stake : -b.stake), 0);
+      return {
+        count: sample.length,
+        winRate: sample.length > 0 ? wins / sample.length : 0,
+        profit,
+      };
+    };
+    return { last5: calc(5), last10: calc(10) };
+  }, [settledBets]);
+  const scoreBandExtremes = useMemo(() => {
+    const nonEmpty = scoreBands.filter((row) => row.total > 0);
+    if (nonEmpty.length === 0) return { best: null as string | null, worst: null as string | null };
+    const best = [...nonEmpty].sort((a, b) => b.profit - a.profit)[0]!.label;
+    const worst = [...nonEmpty].sort((a, b) => a.profit - b.profit)[0]!.label;
+    return { best, worst };
+  }, [scoreBands]);
   const availableBookmakers = useMemo(() => getBookmakers(), [bookmakers]);
   const adjustmentsByBookmakerId = useMemo(() => {
     const m = new Map<string, BalanceAdjustment[]>();
@@ -554,18 +689,40 @@ export function BetTrackerPage() {
       setMessage("Status update failed (server unavailable).");
       return;
     }
+    setStatusPulseBetIds((prev) => new Set(prev).add(id));
+    window.setTimeout(() => {
+      setStatusPulseBetIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }, 420);
+    setToast({ id: Date.now(), text: `Status updated to ${status}` });
     refresh();
   }, [refresh]);
 
   const onDeleteBet = useCallback(async (id: string) => {
     const ok = window.confirm("Delete this bet? This cannot be undone.");
     if (!ok) return;
+    setDeletingBetIds((prev) => new Set(prev).add(id));
     const deleted = await deleteTrackedBetShared(id);
     if (deleted) {
-      setMessage("Bet deleted.");
-      refresh();
+      setToast({ id: Date.now(), text: "Bet deleted" });
+      window.setTimeout(() => {
+        refresh();
+        setDeletingBetIds((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+      }, 180);
       return;
     }
+    setDeletingBetIds((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
     setMessage("Bet could not be deleted (server unavailable).");
   }, [refresh]);
 
@@ -587,6 +744,20 @@ export function BetTrackerPage() {
       return next;
     });
   }, []);
+
+  const expandAllBets = useCallback(() => {
+    setExpandedBetIds(new Set(filteredAndSortedBets.map(({ b }) => b.id)));
+  }, [filteredAndSortedBets]);
+
+  const collapseAllBets = useCallback(() => {
+    setExpandedBetIds(new Set());
+  }, []);
+
+  function getNextStatus(status: TrackedBetStatus): TrackedBetStatus {
+    if (status === "pending") return "win";
+    if (status === "win") return "loss";
+    return "pending";
+  }
 
   const resetQuickAdd = useCallback(() => {
     setQuickAddBookmakerId("");
@@ -794,6 +965,7 @@ export function BetTrackerPage() {
     }
     refresh();
     setMessage(`Quick add saved: ${created.legs.length} selections.`);
+    setToast({ id: Date.now(), text: "Bet added" });
     setShowQuickAdd(false);
     resetQuickAdd();
   }, [
@@ -806,6 +978,39 @@ export function BetTrackerPage() {
     refresh,
     resetQuickAdd,
   ]);
+
+  const onEvaluateValueBet = useCallback(async () => {
+    setEvalError(null);
+    setEvalResult(null);
+    const line = Number(evalLine);
+    const odds = Number(evalOdds);
+    if (!evalPlayerName.trim()) {
+      setEvalError("Enter player name.");
+      return;
+    }
+    if (!Number.isFinite(line) || line < 0) {
+      setEvalError("Enter a valid line.");
+      return;
+    }
+    if (!Number.isFinite(odds) || odds <= 1) {
+      setEvalError("Odds must be greater than 1.");
+      return;
+    }
+    setEvalLoading(true);
+    try {
+      const result = await evaluateValueBet({
+        playerName: evalPlayerName.trim(),
+        market: evalMarket,
+        line,
+        odds,
+      });
+      setEvalResult(result);
+    } catch (err) {
+      setEvalError(err instanceof Error ? err.message : "Could not evaluate bet.");
+    } finally {
+      setEvalLoading(false);
+    }
+  }, [evalLine, evalMarket, evalOdds, evalPlayerName]);
 
   return (
     <div className="bet-tracker-page">
@@ -849,8 +1054,21 @@ export function BetTrackerPage() {
               </thead>
               <tbody>
                 {scoreBands.map((row) => (
-                  <tr key={row.label}>
-                    <td>{row.label}</td>
+                  <tr
+                    key={row.label}
+                    className={
+                      row.total > 0 && row.label === scoreBandExtremes.best
+                        ? "bet-tracker-page__band-row is-best"
+                        : row.total > 0 && row.label === scoreBandExtremes.worst
+                          ? "bet-tracker-page__band-row is-worst"
+                          : "bet-tracker-page__band-row"
+                    }
+                  >
+                    <td>
+                      {row.label}
+                      {row.total > 0 && row.label === scoreBandExtremes.best ? " ★" : ""}
+                      {row.total > 0 && row.label === scoreBandExtremes.worst ? " ▼" : ""}
+                    </td>
                     <td>{row.total}</td>
                     <td>{row.wins}</td>
                     <td>{row.losses}</td>
@@ -872,6 +1090,113 @@ export function BetTrackerPage() {
         <div className="bet-tracker-page__summary-card"><span>Pending</span><strong>{global.pendingBets}</strong></div>
         <div className="bet-tracker-page__summary-card"><span>Total Profit</span><strong>{fmtMoney(global.totalProfit)}</strong></div>
         <div className="bet-tracker-page__summary-card"><span>ROI</span><strong>{(global.roi * 100).toFixed(1)}%</strong></div>
+        <div className="bet-tracker-page__summary-card"><span>Total Staked</span><strong>£{fmtMoney(totals.totalStaked)}</strong></div>
+        <div className="bet-tracker-page__summary-card"><span>Total Returned</span><strong>£{fmtMoney(totals.totalReturned)}</strong></div>
+        <div className="bet-tracker-page__summary-card"><span>Real ROI</span><strong>{(totals.roi * 100).toFixed(1)}%</strong></div>
+      </section>
+
+      <section className="bet-tracker-page__section">
+        <h2>Insights</h2>
+        <div className="bet-tracker-page__insights-grid">
+          <article className="bet-tracker-page__insight-card">
+            <h3>Performance by Bookmaker</h3>
+            <ul>
+              {bookmakerPerformance.map((row) => (
+                <li key={row.name}>
+                  <span>{row.name} ({row.bets})</span>
+                  <strong className={row.profit >= 0 ? "bet-tracker-page__pl is-profit" : "bet-tracker-page__pl is-loss"}>
+                    {fmtSignedMoney(row.profit)} ({(row.roi * 100).toFixed(1)}%)
+                  </strong>
+                </li>
+              ))}
+            </ul>
+          </article>
+          <article className="bet-tracker-page__insight-card">
+            <h3>Performance by Odds Range</h3>
+            <ul>
+              {oddsRangePerformance.map((row) => (
+                <li key={row.label}>
+                  <span>{row.label} ({row.bets})</span>
+                  <strong className={row.profit >= 0 ? "bet-tracker-page__pl is-profit" : "bet-tracker-page__pl is-loss"}>
+                    {fmtSignedMoney(row.profit)} • {(row.winRate * 100).toFixed(1)}%
+                  </strong>
+                </li>
+              ))}
+            </ul>
+          </article>
+          <article className="bet-tracker-page__insight-card">
+            <h3>Streaks</h3>
+            <ul>
+              <li><span>Current streak</span><strong>{streakStats.currentType ? `${streakStats.currentType} x${streakStats.current}` : "—"}</strong></li>
+              <li><span>Longest win streak</span><strong>{streakStats.longestWin}</strong></li>
+              <li><span>Longest losing streak</span><strong>{streakStats.longestLoss}</strong></li>
+            </ul>
+          </article>
+          <article className="bet-tracker-page__insight-card">
+            <h3>Best / Worst Bets</h3>
+            <ul>
+              <li><span>Highest profit</span><strong>{bestWorst.best ? `${bestWorst.best.matchLabel} (${fmtSignedMoney(bestWorst.best.returnAmount - bestWorst.best.stake)})` : "—"}</strong></li>
+              <li><span>Biggest loss</span><strong>{bestWorst.worst ? `${bestWorst.worst.matchLabel} (${fmtSignedMoney(-bestWorst.worst.stake)})` : "—"}</strong></li>
+              <li><span>Highest odds win</span><strong>{bestWorst.highestOddsWin ? `${bestWorst.highestOddsWin.matchLabel} (${bestWorst.highestOddsWin.oddsTaken.toFixed(2)})` : "—"}</strong></li>
+            </ul>
+          </article>
+          <article className="bet-tracker-page__insight-card">
+            <h3>Recent Performance</h3>
+            <ul>
+              <li><span>Last 5</span><strong>{fmtSignedMoney(recentPerformance.last5.profit)} • {(recentPerformance.last5.winRate * 100).toFixed(1)}%</strong></li>
+              <li><span>Last 10</span><strong>{fmtSignedMoney(recentPerformance.last10.profit)} • {(recentPerformance.last10.winRate * 100).toFixed(1)}%</strong></li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section className="bet-tracker-page__section">
+        <h2>Value Bet Evaluator</h2>
+        <div className="bet-tracker-page__evaluator">
+          <label>
+            Player name
+            <input value={evalPlayerName} onChange={(e) => setEvalPlayerName(e.target.value)} placeholder="Cole Palmer" />
+          </label>
+          <label>
+            Market
+            <select value={evalMarket} onChange={(e) => setEvalMarket(e.target.value as ValueEvalMarket)}>
+              <option value="shots">Shots</option>
+              <option value="shotsOnTarget">Shots on Target</option>
+              <option value="goals">Goals</option>
+            </select>
+          </label>
+          <label>
+            Line
+            <input value={evalLine} onChange={(e) => setEvalLine(e.target.value)} placeholder="0.5" />
+          </label>
+          <label>
+            Odds
+            <input value={evalOdds} onChange={(e) => setEvalOdds(e.target.value)} placeholder="1.98" />
+          </label>
+          <button type="button" onClick={() => void onEvaluateValueBet()} disabled={evalLoading}>
+            {evalLoading ? "Evaluating..." : "Evaluate Bet"}
+          </button>
+        </div>
+        {evalError ? <p className="bet-tracker-page__error">{evalError}</p> : null}
+        {evalResult ? (
+          <div className="bet-tracker-page__eval-result">
+            <h3>
+              {evalResult.playerName} ({evalResult.market})
+            </h3>
+            <div className="bet-tracker-page__eval-grid">
+              <div><span>Implied Probability</span><strong>{(evalResult.impliedProb * 100).toFixed(1)}%</strong></div>
+              <div><span>Estimated Probability</span><strong>{(evalResult.estimatedProb * 100).toFixed(1)}%</strong></div>
+              <div><span>Edge</span><strong className={evalResult.edge >= 0 ? "bet-tracker-page__pl is-profit" : "bet-tracker-page__pl is-loss"}>{(evalResult.edge * 100).toFixed(1)}%</strong></div>
+              <div><span>Confidence</span><strong>{evalResult.confidence.toFixed(0)}%</strong></div>
+              <div><span>Sample Size</span><strong>{evalResult.sampleSize} matches</strong></div>
+              <div><span>Average Stat</span><strong>{evalResult.averageStat.toFixed(2)}</strong></div>
+            </div>
+            <p className={`bet-tracker-page__eval-verdict ${evalResult.verdict === "GOOD VALUE" ? "is-good" : evalResult.verdict === "BAD VALUE" ? "is-bad" : "is-neutral"}`}>
+              {evalResult.verdict}
+            </p>
+            <p className="bet-tracker-page__eval-method">{evalResult.method}</p>
+          </div>
+        ) : null}
       </section>
 
       <section className="bet-tracker-page__section">
@@ -1026,8 +1351,22 @@ export function BetTrackerPage() {
             </button>
           </div>
         )}
-        {bets.length === 0 ? (
-          <p className="bet-tracker-page__empty">No tracked bets yet. Add a bet from Build Value Bets using the + button, or use Quick Add to start tracking.</p>
+        <div className="bet-tracker-page__list-actions">
+          <button type="button" onClick={expandAllBets}>Expand All</button>
+          <button type="button" onClick={collapseAllBets}>Collapse All</button>
+        </div>
+        {initialSyncLoading && bets.length === 0 ? (
+          <div className="bet-tracker-page__loading-skeletons" aria-hidden="true">
+            <div className="bet-tracker-page__loading-skeleton" />
+            <div className="bet-tracker-page__loading-skeleton" />
+            <div className="bet-tracker-page__loading-skeleton" />
+          </div>
+        ) : bets.length === 0 ? (
+          <div className="bet-tracker-page__empty-state">
+            <div className="bet-tracker-page__empty-icon">○</div>
+            <p className="bet-tracker-page__empty">No tracked bets yet</p>
+            <p className="bet-tracker-page__empty-sub">Add from Build Value Bets or use Quick Add to start tracking.</p>
+          </div>
         ) : filteredAndSortedBets.length === 0 ? (
           <p className="bet-tracker-page__empty">No bets match current filters.</p>
         ) : (
@@ -1055,6 +1394,7 @@ export function BetTrackerPage() {
                   : b.status === "loss"
                     ? "bet-tracker-page__bet-card is-loss"
                     : "bet-tracker-page__bet-card";
+              const deleting = deletingBetIds.has(b.id);
 
                   const canonicalUnitSize =
                     Number.isFinite(b.unitSizeAtBet as number) && (b.unitSizeAtBet as number) > 0
@@ -1087,12 +1427,24 @@ export function BetTrackerPage() {
                             ? displayReturnUnits - displayStakeUnits
                             : null;
                   return (
-                    <article key={b.id} className={cardStatusClass}>
+                    <article
+                      key={b.id}
+                      className={`${cardStatusClass}${deleting ? " is-deleting" : ""}`}
+                      onClick={() => toggleBetExpanded(b.id)}
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          toggleBetExpanded(b.id);
+                        }
+                      }}
+                    >
                       <header className="bet-tracker-page__bet-card-top">
                         <div>
                           <h3 className="bet-tracker-page__bet-match">{b.matchLabel}</h3>
                           <p className="bet-tracker-page__bet-meta">
-                            {b.bookmakerName} • {fmtDate(b.createdAt)}
+                            {b.bookmakerName} • {fmtRelativeDate(b.createdAt)}
                           </p>
                           {b.sourceType === "manualMulti" && <span className="bet-tracker-page__source-tag">Custom Multi</span>}
                         </div>
@@ -1102,10 +1454,17 @@ export function BetTrackerPage() {
                         </div>
                       </header>
 
-                      <section className="bet-tracker-page__bet-selections">
+                      <section className={`bet-tracker-page__bet-selections ${isExpanded ? "is-expanded" : "is-collapsed"}`}>
                         <p className="bet-tracker-page__bet-selection-preview">{previewLabel}</p>
                         {remainingLegCount > 0 && (
-                          <button type="button" className="bet-tracker-page__expand-btn" onClick={() => toggleBetExpanded(b.id)}>
+                          <button
+                            type="button"
+                            className="bet-tracker-page__expand-btn"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggleBetExpanded(b.id);
+                            }}
+                          >
                             {isExpanded ? "Show less" : `+${remainingLegCount} more`}
                           </button>
                         )}
@@ -1150,9 +1509,22 @@ export function BetTrackerPage() {
                           )}
                         </div>
                         <div className="bet-tracker-page__bet-controls">
+                          <button
+                            type="button"
+                            className={`bet-tracker-page__status-chip status-${b.status}${statusPulseBetIds.has(b.id) ? " is-pulse" : ""}`}
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              const next = getNextStatus(b.status);
+                              await onStatusChange(b.id, next);
+                            }}
+                            title="Cycle status: pending → win → loss"
+                          >
+                            {b.status}
+                          </button>
                           <select
                             className={`bet-tracker-page__status-select status-${b.status}`}
                             value={b.status}
+                            onClick={(e) => e.stopPropagation()}
                             onChange={(e) => onStatusChange(b.id, e.target.value as TrackedBetStatus)}
                           >
                             <option value="pending">pending</option>
@@ -1162,7 +1534,10 @@ export function BetTrackerPage() {
                           <button
                             type="button"
                             className="bet-tracker-page__delete-btn"
-                            onClick={() => onDeleteBet(b.id)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void onDeleteBet(b.id);
+                            }}
                           >
                             Delete
                           </button>
@@ -1402,6 +1777,11 @@ export function BetTrackerPage() {
           </div>
         </div>
       )}
+      {toast ? (
+        <div key={toast.id} className="bet-tracker-page__toast" role="status" aria-live="polite">
+          {toast.text}
+        </div>
+      ) : null}
 
       {adjustModalOpen && (
         <div className="bet-tracker-page__adjust-balance-overlay" role="dialog" aria-modal="true" aria-label="Adjust Balance">

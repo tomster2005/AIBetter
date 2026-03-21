@@ -1,6 +1,6 @@
 .bet-tracker-page {
-  padding: 1.25rem;
-  max-width: 1180px;
+  padding: 1.5rem 1.25rem 2rem;
+  max-width: 1160px;
   margin: 0 auto;
 }
 
@@ -23,6 +23,15 @@
   padding: 0.45rem 0.75rem;
   font-weight: 700;
   cursor: pointer;
+  transition: transform 0.08s ease, box-shadow 0.16s ease;
+}
+
+.bet-tracker-page__quick-add-btn:hover {
+  box-shadow: 0 6px 16px rgba(29, 78, 216, 0.24);
+}
+
+.bet-tracker-page__quick-add-btn:active {
+  transform: scale(0.98);
 }
 
 .bet-tracker-page__summary {
@@ -43,6 +52,142 @@
   display: block;
   color: #6b7280;
   font-size: 0.78rem;
+}
+
+.bet-tracker-page__insights-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 0.7rem;
+}
+
+.bet-tracker-page__insight-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #fff;
+  padding: 0.65rem 0.75rem;
+}
+
+.bet-tracker-page__insight-card h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.9rem;
+}
+
+.bet-tracker-page__insight-card ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.38rem;
+}
+
+.bet-tracker-page__insight-card li {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6rem;
+  align-items: baseline;
+  font-size: 0.8rem;
+}
+
+.bet-tracker-page__insight-card li span {
+  color: #64748b;
+}
+
+.bet-tracker-page__insight-card li strong {
+  color: #0f172a;
+  text-align: right;
+}
+
+.bet-tracker-page__evaluator {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 0.55rem;
+  align-items: end;
+}
+
+.bet-tracker-page__evaluator label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  color: #475569;
+}
+
+.bet-tracker-page__evaluator input,
+.bet-tracker-page__evaluator select {
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  padding: 0.4rem 0.5rem;
+  font-size: 0.84rem;
+}
+
+.bet-tracker-page__evaluator button {
+  border: 1px solid #1d4ed8;
+  background: #1d4ed8;
+  color: #fff;
+  border-radius: 8px;
+  padding: 0.5rem 0.68rem;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.bet-tracker-page__eval-result {
+  margin-top: 0.65rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #fff;
+  padding: 0.7rem 0.8rem;
+}
+
+.bet-tracker-page__eval-result h3 {
+  margin: 0 0 0.4rem;
+  font-size: 0.95rem;
+}
+
+.bet-tracker-page__eval-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.45rem;
+}
+
+.bet-tracker-page__eval-grid > div {
+  border: 1px solid #edf2f7;
+  border-radius: 8px;
+  padding: 0.45rem 0.5rem;
+}
+
+.bet-tracker-page__eval-grid span {
+  display: block;
+  color: #64748b;
+  font-size: 0.72rem;
+}
+
+.bet-tracker-page__eval-grid strong {
+  font-size: 0.9rem;
+}
+
+.bet-tracker-page__eval-verdict {
+  margin: 0.55rem 0 0.2rem;
+  font-weight: 800;
+  font-size: 0.9rem;
+}
+
+.bet-tracker-page__eval-verdict.is-good {
+  color: #166534;
+}
+
+.bet-tracker-page__eval-verdict.is-bad {
+  color: #b91c1c;
+}
+
+.bet-tracker-page__eval-verdict.is-neutral {
+  color: #334155;
+}
+
+.bet-tracker-page__eval-method {
+  margin: 0;
+  color: #64748b;
+  font-size: 0.76rem;
 }
 
 .bet-tracker-page__section {
@@ -80,28 +225,40 @@
   color: #111827;
 }
 
+.bet-tracker-page__band-row.is-best td {
+  background: rgba(22, 163, 74, 0.08);
+}
+
+.bet-tracker-page__band-row.is-worst td {
+  background: rgba(239, 68, 68, 0.08);
+}
+
 .bet-tracker-page__filters {
   display: flex;
-  gap: 0.6rem;
+  gap: 0.85rem;
   flex-wrap: wrap;
-  margin-bottom: 0.6rem;
+  margin-bottom: 0.9rem;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid #e7ecf3;
+  border-radius: 10px;
+  background: #fbfcfe;
 }
 
 .bet-tracker-page__filters label {
   display: flex;
   flex-direction: column;
-  gap: 0.2rem;
+  gap: 0.28rem;
   font-size: 0.78rem;
   color: #4b5563;
 }
 
 .bet-tracker-page__filters select,
 .bet-tracker-page__filters input {
-  border: 1px solid #d1d5db;
+  border: 1px solid #cfd7e4;
   border-radius: 6px;
-  padding: 0.35rem 0.45rem;
-  min-width: 140px;
-  font-size: 0.8rem;
+  padding: 0.42rem 0.52rem;
+  min-width: 150px;
+  font-size: 0.82rem;
   color: #111827;
   background: #fff;
 }
@@ -296,6 +453,26 @@
   color: #6b7280;
 }
 
+.bet-tracker-page__empty-state {
+  border: 1px dashed #d7e0ea;
+  border-radius: 12px;
+  background: #fbfdff;
+  padding: 1.2rem 1rem;
+  text-align: center;
+}
+
+.bet-tracker-page__empty-icon {
+  font-size: 1.2rem;
+  color: #94a3b8;
+  margin-bottom: 0.3rem;
+}
+
+.bet-tracker-page__empty-sub {
+  margin: 0.15rem 0 0;
+  color: #94a3b8;
+  font-size: 0.8rem;
+}
+
 .bet-tracker-page__message {
   margin: 0.25rem 0 0.45rem;
   font-size: 0.82rem;
@@ -378,36 +555,52 @@
 }
 
 .bet-tracker-page__delete-btn {
-  border: 1px solid #ef4444;
-  color: #b91c1c;
+  border: 1px solid #f3b4b4;
+  color: #9f1f1f;
   background: #fff;
   border-radius: 6px;
-  padding: 0.2rem 0.45rem;
-  font-size: 0.75rem;
+  padding: 0.3rem 0.55rem;
+  font-size: 0.76rem;
   font-weight: 600;
   cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease, background 0.16s ease, border-color 0.16s ease;
 }
 
 .bet-tracker-page__delete-btn:hover {
-  background: #fee2e2;
+  background: #fef2f2;
+  border-color: #ef9a9a;
 }
 
 .bet-tracker-page__bet-cards {
   display: grid;
-  gap: 0.9rem;
+  gap: 1.05rem;
 }
 
 .bet-tracker-page__bet-card {
-  border: 1px solid #e5e7eb;
-  border-radius: 12px;
+  border: 1px solid #e9edf3;
+  border-radius: 14px;
   background: #fff;
-  padding: 0.9rem;
-  box-shadow: 0 1px 2px rgba(17, 24, 39, 0.04);
-  transition: box-shadow 0.18s ease, border-color 0.18s ease;
+  padding: 1.15rem 1.2rem;
+  box-shadow: 0 1px 3px rgba(17, 24, 39, 0.05);
+  transition: transform 0.18s ease, box-shadow 0.2s ease, border-color 0.18s ease;
+  cursor: pointer;
 }
 
 .bet-tracker-page__bet-card:hover {
-  box-shadow: 0 8px 24px rgba(17, 24, 39, 0.08);
+  transform: translateY(-1px);
+  box-shadow: 0 12px 28px rgba(17, 24, 39, 0.1);
+}
+
+.bet-tracker-page__bet-card:active {
+  transform: translateY(0) scale(0.99);
+}
+
+.bet-tracker-page__bet-card.is-deleting {
+  opacity: 0;
+  transform: translateX(8px);
+  transition: opacity 0.18s ease, transform 0.18s ease;
 }
 
 .bet-tracker-page__bet-card.is-win {
@@ -423,20 +616,20 @@
 .bet-tracker-page__bet-card-top {
   display: flex;
   justify-content: space-between;
-  gap: 1rem;
+  gap: 1.2rem;
 }
 
 .bet-tracker-page__bet-match {
   margin: 0;
-  font-size: 1.05rem;
+  font-size: 1.14rem;
   line-height: 1.3;
   color: #111827;
 }
 
 .bet-tracker-page__bet-meta {
-  margin: 0.2rem 0 0;
+  margin: 0.32rem 0 0;
   color: #6b7280;
-  font-size: 0.8rem;
+  font-size: 0.79rem;
 }
 
 .bet-tracker-page__bet-kickoff {
@@ -453,20 +646,21 @@
 }
 
 .bet-tracker-page__bet-selections {
-  margin-top: 0.7rem;
-  border-top: 1px solid #f3f4f6;
-  border-bottom: 1px solid #f3f4f6;
-  padding: 0.6rem 0;
+  margin-top: 0.88rem;
+  border-top: 1px solid #f1f4f8;
+  border-bottom: 1px solid #f1f4f8;
+  padding: 0.72rem 0;
 }
 
 .bet-tracker-page__bet-selection-preview {
   margin: 0;
-  color: #374151;
-  font-size: 0.84rem;
+  color: #4b5563;
+  font-size: 0.85rem;
+  line-height: 1.4;
 }
 
 .bet-tracker-page__expand-btn {
-  margin-top: 0.35rem;
+  margin-top: 0.42rem;
   border: none;
   background: transparent;
   color: #1d4ed8;
@@ -476,9 +670,27 @@
   font-weight: 600;
 }
 
+.bet-tracker-page__expand-btn:hover {
+  text-decoration: underline;
+  color: #1e40af;
+}
+
 .bet-tracker-page__bet-selection-list {
   margin: 0.5rem 0 0;
   padding-left: 1rem;
+  transition: max-height 0.24s ease, opacity 0.2s ease, margin-top 0.2s ease;
+}
+
+.bet-tracker-page__bet-selections.is-collapsed .bet-tracker-page__bet-selection-list {
+  max-height: 0;
+  opacity: 0;
+  margin-top: 0;
+  overflow: hidden;
+}
+
+.bet-tracker-page__bet-selections.is-expanded .bet-tracker-page__bet-selection-list {
+  max-height: 500px;
+  opacity: 1;
 }
 
 .bet-tracker-page__bet-selection-list li + li {
@@ -486,27 +698,32 @@
 }
 
 .bet-tracker-page__bet-metrics {
-  margin-top: 0.7rem;
+  margin-top: 0.9rem;
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0.55rem;
+  gap: 0.7rem;
 }
 
 .bet-tracker-page__bet-metrics > div {
-  border: 1px solid #eef2f7;
-  border-radius: 8px;
-  padding: 0.5rem 0.55rem;
+  border: 1px solid #eaf0f8;
+  border-radius: 10px;
+  padding: 0.65rem 0.7rem;
   display: grid;
-  gap: 0.12rem;
+  gap: 0.2rem;
+  min-height: 74px;
+  align-content: start;
+  background: #fcfdff;
 }
 
 .bet-tracker-page__bet-metrics span {
-  color: #6b7280;
-  font-size: 0.74rem;
+  color: #64748b;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
 }
 
 .bet-tracker-page__bet-metrics strong {
-  font-size: 0.95rem;
+  font-size: 1.02rem;
   color: #111827;
 }
 
@@ -516,10 +733,10 @@
 }
 
 .bet-tracker-page__bet-card-bottom {
-  margin-top: 0.75rem;
+  margin-top: 0.95rem;
   display: flex;
   justify-content: space-between;
-  gap: 0.6rem;
+  gap: 0.8rem;
   align-items: center;
 }
 
@@ -539,7 +756,135 @@
 .bet-tracker-page__bet-controls {
   display: flex;
   align-items: center;
+  gap: 0.6rem;
+}
+
+.bet-tracker-page__status-chip {
+  border: 1px solid #d1d5db;
+  border-radius: 999px;
+  padding: 0.32rem 0.62rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: lowercase;
+  background: #fff;
+  cursor: pointer;
+}
+
+.bet-tracker-page__status-chip.status-pending {
+  color: #1e3a8a;
+  background: #eff6ff;
+  border-color: #93c5fd;
+}
+
+.bet-tracker-page__status-chip.status-win {
+  color: #166534;
+  background: #dcfce7;
+  border-color: #86efac;
+}
+
+.bet-tracker-page__status-chip.status-loss {
+  color: #991b1b;
+  background: #fee2e2;
+  border-color: #fca5a5;
+}
+
+.bet-tracker-page__status-chip.is-pulse {
+  animation: bet-tracker-status-pulse 0.38s ease;
+}
+
+.bet-tracker-page__bet-metrics > div:last-child strong {
+  font-size: 1.12rem;
+}
+
+.bet-tracker-page__bet-card:hover .bet-tracker-page__delete-btn,
+.bet-tracker-page__bet-card:focus-within .bet-tracker-page__delete-btn {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.bet-tracker-page__list-actions {
+  display: flex;
   gap: 0.45rem;
+  margin: 0 0 0.65rem;
+}
+
+.bet-tracker-page__list-actions button {
+  border: 1px solid #d5dbe6;
+  background: #fff;
+  color: #334155;
+  border-radius: 8px;
+  padding: 0.35rem 0.58rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.08s ease, border-color 0.16s ease, background 0.16s ease;
+}
+
+.bet-tracker-page__list-actions button:hover {
+  border-color: #94a3b8;
+  background: #f8fafc;
+}
+
+.bet-tracker-page__list-actions button:active {
+  transform: scale(0.98);
+}
+
+.bet-tracker-page__toast {
+  position: fixed;
+  top: 0.9rem;
+  right: 1rem;
+  z-index: 200;
+  background: #0f172a;
+  color: #fff;
+  border-radius: 10px;
+  padding: 0.48rem 0.68rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  box-shadow: 0 10px 25px rgba(15, 23, 42, 0.28);
+  animation: bet-tracker-toast-in 0.2s ease;
+}
+
+.bet-tracker-page__loading-skeletons {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.bet-tracker-page__loading-skeleton {
+  height: 106px;
+  border-radius: 12px;
+  border: 1px solid #e7edf4;
+  background: linear-gradient(110deg, #f8fafc 8%, #eef2f7 18%, #f8fafc 33%);
+  background-size: 200% 100%;
+  animation: bet-tracker-shimmer 1.2s linear infinite;
+}
+
+@keyframes bet-tracker-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes bet-tracker-status-pulse {
+  0% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.05);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes bet-tracker-shimmer {
+  to {
+    background-position-x: -200%;
+  }
 }
 
 .bet-tracker-page__debug-panel {

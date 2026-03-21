@@ -124,6 +124,24 @@ const betsStore = new BetsStore({
   legacyJsonPath: SHARED_BETS_PATH,
 });
 
+type ValueEvalMarket = "shots" | "shotsOnTarget" | "goals";
+
+function poissonAtLeast(lambda: number, line: number): number {
+  if (!Number.isFinite(lambda) || lambda < 0) return 0;
+  if (!Number.isFinite(line) || line < 0) return 0;
+  // For common betting lines, treat x.5 as needing ceil(line) events.
+  const threshold = Math.max(0, Math.ceil(line));
+  if (threshold <= 0) return 1;
+  let cumulative = 0;
+  let term = Math.exp(-lambda);
+  cumulative += term; // k=0
+  for (let k = 1; k < threshold; k++) {
+    term = (term * lambda) / k;
+    cumulative += term;
+  }
+  return Math.max(0, Math.min(1, 1 - cumulative));
+}
+
 const app = express();
 /** Render sets PORT; API_PORT remains available for local override. */
 const PORT = Number(process.env.PORT || process.env.API_PORT) || 3001;
@@ -469,6 +487,92 @@ app.get("/api/player-stats/:playerId", async (req, res) => {
       console.error("[player-stats] GET /api/player-stats/:playerId failed", { playerId, seasonId, errorMessage: message });
     }
     res.status(status).json({ error: message });
+  }
+});
+
+app.post("/api/value-evaluator", async (req, res) => {
+  try {
+    const body = req.body as { playerName?: string; market?: ValueEvalMarket; line?: number; odds?: number };
+    const playerName = String(body?.playerName ?? "").trim();
+    const market = body?.market;
+    const line = Number(body?.line);
+    const odds = Number(body?.odds);
+    if (!playerName) return res.status(400).json({ error: "playerName is required." });
+    if (market !== "shots" && market !== "shotsOnTarget" && market !== "goals") {
+      return res.status(400).json({ error: "market must be shots, shotsOnTarget, or goals." });
+    }
+    if (!Number.isFinite(line) || line < 0) return res.status(400).json({ error: "line must be a valid non-negative number." });
+    if (!Number.isFinite(odds) || odds <= 1) return res.status(400).json({ error: "odds must be greater than 1." });
+
+    const apiToken = process.env.SPORTMONKS_API_TOKEN ?? process.env.SPORTMONKS_TOKEN;
+    if (!apiToken) return res.status(500).json({ error: "Sportmonks API token missing." });
+
+    const searchUrl = `https://api.sportmonks.com/v3/football/players/search/${encodeURIComponent(playerName)}?api_token=${encodeURIComponent(apiToken)}&include=statistics`;
+    const searchRes = await fetch(searchUrl);
+    if (!searchRes.ok) return res.status(502).json({ error: "Failed to search player." });
+    const searchJson = (await searchRes.json()) as { data?: Array<{ id?: number; display_name?: string; common_name?: string; firstname?: string; lastname?: string; statistics?: unknown[] }> };
+    const candidates = Array.isArray(searchJson?.data) ? searchJson.data : [];
+    if (candidates.length === 0) return res.status(404).json({ error: "Player not found." });
+    const best = candidates[0];
+    const playerId = Number(best?.id);
+    if (!Number.isFinite(playerId) || playerId <= 0) return res.status(404).json({ error: "Player ID not found." });
+
+    const details = await getPlayerDetails(playerId);
+    const stats = Array.isArray((details as any)?.statistics)
+      ? (details as any).statistics
+      : Array.isArray((details as any)?.data?.statistics)
+        ? (details as any).data.statistics
+        : [];
+    if (!Array.isArray(stats) || stats.length === 0) return res.status(404).json({ error: "No statistics available for this player." });
+    const season = stats[0] as any;
+    const detailsList = Array.isArray(season?.details) ? season.details : [];
+    const findMetric = (names: string[]): number => {
+      for (const d of detailsList) {
+        const n = String(d?.type?.name ?? d?.type?.code ?? d?.type?.developer_name ?? "")
+          .toLowerCase()
+          .replace(/[_-]/g, " ")
+          .trim();
+        if (names.some((x) => x === n)) {
+          const v = typeof d?.value === "number" ? d.value : typeof d?.value?.total === "number" ? d.value.total : 0;
+          if (Number.isFinite(v)) return v;
+        }
+      }
+      return 0;
+    };
+    const appearances = findMetric(["appearances", "appearance"]);
+    const shots = findMetric(["shots", "shots total", "total shots"]);
+    const shotsOnTarget = findMetric(["shots on target", "shots on goal", "on target shots"]);
+    const goals = findMetric(["goals", "goals total", "goals scored"]);
+    const sampleSize = Math.max(0, Math.round(appearances));
+    if (sampleSize <= 0) return res.status(404).json({ error: "Insufficient sample size for evaluation." });
+
+    const metricTotal = market === "shots" ? shots : market === "shotsOnTarget" ? shotsOnTarget : goals;
+    const avgPerMatch = metricTotal / sampleSize;
+    const estimatedProb = poissonAtLeast(avgPerMatch, line);
+    const impliedProb = 1 / odds;
+    const edge = estimatedProb - impliedProb;
+    const verdict = edge > 0.05 ? "GOOD VALUE" : edge < -0.05 ? "BAD VALUE" : "NEUTRAL";
+    const confidence = Math.min(100, sampleSize * 10);
+    const playerLabel = String(best?.display_name ?? best?.common_name ?? `${best?.firstname ?? ""} ${best?.lastname ?? ""}`).trim() || playerName;
+    res.json({
+      playerId,
+      playerName: playerLabel,
+      market,
+      line,
+      odds,
+      impliedProb,
+      estimatedProb,
+      edge,
+      verdict,
+      confidence,
+      sampleSize,
+      averageStat: avgPerMatch,
+      metricTotal,
+      method: "Poisson estimate from Sportmonks season totals per appearance",
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to evaluate value bet.";
+    res.status(500).json({ error: message });
   }
 });
 
