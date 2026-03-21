@@ -24,7 +24,7 @@ import { getPlayerSeasonStatsForProps } from "../src/api/playerSeasonStats.js";
 import { getHeadToHeadFixtureContext } from "../src/api/headToHeadContext.js";
 import * as cache from "./cache.js";
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
-import { join, dirname } from "path";
+import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 import type { StoredBacktestRow, BacktestDataset } from "../src/lib/backtestDataset.js";
 import { makeBacktestRowKey } from "../src/lib/backtestDataset.js";
@@ -32,6 +32,9 @@ import { resolveRecentPlayerStats } from "./recentPlayerStats.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, "..");
+/** Vite output lives at repo root; use cwd so Render (and `npm start` from root) resolves dist/ reliably. */
+const DIST_DIR = resolve(process.cwd(), "dist");
+const SPA_INDEX = join(DIST_DIR, "index.html");
 const BACKTEST_DATASET_PATH = join(PROJECT_ROOT, "data", "backtestRows.json");
 const SHARED_BETS_PATH = join(PROJECT_ROOT, "server", "data", "bets.json");
 
@@ -138,8 +141,8 @@ if (allowedOrigins.length > 0) {
   }
 }
 
-app.get("/", (_req, res) => {
-  res.type("text/plain").send("AIBetter API is live");
+app.get("/health", (_req, res) => {
+  res.type("text/plain").send("ok");
 });
 
 app.get("/api/fixtures", async (req, res) => {
@@ -626,6 +629,32 @@ app.delete("/api/bets/:id", (req, res) => {
   }
 });
 
+console.log("[static-path-debug]", {
+  cwd: process.cwd(),
+  distDir: DIST_DIR,
+  spaIndex: SPA_INDEX,
+  distExists: existsSync(DIST_DIR),
+  indexExists: existsSync(SPA_INDEX),
+});
+
+if (existsSync(SPA_INDEX)) {
+  app.use(express.static(DIST_DIR));
+  app.use((req, res, next) => {
+    if (req.method !== "GET" && req.method !== "HEAD") return next();
+    if (req.path.startsWith("/api")) return next();
+    res.sendFile(SPA_INDEX, (err) => next(err));
+  });
+} else {
+  app.get("/", (_req, res) => {
+    res.type("text/plain").send("AIBetter API is live — run `npm run build` to serve the UI from this service.");
+  });
+}
+
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`API server listening on 0.0.0.0:${PORT}`);
+  const servingUi = existsSync(SPA_INDEX);
+  console.log(
+    servingUi
+      ? `Server listening on 0.0.0.0:${PORT} (API + static UI from dist/)`
+      : `API server listening on 0.0.0.0:${PORT}`
+  );
 });

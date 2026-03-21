@@ -8,8 +8,8 @@ const BALANCE_ADJUSTMENTS_STORAGE_KEY = "betTracker:balanceAdjustments:v1";
 const UNIT_SIZE_STORAGE_KEY = "bet_tracker_unit_size";
 const SHARED_BETS_API_PATH = "/api/bets";
 
-/** Shared bets API: Render in production, local API server in dev (`npm run dev:api`). */
-const API_BASE = import.meta.env.PROD ? "https://aibetter.onrender.com" : "http://localhost:3001";
+/** Shared bets API: same origin when UI is served by Express (`dist/`); local API in dev. */
+const API_BASE = import.meta.env.PROD ? "" : "http://localhost:3001";
 
 export type TrackedBetStatus = "pending" | "win" | "loss";
 export type TrackedBetSourceType = "valueBetBuilder" | "manualMulti";
