@@ -8,6 +8,9 @@ const BALANCE_ADJUSTMENTS_STORAGE_KEY = "betTracker:balanceAdjustments:v1";
 const UNIT_SIZE_STORAGE_KEY = "bet_tracker_unit_size";
 const SHARED_BETS_API_PATH = "/api/bets";
 
+/** Shared bets API: Render in production, local API server in dev (`npm run dev:api`). */
+const API_BASE = import.meta.env.PROD ? "https://aibetter.onrender.com" : "http://localhost:3001";
+
 export type TrackedBetStatus = "pending" | "win" | "loss";
 export type TrackedBetSourceType = "valueBetBuilder" | "manualMulti";
 
@@ -120,16 +123,8 @@ function canUseStorage(): boolean {
   return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
 }
 
-function getSharedApiOrigin(): string {
-  if (typeof window === "undefined") return "http://localhost:3001";
-  const host = window.location.hostname || "localhost";
-  const protocol = window.location.protocol === "https:" ? "https:" : "http:";
-  if (import.meta.env.DEV) return `${protocol}//${host}:3001`;
-  return window.location.origin;
-}
-
 function getSharedBetsApiUrl(): string {
-  return `${getSharedApiOrigin()}${SHARED_BETS_API_PATH}`;
+  return `${API_BASE}${SHARED_BETS_API_PATH}`;
 }
 
 function read<T>(key: string): T[] {

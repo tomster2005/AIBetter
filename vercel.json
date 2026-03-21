@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://aibetter.onrender.com/api/:path*"
+    }
+  ]
+}
