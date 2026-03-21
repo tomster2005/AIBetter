@@ -1,9 +1,12 @@
 import type { BuildCombo, BuildLeg } from "../lib/valueBetBuilder.js";
+import { resolveLegsToResult } from "./comboPerformanceService.js";
+import { fetchFixtureResolutionData } from "./comboResolutionDataService.js";
 
 const BOOKMAKERS_STORAGE_KEY = "betTracker:bookmakers:v1";
 const TRACKED_BETS_STORAGE_KEY = "betTracker:trackedBets:v1";
 const BALANCE_ADJUSTMENTS_STORAGE_KEY = "betTracker:balanceAdjustments:v1";
 const UNIT_SIZE_STORAGE_KEY = "bet_tracker_unit_size";
+const SHARED_BETS_API_PATH = "/api/bets";
 
 export type TrackedBetStatus = "pending" | "win" | "loss";
 export type TrackedBetSourceType = "valueBetBuilder" | "manualMulti";
@@ -115,6 +118,18 @@ export interface BankrollTimelinePoint {
 
 function canUseStorage(): boolean {
   return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
+}
+
+function getSharedApiOrigin(): string {
+  if (typeof window === "undefined") return "http://localhost:3001";
+  const host = window.location.hostname || "localhost";
+  const protocol = window.location.protocol === "https:" ? "https:" : "http:";
+  if (import.meta.env.DEV) return `${protocol}//${host}:3001`;
+  return window.location.origin;
+}
+
+function getSharedBetsApiUrl(): string {
+  return `${getSharedApiOrigin()}${SHARED_BETS_API_PATH}`;
 }
 
 function read<T>(key: string): T[] {
@@ -250,7 +265,11 @@ function sanitizeTrackedBet(value: unknown): TrackedBetRecord | null {
     returnUnits: Number.isFinite(raw.returnUnits as number) ? Math.max(0, toNumber(raw.returnUnits, 0)) : undefined,
     profitUnits: Number.isFinite(raw.profitUnits as number) ? toNumber(raw.profitUnits, 0) : undefined,
     status,
-    fixtureId: Number.isFinite(raw.fixtureId as number) ? (raw.fixtureId as number) : undefined,
+    /** Coerce string/number from JSON/localStorage; plain `Number.isFinite` fails for string IDs. */
+    fixtureId: (() => {
+      const fid = toNumber(raw.fixtureId, NaN);
+      return Number.isFinite(fid) && fid > 0 ? fid : undefined;
+    })(),
     matchLabel: normalizeText(raw.matchLabel) || "Unknown match",
     kickoffTime: normalizeText(raw.kickoffTime) || "-",
     leagueName: normalizeText(raw.leagueName) || "-",
@@ -453,6 +472,192 @@ function readTrackedBets(): TrackedBetRecord[] {
 
 function writeTrackedBets(value: TrackedBetRecord[]): void {
   write(TRACKED_BETS_STORAGE_KEY, value);
+}
+
+function sanitizeTrackedBetsList(value: unknown): TrackedBetRecord[] {
+  const raw = Array.isArray(value) ? value : [];
+  const sanitized = raw.map(sanitizeTrackedBet).filter((b): b is TrackedBetRecord => b != null).map(repairUnits);
+  sanitized.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  return sanitized;
+}
+
+export function replaceTrackedBets(records: unknown): TrackedBetRecord[] {
+  const next = sanitizeTrackedBetsList(records);
+  writeTrackedBets(next);
+  return next;
+}
+
+async function postSharedBet(record: TrackedBetRecord): Promise<void> {
+  if (typeof window === "undefined") return;
+  try {
+    await fetch(getSharedBetsApiUrl(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(record),
+    });
+  } catch {
+    // best-effort sync only
+  }
+}
+
+async function putSharedBet(record: TrackedBetRecord): Promise<void> {
+  if (typeof window === "undefined") return;
+  try {
+    await fetch(`${getSharedBetsApiUrl()}/${encodeURIComponent(record.id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(record),
+    });
+  } catch {
+    // best-effort sync only
+  }
+}
+
+async function deleteSharedBetById(id: string): Promise<void> {
+  if (typeof window === "undefined") return;
+  try {
+    await fetch(`${getSharedBetsApiUrl()}/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
+  } catch {
+    // best-effort sync only
+  }
+}
+
+export async function refreshTrackedBetsFromServer(): Promise<TrackedBetRecord[] | null> {
+  if (typeof window === "undefined") return null;
+  try {
+    const res = await fetch(getSharedBetsApiUrl());
+    if (!res.ok) return null;
+    const json = await res.json();
+    return replaceTrackedBets(json);
+  } catch {
+    return null;
+  }
+}
+
+const MAX_FIXTURES_TO_SETTLE_PER_RUN = 5;
+
+/**
+ * Settles pending tracked bets for a single fixture when it is finished.
+ * Updates local storage and persists each settled bet to the shared backend.
+ * Returns the number of bets settled.
+ */
+export async function settleTrackedBetsForFixture(fixtureId: number): Promise<number> {
+  if (typeof window === "undefined") return 0;
+  if (!Number.isFinite(fixtureId) || fixtureId <= 0) return 0;
+
+  const resolutionData = await fetchFixtureResolutionData(fixtureId);
+  if (!resolutionData.isFinished) {
+    return 0;
+  }
+  if (import.meta.env.DEV) {
+    console.log("[bet-settlement] fixture state", {
+      fixtureId,
+      isFinished: resolutionData.isFinished,
+      playerResultsCount: resolutionData.playerResults.length,
+    });
+  }
+
+  const input = {
+    isFinished: resolutionData.isFinished,
+    playerResults: resolutionData.playerResults,
+    playerStatsById: resolutionData.playerStatsById,
+    teamLegResultsByLabel: {} as Record<string, boolean>,
+  };
+
+  const current = readTrackedBets();
+  const pendingForFixture = current.filter(
+    (b) => b.fixtureId === fixtureId && b.status === "pending" && b.legs.length > 0
+  );
+  if (pendingForFixture.length === 0) return 0;
+
+  let settled = 0;
+  for (const bet of pendingForFixture) {
+    const result = resolveLegsToResult(bet.legs, input);
+    if (result == null) {
+      if (import.meta.env.DEV) {
+        console.log("[bet-settlement] resolution returned null (legs not fully resolvable yet)", {
+          fixtureId,
+          betId: bet.id,
+          legTypes: bet.legs.map((l) => l.type),
+          legOutcomes: bet.legs.map((l) => l.outcome),
+        });
+      }
+      continue;
+    }
+
+    if (import.meta.env.DEV) {
+      console.log("[bet-settlement] fixture finished, updating tracked bet", {
+        fixtureId,
+        betId: bet.id,
+        matchLabel: bet.matchLabel,
+        result,
+      });
+    }
+    const updated = updateTrackedBetStatus(bet.id, result);
+    if (updated) {
+      settled += 1;
+      if (import.meta.env.DEV) {
+        console.log("[bet-settlement] persisted shared bet", { betId: bet.id, status: result });
+      }
+    }
+  }
+  return settled;
+}
+
+/**
+ * Settles all pending tracked bets whose fixtures are finished.
+ * Persists each update to the shared backend.
+ * Returns the total number of bets settled.
+ */
+export async function settlePendingTrackedBets(): Promise<number> {
+  if (typeof window === "undefined") return 0;
+  const current = readTrackedBets();
+  if (import.meta.env.DEV) {
+    const pendingNoFixture = current.filter(
+      (b) => b.status === "pending" && (b.fixtureId == null || !Number.isFinite(b.fixtureId))
+    );
+    if (pendingNoFixture.length > 0) {
+      console.log("[bet-settlement] pending bets missing numeric fixtureId — auto-settlement skipped for these", {
+        count: pendingNoFixture.length,
+        sample: pendingNoFixture.slice(0, 5).map((b) => ({ id: b.id, fixtureId: b.fixtureId })),
+      });
+    }
+  }
+  const pendingWithFixture = current.filter(
+    (b) => b.status === "pending" && b.fixtureId != null && Number.isFinite(b.fixtureId)
+  );
+  const oldestPendingByFixture = new Map<number, number>();
+  for (const b of pendingWithFixture) {
+    const fid = b.fixtureId as number;
+    const ts = Date.parse(b.createdAt);
+    const v = Number.isFinite(ts) ? ts : 0;
+    const prev = oldestPendingByFixture.get(fid);
+    if (prev === undefined || v < prev) oldestPendingByFixture.set(fid, v);
+  }
+  const fixtureIds = [...oldestPendingByFixture.entries()]
+    .sort((a, b) => a[1] - b[1])
+    .map(([id]) => id)
+    .slice(0, MAX_FIXTURES_TO_SETTLE_PER_RUN);
+  if (fixtureIds.length === 0) return 0;
+
+  if (import.meta.env.DEV && pendingWithFixture.length > 0) {
+    console.log("[bet-settlement] checking fixtures for settlement", {
+      pendingCount: pendingWithFixture.length,
+      fixtureIds,
+    });
+  }
+
+  let totalSettled = 0;
+  for (const fid of fixtureIds) {
+    const n = await settleTrackedBetsForFixture(fid);
+    totalSettled += n;
+  }
+  if (import.meta.env.DEV && totalSettled > 0) {
+    console.log("[bet-settlement] persisted shared bets", { settledCount: totalSettled });
+  }
+  return totalSettled;
 }
 
 function toTrackedLeg(leg: BuildLeg): TrackedBetLeg {
@@ -683,6 +888,7 @@ export function addManualMultiBet(input: AddManualMultiBetInput): TrackedBetReco
   };
   const current = readTrackedBets();
   writeTrackedBets([record, ...current]);
+  void postSharedBet(record);
 
   if (import.meta.env.DEV) {
     console.log("[bet-tracker quick-add]", {
@@ -742,6 +948,7 @@ export function addTrackedBet(input: AddTrackedBetInput): TrackedBetRecord | nul
   };
   const current = readTrackedBets();
   writeTrackedBets([record, ...current]);
+  void postSharedBet(record);
   if (import.meta.env.DEV) {
     console.log("[bet-tracker add]", {
       bookmaker: bookmaker.name,
@@ -801,6 +1008,7 @@ export function updateTrackedBetStatus(id: string, status: TrackedBetStatus): Tr
     return updatedRecord;
   });
   writeTrackedBets(next);
+  if (updatedRecord) void putSharedBet(updatedRecord);
   return updatedRecord;
 }
 
@@ -809,6 +1017,7 @@ export function deleteTrackedBet(id: string): boolean {
   const next = current.filter((b) => b.id !== id);
   if (next.length === current.length) return false;
   writeTrackedBets(next);
+  void deleteSharedBetById(id);
   return true;
 }
 

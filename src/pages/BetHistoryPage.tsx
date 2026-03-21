@@ -5,6 +5,8 @@ import {
   getFinishedStoredComboRecords,
   getOddsBandBreakdown,
   getUnfinishedStoredComboRecords,
+  resolveUnfinishedCombosFromFixtures,
+  forceReResolveStoredCombosForFixture,
   type DisplayStoredComboRecord,
   type StoredComboLeg,
 } from "../services/comboPerformanceService.js";
@@ -108,13 +110,39 @@ export function BetHistoryPage() {
 
   useEffect(() => {
     refresh();
-    const onFocus = () => refresh();
     const onStorage = () => refresh();
-    window.addEventListener("focus", onFocus);
     window.addEventListener("storage", onStorage);
+    if (import.meta.env.DEV) {
+      (window as any).forceReResolveComboFixture = async (fixtureId: number) => {
+        const count = await forceReResolveStoredCombosForFixture(fixtureId);
+        refresh();
+        return count;
+      };
+    }
     return () => {
-      window.removeEventListener("focus", onFocus);
       window.removeEventListener("storage", onStorage);
+      if (import.meta.env.DEV && (window as any).forceReResolveComboFixture) {
+        delete (window as any).forceReResolveComboFixture;
+      }
+    };
+  }, [refresh]);
+
+  /** Combo resolution only ran on Odds/Lineup via useAutoResolveCombos; Bet History must trigger the same pipeline. */
+  useEffect(() => {
+    let cancelled = false;
+    const pull = async () => {
+      await resolveUnfinishedCombosFromFixtures();
+      if (!cancelled) refresh();
+    };
+    void pull();
+    const intervalMs = 30000;
+    const t = window.setInterval(() => void pull(), intervalMs);
+    const onFocus = () => void pull();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      cancelled = true;
+      window.clearInterval(t);
+      window.removeEventListener("focus", onFocus);
     };
   }, [refresh]);
 

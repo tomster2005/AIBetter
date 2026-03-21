@@ -33,6 +33,14 @@ import { resolveRecentPlayerStats } from "./recentPlayerStats.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, "..");
 const BACKTEST_DATASET_PATH = join(PROJECT_ROOT, "data", "backtestRows.json");
+const SHARED_BETS_PATH = join(PROJECT_ROOT, "server", "data", "bets.json");
+
+type SharedBetRecord = {
+  id: string;
+  createdAt?: string;
+  updatedAt?: string;
+  [key: string]: unknown;
+};
 
 function loadDataset(): BacktestDataset {
   try {
@@ -92,8 +100,28 @@ function appendBacktestRows(newRows: StoredBacktestRow[]): number {
   return appended;
 }
 
+function loadSharedBets(): SharedBetRecord[] {
+  try {
+    const raw = readFileSync(SHARED_BETS_PATH, "utf-8");
+    const parsed = JSON.parse(raw) as unknown;
+    const arr = Array.isArray(parsed) ? parsed : [];
+    return arr
+      .filter((x): x is SharedBetRecord => !!x && typeof x === "object" && typeof (x as any).id === "string")
+      .sort((a, b) => Date.parse(String((b as any).createdAt ?? "")) - Date.parse(String((a as any).createdAt ?? "")));
+  } catch {
+    return [];
+  }
+}
+
+function saveSharedBets(rows: SharedBetRecord[]): void {
+  const dir = dirname(SHARED_BETS_PATH);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(SHARED_BETS_PATH, JSON.stringify(rows, null, 2), "utf-8");
+}
+
 const app = express();
-const PORT = Number(process.env.API_PORT) || 3001;
+/** Render sets PORT; API_PORT remains available for local override. */
+const PORT = Number(process.env.PORT || process.env.API_PORT) || 3001;
 
 const allowedOrigins =
   process.env.NODE_ENV !== "production"
@@ -109,6 +137,10 @@ if (allowedOrigins.length > 0) {
     console.log("[api] express.json limit:", JSON_LIMIT);
   }
 }
+
+app.get("/", (_req, res) => {
+  res.type("text/plain").send("AIBetter API is live");
+});
 
 app.get("/api/fixtures", async (req, res) => {
   const startParam = req.query.start as string | undefined;
@@ -521,6 +553,79 @@ app.post("/api/recent-player-stats", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`API server listening on http://localhost:${PORT}`);
+app.get("/api/bets", (_req, res) => {
+  try {
+    const rows = loadSharedBets();
+    res.json(rows);
+  } catch {
+    res.json([]);
+  }
+});
+
+app.post("/api/bets", (req, res) => {
+  try {
+    const body = req.body as SharedBetRecord;
+    if (!body || typeof body !== "object" || typeof body.id !== "string" || body.id.trim() === "") {
+      res.status(400).json({ error: "Invalid bet payload (id required)." });
+      return;
+    }
+    const rows = loadSharedBets();
+    const existingIdx = rows.findIndex((r) => r.id === body.id);
+    if (existingIdx >= 0) {
+      rows[existingIdx] = { ...rows[existingIdx], ...body };
+    } else {
+      rows.unshift(body);
+    }
+    rows.sort((a, b) => Date.parse(String(b.createdAt ?? "")) - Date.parse(String(a.createdAt ?? "")));
+    saveSharedBets(rows);
+    res.status(201).json(body);
+  } catch {
+    res.status(500).json({ error: "Failed to save bet." });
+  }
+});
+
+app.put("/api/bets/:id", (req, res) => {
+  try {
+    const id = String(req.params.id ?? "").trim();
+    if (!id) {
+      res.status(400).json({ error: "Bet id is required." });
+      return;
+    }
+    const rows = loadSharedBets();
+    const idx = rows.findIndex((r) => r.id === id);
+    if (idx < 0) {
+      res.status(404).json({ error: "Bet not found." });
+      return;
+    }
+    const patch = req.body as Record<string, unknown>;
+    rows[idx] = { ...rows[idx], ...patch, id };
+    saveSharedBets(rows);
+    res.json(rows[idx]);
+  } catch {
+    res.status(500).json({ error: "Failed to update bet." });
+  }
+});
+
+app.delete("/api/bets/:id", (req, res) => {
+  try {
+    const id = String(req.params.id ?? "").trim();
+    if (!id) {
+      res.status(400).json({ error: "Bet id is required." });
+      return;
+    }
+    const rows = loadSharedBets();
+    const next = rows.filter((r) => r.id !== id);
+    if (next.length === rows.length) {
+      res.status(404).json({ error: "Bet not found." });
+      return;
+    }
+    saveSharedBets(next);
+    res.status(204).end();
+  } catch {
+    res.status(500).json({ error: "Failed to delete bet." });
+  }
+});
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`API server listening on 0.0.0.0:${PORT}`);
 });

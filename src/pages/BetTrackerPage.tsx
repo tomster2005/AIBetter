@@ -8,6 +8,8 @@ import {
   getBookmakers,
   getBalanceAdjustments,
   getUnitSize,
+  refreshTrackedBetsFromServer,
+  settlePendingTrackedBets,
   getScoreBandAnalysis,
   setUnitSize,
   getTrackedBetStats,
@@ -326,6 +328,38 @@ export function BetTrackerPage() {
 
   useEffect(() => {
     refresh();
+  }, [refresh]);
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const pending = bets.filter((b) => b.status === "pending");
+    if (pending.length === 0) return;
+    const b = pending[0];
+    console.log("[bet-tracker UI] Status column binds to TrackedBetRecord.status (pending | win | loss)", {
+      betId: b.id,
+      fixtureId: b.fixtureId ?? null,
+      status: b.status,
+      displayedInSelect: b.status,
+      legCount: b.legs.length,
+    });
+  }, [bets]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const pull = async () => {
+      await refreshTrackedBetsFromServer();
+      if (cancelled) return;
+      await settlePendingTrackedBets();
+      if (!cancelled) refresh();
+    };
+    void pull();
+    const t = window.setInterval(() => {
+      void pull();
+    }, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(t);
+    };
   }, [refresh]);
 
   useEffect(() => {

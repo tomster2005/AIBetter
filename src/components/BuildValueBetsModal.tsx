@@ -19,7 +19,7 @@ import {
 import { loadHeadToHeadContext } from "../services/headToHeadContextService.js";
 import { saveGeneratedCombosForFixture, getBetPerformanceSummary, resolveStoredCombosForFixture } from "../services/comboPerformanceService.js";
 import { fetchFixtureResolutionData } from "../services/comboResolutionDataService.js";
-import { addTrackedBet, getBookmakers, getBookmakerStats, getUnitSize, type TrackedBookmaker } from "../services/betTrackerService.js";
+import { addTrackedBet, getBookmakers, getBookmakerStats, getUnitSize, settleTrackedBetsForFixture, type TrackedBookmaker } from "../services/betTrackerService.js";
 import "./BuildValueBetsModal.css";
 
 function getApiOrigin(): string {
@@ -212,12 +212,16 @@ export function BuildValueBetsModal({
           playerResults: resolutionInput.playerResults,
           playerStatsById: resolutionInput.playerStatsById,
           teamLegResultsByLabel: {},
+          homeGoals: resolutionInput.homeGoals,
+          awayGoals: resolutionInput.awayGoals,
         });
+        const trackedSettled = await settleTrackedBetsForFixture(fixture.id);
         if (import.meta.env.DEV) {
           const perf = getBetPerformanceSummary();
           console.log("[bet-performance update]", {
             fixtureId: fixture.id,
             resolvedThisRun: resolved,
+            trackedBetsSettled: trackedSettled,
             totalResolved: perf.wins + perf.losses,
             winRate: Number((perf.winRate * 100).toFixed(1)),
             avgScoreWin: Number(perf.avgScoreWin.toFixed(2)),

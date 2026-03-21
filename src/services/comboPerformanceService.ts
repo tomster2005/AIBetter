@@ -1,5 +1,6 @@
 import type { BuildCombo, BuildLeg, ComboScoreBreakdown } from "../lib/valueBetBuilder.js";
 import { getCompressedNormalizedScore } from "../lib/modelScoreNormalization.js";
+import { fetchFixtureResolutionData } from "./comboResolutionDataService.js";
 
 const STORAGE_KEY = "valueBetComboRecords:v1";
 
@@ -51,6 +52,9 @@ export interface ComboResolutionInput {
   playerResults: ComboResolutionPlayerStat[];
   /** Optional team-leg result map keyed by exact leg label. */
   teamLegResultsByLabel?: Record<string, boolean>;
+  /** From fixture `scores` — enables BTTS and 1X2 team legs when both are finite. */
+  homeGoals?: number | null;
+  awayGoals?: number | null;
 }
 
 export interface BetPerformanceSummary {
@@ -200,7 +204,13 @@ function sanitizeLeg(value: unknown): StoredComboLeg | null {
   const outcome = raw.outcome;
   const validOutcome =
     outcome === "Over" || outcome === "Under" || outcome === "Home" || outcome === "Draw" || outcome === "Away" || outcome === "Yes" || outcome === "No";
-  const line = typeof raw.line === "number" && Number.isFinite(raw.line) ? raw.line : 0;
+  const lineRaw = raw.line;
+  let line = 0;
+  if (typeof lineRaw === "number" && Number.isFinite(lineRaw)) line = lineRaw;
+  else if (typeof lineRaw === "string") {
+    const n = parseFloat(lineRaw.replace(",", "."));
+    if (Number.isFinite(n)) line = n;
+  }
   return {
     legId: typeof raw.legId === "string" ? raw.legId : undefined,
     type,
@@ -218,7 +228,14 @@ function sanitizeLeg(value: unknown): StoredComboLeg | null {
 function sanitizeRecord(value: unknown): StoredComboRecord | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Partial<StoredComboRecord>;
-  const fixtureId = typeof raw.fixtureId === "number" && Number.isFinite(raw.fixtureId) ? raw.fixtureId : 0;
+  const rawFid = raw.fixtureId;
+  const coerced =
+    typeof rawFid === "number" && Number.isFinite(rawFid)
+      ? rawFid
+      : typeof rawFid === "string"
+        ? Number(rawFid)
+        : NaN;
+  const fixtureId = Number.isFinite(coerced) && coerced > 0 ? coerced : 0;
   if (fixtureId <= 0) return null;
   const legs = Array.isArray(raw.legs) ? raw.legs.map((l) => sanitizeLeg(l)).filter((l): l is StoredComboLeg => l != null) : [];
   const result = raw.result === "win" || raw.result === "loss" ? raw.result : null;
@@ -291,16 +308,40 @@ function normalizeName(name: string): string {
   return String(name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
+/** Match API lineup name to stored leg playerName (exact, then last-name / single-token match). */
+function findPlayerRowForLeg(leg: StoredComboLeg, input: ComboResolutionInput): ComboResolutionPlayerStat | null {
+  if (!leg.playerName) return null;
+  const want = normalizeName(leg.playerName);
+  if (!want) return null;
+  const list = input.playerResults;
+  const exact = list.find((p) => normalizeName(p.playerName) === want);
+  if (exact) return exact;
+  if (want.length < 3) return null;
+  return (
+    list.find((p) => {
+      const n = normalizeName(p.playerName);
+      if (n === want) return true;
+      if (!want.includes(" ")) {
+        return n.endsWith(" " + want) || n.startsWith(want + " ") || n.split(" ").includes(want);
+      }
+      return false;
+    }) ?? null
+  );
+}
+
 function getPlayerStatForLeg(leg: StoredComboLeg, input: ComboResolutionInput): number | null {
   if (!leg.playerName) return null;
-  const player = input.playerResults.find((p) => normalizeName(p.playerName) === normalizeName(leg.playerName));
+  const player = findPlayerRowForLeg(leg, input);
   const playerById = (() => {
     if (!input.playerStatsById || !player?.playerId || !Number.isFinite(player.playerId)) return null;
     return input.playerStatsById[player.playerId] ?? null;
   })();
   if (!player) return null;
   const market = leg.marketName.toLowerCase();
-  if (market.includes("shots on target")) {
+  const isShotsOnTarget =
+    /\b(shots?\s+on\s+target|on\s+target\s+shots?|shot\s+on\s+target)\b/i.test(leg.marketName) ||
+    market.includes("shots on target");
+  if (isShotsOnTarget) {
     const v = playerById?.shotsOnTarget ?? player.shotsOnTarget;
     return typeof v === "number" ? v : null;
   }
@@ -319,17 +360,38 @@ function getPlayerStatForLeg(leg: StoredComboLeg, input: ComboResolutionInput): 
   return null;
 }
 
+function resolveTeamLegHit(leg: StoredComboLeg, input: ComboResolutionInput): boolean | null {
+  const hg = input.homeGoals;
+  const ag = input.awayGoals;
+  if (typeof hg === "number" && Number.isFinite(hg) && typeof ag === "number" && Number.isFinite(ag)) {
+    const fam = (leg.marketFamily ?? "").toLowerCase();
+    const mname = leg.marketName.toLowerCase();
+    if (fam === "team:btts" || mname.includes("both teams to score") || mname.includes("btts")) {
+      const both = hg >= 1 && ag >= 1;
+      if (leg.outcome === "Yes") return both;
+      if (leg.outcome === "No") return !both;
+    }
+    if (leg.outcome === "Home") return hg > ag;
+    if (leg.outcome === "Away") return ag > hg;
+    if (leg.outcome === "Draw") return hg === ag;
+  }
+  if (input.teamLegResultsByLabel && leg.label in input.teamLegResultsByLabel) {
+    return Boolean(input.teamLegResultsByLabel[leg.label]);
+  }
+  return null;
+}
+
 function resolveLegHit(leg: StoredComboLeg, input: ComboResolutionInput): boolean | null {
   if (leg.type === "team") {
-    if (input.teamLegResultsByLabel && leg.label in input.teamLegResultsByLabel) {
-      return Boolean(input.teamLegResultsByLabel[leg.label]);
-    }
-    return null;
+    return resolveTeamLegHit(leg, input);
   }
   const actual = getPlayerStatForLeg(leg, input);
   if (actual == null) return null;
   if (leg.outcome === "Over") return actual > leg.line - 1e-9;
   if (leg.outcome === "Under") return actual < leg.line + 1e-9;
+  /** Binary player props (e.g. BTTS-style wording) use Yes/No vs line like Over/Under. */
+  if (leg.outcome === "Yes") return actual > leg.line - 1e-9;
+  if (leg.outcome === "No") return actual < leg.line + 1e-9;
   return null;
 }
 
@@ -401,6 +463,68 @@ export function resolveComboResult(record: StoredComboRecord, input: ComboResolu
   return allHit ? "win" : "loss";
 }
 
+function describeSingleLegForDebug(leg: StoredComboLeg, input: ComboResolutionInput) {
+  const hit = resolveLegHit(leg, input);
+  const actual = leg.type === "player" ? getPlayerStatForLeg(leg, input) : null;
+  let reason: string;
+  if (hit == null) {
+    if (leg.type === "team") {
+      const hg = input.homeGoals;
+      const ag = input.awayGoals;
+      if (hg == null || ag == null || !Number.isFinite(hg) || !Number.isFinite(ag)) {
+        reason = "team: missing homeGoals/awayGoals (need fixture scores) or use teamLegResultsByLabel";
+      } else {
+        reason = "team: market/outcome not handled by goal-based resolver";
+      }
+    } else if (actual == null) {
+      reason = "player: no stat row, name mismatch, or unsupported market for stat";
+    } else {
+      reason = `player: outcome "${leg.outcome}" has no numeric rule`;
+    }
+  } else {
+    reason = hit ? "hit" : "miss";
+  }
+  return {
+    type: leg.type,
+    marketFamily: leg.marketFamily,
+    marketName: leg.marketName,
+    label: leg.label,
+    outcome: leg.outcome,
+    line: leg.line,
+    playerName: leg.playerName ?? null,
+    actual,
+    hit,
+    reason,
+  };
+}
+
+/** DEV: full trace for one stored combo vs resolution input (Bet History debugging). */
+export function describeComboResolutionDebug(record: StoredComboRecord, input: ComboResolutionInput) {
+  const legs = record.legs.map((l) => describeSingleLegForDebug(l, input));
+  const finalResult = resolveComboResult(record, input);
+  return { comboId: record.id, fixtureId: record.fixtureId, legs, finalResult };
+}
+
+/** Leg shape required for resolution (compatible with TrackedBetLeg). */
+export type ResolutionLeg = Pick<StoredComboLeg, "type" | "marketName" | "playerName" | "line" | "outcome" | "label">;
+
+/** Resolve a bet's legs to win/loss using fixture outcome. Used by bet tracker settlement. */
+export function resolveLegsToResult(legs: readonly ResolutionLeg[], input: ComboResolutionInput): ComboResult | null {
+  if (!input.isFinished) return null;
+  let allKnown = true;
+  let allHit = true;
+  for (const leg of legs) {
+    const hit = resolveLegHit(leg as StoredComboLeg, input);
+    if (hit == null) {
+      allKnown = false;
+      break;
+    }
+    if (!hit) allHit = false;
+  }
+  if (!allKnown) return null;
+  return allHit ? "win" : "loss";
+}
+
 export function resolveStoredCombosForFixture(
   fixtureId: number,
   input: ComboResolutionInput
@@ -421,6 +545,142 @@ export function resolveStoredCombosForFixture(
   });
   writeRecords(updated);
   return { resolved, unresolved };
+}
+
+const MAX_COMBO_FIXTURES_TO_RESOLVE_PER_RUN = 8;
+
+/**
+ * Fetches fixture outcomes for unfinished combo records and persists win/loss via {@link resolveStoredCombosForFixture}.
+ * Call from Bet History (or similar) so combos resolve without opening Odds/Lineup (where useAutoResolveCombos runs).
+ */
+export async function resolveUnfinishedCombosFromFixtures(): Promise<number> {
+  if (typeof window === "undefined") return 0;
+  const records = readRecords();
+  const pending = records.filter((r) => r.result == null);
+  if (pending.length === 0) return 0;
+
+  const oldestByFixture = new Map<number, number>();
+  for (const r of pending) {
+    const ts = Date.parse(r.createdAt);
+    const v = Number.isFinite(ts) ? ts : 0;
+    const prev = oldestByFixture.get(r.fixtureId);
+    if (prev === undefined || v < prev) oldestByFixture.set(r.fixtureId, v);
+  }
+  const fixtureIds = [...oldestByFixture.entries()]
+    .sort((a, b) => a[1] - b[1])
+    .map(([id]) => id)
+    .slice(0, MAX_COMBO_FIXTURES_TO_RESOLVE_PER_RUN);
+
+  if (import.meta.env.DEV && pending.length > 0) {
+    const sample = pending[0];
+    console.log("[bet-history combo-resolve] sample unfinished", {
+      comboId: sample.id,
+      fixtureId: sample.fixtureId,
+      result: sample.result,
+      resolvedAt: sample.resolvedAt,
+      fixtureIdsToFetch: fixtureIds,
+    });
+  }
+
+  let totalResolved = 0;
+  for (const fixtureId of fixtureIds) {
+    const resolutionData = await fetchFixtureResolutionData(fixtureId);
+    if (import.meta.env.DEV) {
+      const names = resolutionData.playerResults.slice(0, 8).map((p) => p.playerName);
+      console.log("[bet-history fixture-resolution-debug]", {
+        fixtureId,
+        isFinished: resolutionData.isFinished,
+        playerResultsCount: resolutionData.playerResults.length,
+        homeGoals: resolutionData.homeGoals,
+        awayGoals: resolutionData.awayGoals,
+        availableTeamResults: { homeGoals: resolutionData.homeGoals, awayGoals: resolutionData.awayGoals },
+        samplePlayerLabels: names,
+      });
+    }
+    if (!resolutionData.isFinished) continue;
+
+    const input: ComboResolutionInput = {
+      isFinished: resolutionData.isFinished,
+      playerResults: resolutionData.playerResults,
+      playerStatsById: resolutionData.playerStatsById,
+      teamLegResultsByLabel: {},
+      homeGoals: resolutionData.homeGoals,
+      awayGoals: resolutionData.awayGoals,
+    };
+
+    if (import.meta.env.DEV) {
+      const pendingHere = records.filter((r) => r.fixtureId === fixtureId && r.result == null);
+      const debugTarget = fixtureId === 19427186 ? pendingHere.length : Math.min(3, pendingHere.length);
+      for (let i = 0; i < debugTarget; i++) {
+        const rec = pendingHere[i];
+        if (!rec) continue;
+        const trace = describeComboResolutionDebug(rec, input);
+        const tag = trace.finalResult == null ? "[bet-history combo-null-debug]" : "[bet-history combo-debug]";
+        console.log(tag, trace);
+      }
+    }
+
+    const { resolved } = resolveStoredCombosForFixture(fixtureId, input);
+    totalResolved += resolved;
+    if (import.meta.env.DEV && resolved > 0) {
+      console.log("[bet-history combo-resolve] writeback", { fixtureId, resolvedCombos: resolved });
+    }
+  }
+  return totalResolved;
+}
+
+/**
+ * DEV-only: Force re-resolve stored combo records for a fixture, ignoring existing result/resolvedAt.
+ * Clears result fields temporarily, fetches fresh resolution data, then re-runs resolution with fixed logic.
+ * Use from browser console: window.forceReResolveComboFixture(19427186)
+ */
+export async function forceReResolveStoredCombosForFixture(fixtureId: number): Promise<number> {
+  if (typeof window === "undefined" || !import.meta.env.DEV) {
+    console.warn("[bet-history force-reresolve] DEV-only function; not available in production");
+    return 0;
+  }
+  if (!Number.isFinite(fixtureId) || fixtureId <= 0) {
+    console.warn("[bet-history force-reresolve] invalid fixtureId", { fixtureId });
+    return 0;
+  }
+
+  const records = readRecords();
+  const forFixture = records.filter((r) => r.fixtureId === fixtureId);
+  if (forFixture.length === 0) {
+    console.log("[bet-history force-reresolve] no combos found for fixture", { fixtureId });
+    return 0;
+  }
+
+  const cleared = records.map((r) => {
+    if (r.fixtureId === fixtureId && r.result != null) {
+      return { ...r, result: null, resolvedAt: null };
+    }
+    return r;
+  });
+  writeRecords(cleared);
+
+  const resolutionData = await fetchFixtureResolutionData(fixtureId);
+  if (!resolutionData.isFinished) {
+    console.log("[bet-history force-reresolve] fixture not finished", { fixtureId, isFinished: resolutionData.isFinished });
+    return 0;
+  }
+
+  const input: ComboResolutionInput = {
+    isFinished: resolutionData.isFinished,
+    playerResults: resolutionData.playerResults,
+    playerStatsById: resolutionData.playerStatsById,
+    teamLegResultsByLabel: {},
+    homeGoals: resolutionData.homeGoals,
+    awayGoals: resolutionData.awayGoals,
+  };
+
+  const { resolved } = resolveStoredCombosForFixture(fixtureId, input);
+  console.log("[bet-history force-reresolve]", {
+    fixtureId,
+    combosFound: forFixture.length,
+    combosReResolved: resolved,
+  });
+  return resolved;
 }
 
 export function listStoredComboRecords(): DisplayStoredComboRecord[] {
