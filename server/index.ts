@@ -30,6 +30,7 @@ import { fileURLToPath } from "url";
 import type { StoredBacktestRow, BacktestDataset } from "../src/lib/backtestDataset.js";
 import { makeBacktestRowKey } from "../src/lib/backtestDataset.js";
 import { resolveRecentPlayerStats } from "./recentPlayerStats.js";
+import { BetsStore, type SharedBetRecord } from "./betsStore.js";
 
 declare module "express-session" {
   interface SessionData {
@@ -59,13 +60,6 @@ if (!SESSION_SECRET || SESSION_SECRET.length < 16) {
     "\n⚠️  SESSION_SECRET is missing or too short. Set a long random secret in your environment.\n"
   );
 }
-
-type SharedBetRecord = {
-  id: string;
-  createdAt?: string;
-  updatedAt?: string;
-  [key: string]: unknown;
-};
 
 function loadDataset(): BacktestDataset {
   try {
@@ -125,24 +119,10 @@ function appendBacktestRows(newRows: StoredBacktestRow[]): number {
   return appended;
 }
 
-function loadSharedBets(): SharedBetRecord[] {
-  try {
-    const raw = readFileSync(SHARED_BETS_PATH, "utf-8");
-    const parsed = JSON.parse(raw) as unknown;
-    const arr = Array.isArray(parsed) ? parsed : [];
-    return arr
-      .filter((x): x is SharedBetRecord => !!x && typeof x === "object" && typeof (x as any).id === "string")
-      .sort((a, b) => Date.parse(String((b as any).createdAt ?? "")) - Date.parse(String((a as any).createdAt ?? "")));
-  } catch {
-    return [];
-  }
-}
-
-function saveSharedBets(rows: SharedBetRecord[]): void {
-  const dir = dirname(SHARED_BETS_PATH);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(SHARED_BETS_PATH, JSON.stringify(rows, null, 2), "utf-8");
-}
+const betsStore = new BetsStore({
+  projectRoot: PROJECT_ROOT,
+  legacyJsonPath: SHARED_BETS_PATH,
+});
 
 const app = express();
 /** Render sets PORT; API_PORT remains available for local override. */
@@ -638,7 +618,8 @@ app.post("/api/recent-player-stats", async (req, res) => {
 
 app.get("/api/bets", (_req, res) => {
   try {
-    const rows = loadSharedBets();
+    const rows = betsStore.list();
+    console.log("[api/bets] GET count=", rows.length);
     res.json(rows);
   } catch {
     res.json([]);
@@ -652,15 +633,8 @@ app.post("/api/bets", (req, res) => {
       res.status(400).json({ error: "Invalid bet payload (id required)." });
       return;
     }
-    const rows = loadSharedBets();
-    const existingIdx = rows.findIndex((r) => r.id === body.id);
-    if (existingIdx >= 0) {
-      rows[existingIdx] = { ...rows[existingIdx], ...body };
-    } else {
-      rows.unshift(body);
-    }
-    rows.sort((a, b) => Date.parse(String(b.createdAt ?? "")) - Date.parse(String(a.createdAt ?? "")));
-    saveSharedBets(rows);
+    betsStore.upsert(body);
+    console.log("[api/bets] POST saved", { id: body.id, totalCount: betsStore.count() });
     res.status(201).json(body);
   } catch {
     res.status(500).json({ error: "Failed to save bet." });
@@ -674,16 +648,13 @@ app.put("/api/bets/:id", (req, res) => {
       res.status(400).json({ error: "Bet id is required." });
       return;
     }
-    const rows = loadSharedBets();
-    const idx = rows.findIndex((r) => r.id === id);
-    if (idx < 0) {
+    const updated = betsStore.patch(id, req.body as Record<string, unknown>);
+    if (!updated) {
       res.status(404).json({ error: "Bet not found." });
       return;
     }
-    const patch = req.body as Record<string, unknown>;
-    rows[idx] = { ...rows[idx], ...patch, id };
-    saveSharedBets(rows);
-    res.json(rows[idx]);
+    console.log("[api/bets] PUT updated", { id, totalCount: betsStore.count() });
+    res.json(updated);
   } catch {
     res.status(500).json({ error: "Failed to update bet." });
   }
@@ -696,13 +667,12 @@ app.delete("/api/bets/:id", (req, res) => {
       res.status(400).json({ error: "Bet id is required." });
       return;
     }
-    const rows = loadSharedBets();
-    const next = rows.filter((r) => r.id !== id);
-    if (next.length === rows.length) {
+    const deleted = betsStore.deleteById(id);
+    if (!deleted) {
       res.status(404).json({ error: "Bet not found." });
       return;
     }
-    saveSharedBets(next);
+    console.log("[api/bets] DELETE removed", { id, totalCount: betsStore.count() });
     res.status(204).end();
   } catch {
     res.status(500).json({ error: "Failed to delete bet." });

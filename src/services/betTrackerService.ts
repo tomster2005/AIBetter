@@ -10,8 +10,8 @@ const SHARED_BETS_API_PATH = "/api/bets";
 const TRACKED_BETS_BACKUP_KEY = "betTracker_backup";
 const LEGACY_TRACKED_BETS_KEYS = ["betTracker:trackedBets", "trackedBets", "bet_tracker_bets", "betTrackerBets"];
 
-/** Shared bets API: same origin when UI is served by Express (`dist/`); local API in dev. */
-const API_BASE = import.meta.env.PROD ? "" : "http://localhost:3001";
+/** Shared bets API: Render in production, local API server in dev. */
+const API_BASE = import.meta.env.PROD ? "https://v4-2qww.onrender.com" : "http://localhost:3001";
 
 export type TrackedBetStatus = "pending" | "win" | "loss";
 export type TrackedBetSourceType = "valueBetBuilder" | "manualMulti";
@@ -131,6 +131,10 @@ function canUseStorage(): boolean {
 
 function getSharedBetsApiUrl(): string {
   return `${API_BASE}${SHARED_BETS_API_PATH}`;
+}
+
+if (import.meta.env.DEV) {
+  console.log("[bet-tracker] api base url:", API_BASE || "(same-origin)");
 }
 
 function read<T>(key: string): T[] {
@@ -542,6 +546,7 @@ async function postSharedBet(record: TrackedBetRecord): Promise<void> {
     await fetch(getSharedBetsApiUrl(), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      credentials: "include",
       body: JSON.stringify(record),
     });
   } catch {
@@ -555,6 +560,7 @@ async function postSharedBetStrict(record: TrackedBetRecord): Promise<boolean> {
     const res = await fetch(getSharedBetsApiUrl(), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      credentials: "include",
       body: JSON.stringify(record),
     });
     return res.ok;
@@ -569,6 +575,7 @@ async function putSharedBet(record: TrackedBetRecord): Promise<void> {
     await fetch(`${getSharedBetsApiUrl()}/${encodeURIComponent(record.id)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
+      credentials: "include",
       body: JSON.stringify(record),
     });
   } catch {
@@ -582,6 +589,7 @@ async function putSharedBetStrict(record: TrackedBetRecord): Promise<boolean> {
     const res = await fetch(`${getSharedBetsApiUrl()}/${encodeURIComponent(record.id)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
+      credentials: "include",
       body: JSON.stringify(record),
     });
     return res.ok;
@@ -595,6 +603,7 @@ async function deleteSharedBetById(id: string): Promise<void> {
   try {
     await fetch(`${getSharedBetsApiUrl()}/${encodeURIComponent(id)}`, {
       method: "DELETE",
+      credentials: "include",
     });
   } catch {
     // best-effort sync only
@@ -606,6 +615,7 @@ async function deleteSharedBetByIdStrict(id: string): Promise<boolean> {
   try {
     const res = await fetch(`${getSharedBetsApiUrl()}/${encodeURIComponent(id)}`, {
       method: "DELETE",
+      credentials: "include",
     });
     return res.ok;
   } catch {
@@ -617,7 +627,7 @@ export async function refreshTrackedBetsFromServer(): Promise<TrackedBetRecord[]
   if (typeof window === "undefined") return null;
   const local = readTrackedBets();
   try {
-    const res = await fetch(getSharedBetsApiUrl());
+    const res = await fetch(getSharedBetsApiUrl(), { credentials: "include" });
     if (!res.ok) {
       lastSyncTimestamp = Date.now();
       lastSyncSource = "local-fallback";
@@ -656,7 +666,7 @@ export async function refreshTrackedBetsFromServer(): Promise<TrackedBetRecord[]
           if (await postSharedBetStrict(b)) uploaded += 1;
         }
         if (uploaded > 0) {
-          const verify = await fetch(getSharedBetsApiUrl());
+          const verify = await fetch(getSharedBetsApiUrl(), { credentials: "include" });
           if (verify.ok) {
             server = sanitizeTrackedBetsList(await verify.json());
           }
