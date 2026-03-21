@@ -15,7 +15,7 @@ export interface FixturesByDate {
  * Uses fixture.date when it's already YYYY-MM-DD (e.g. from getFixturesBetween
  * with timezone Europe/London); otherwise parses startingAt.
  */
-function getDateKey(fixture: Fixture): string {
+export function getFixtureDateKey(fixture: Fixture): string {
   const d = fixture.date?.trim();
   if (d && DATE_KEY_REGEX.test(d)) return d;
   const start = fixture.startingAt?.trim();
@@ -35,7 +35,7 @@ export function groupFixturesByDate(fixtures: Fixture[]): FixturesByDate {
   const byDate: Record<string, Fixture[]> = {};
 
   for (const fixture of fixtures) {
-    const key = getDateKey(fixture);
+    const key = getFixtureDateKey(fixture);
     if (!key) continue;
     if (!byDate[key]) byDate[key] = [];
     byDate[key].push(fixture);

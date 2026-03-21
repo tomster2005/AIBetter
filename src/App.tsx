@@ -2,11 +2,12 @@ import { useState, useEffect, type FormEvent } from "react";
 import { CalendarPage } from "./pages/CalendarPage.js";
 import { BetHistoryPage } from "./pages/BetHistoryPage.js";
 import { BetTrackerPage } from "./pages/BetTrackerPage.js";
+import { CrossMatchBuilderPage } from "./pages/CrossMatchBuilderPage.js";
 import { setCalibrationTable } from "./lib/valueBetCalibration.js";
 import type { CalibrationBucket } from "./lib/valueBetCalibration.js";
 import "./App.css";
 
-type AppTab = "calendar" | "betTracker" | "betHistory";
+type AppTab = "calendar" | "betTracker" | "betHistory" | "crossMatch";
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<AppTab>("calendar");
@@ -131,6 +132,7 @@ export default function App() {
         {activeTab === "calendar" && <CalendarPage />}
         {activeTab === "betTracker" && <BetTrackerPage />}
         {activeTab === "betHistory" && <BetHistoryPage />}
+        {activeTab === "crossMatch" && <CrossMatchBuilderPage />}
       </main>
     </div>
   );

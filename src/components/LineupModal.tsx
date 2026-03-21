@@ -662,7 +662,7 @@ function getPlayerIdFromEntry(e: RawLineupEntry): number | undefined {
  * 2) If none → predicted lineup (type_id === 1 or predicted === true)
  * 3) If none → all lineup players
  */
-function getStartingPlayerIds(entries: RawLineupEntry[]): Set<number> {
+export function getStartingPlayerIds(entries: RawLineupEntry[]): Set<number> {
   if (!entries || entries.length === 0) return new Set<number>();
 
   const confirmed = entries.filter((e) => e.type_id === 11);
@@ -710,7 +710,7 @@ function normalizePlayerName(name: string): string {
 }
 
 /** Set of normalized player names from lineup entries (for name-based fallback when API uses name-derived IDs). */
-function getStartingPlayerNames(entries: RawLineupEntry[]): Set<string> {
+export function getStartingPlayerNames(entries: RawLineupEntry[]): Set<string> {
   const names = new Set<string>();
   for (const e of entries) {
     const n = e.player_name ?? (e.player as { name?: string })?.name;
@@ -720,7 +720,7 @@ function getStartingPlayerNames(entries: RawLineupEntry[]): Set<string> {
 }
 
 /** Map normalized name -> lineup player_id (for resolving stats when props only have name). */
-function getNameToPlayerIdMap(entries: RawLineupEntry[]): Map<string, number> {
+export function getNameToPlayerIdMap(entries: RawLineupEntry[]): Map<string, number> {
   const map = new Map<string, number>();
   for (const e of entries) {
     const id = getPlayerIdFromEntry(e);
@@ -980,7 +980,7 @@ function buildNoModelRow(
 }
 
 /** Flatten player props to table rows (starting players only). Applies hard filter, bookmaker sanity, confidence, model inputs. */
-function buildValueBetRows(
+export function buildValueBetRows(
   data: ServicePlayerOddsResponse,
   entries: RawLineupEntry[],
   fixture: { homeTeam: { id: number }; awayTeam: { id: number } } | null,

@@ -1,0 +1,203 @@
+.cross-match-page {
+  padding: 1rem 1.25rem 2rem;
+  max-width: 960px;
+}
+
+.cross-match-page__label {
+  margin: 0 0 0.25rem 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #6b7280;
+}
+
+.cross-match-page__title {
+  margin: 0 0 0.5rem 0;
+  font-size: 1.35rem;
+  color: #111827;
+}
+
+.cross-match-page__intro {
+  margin: 0 0 1rem 0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: #4b5563;
+}
+
+.cross-match-page__toolbar {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: 0.65rem 1rem;
+  padding: 0.85rem;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  margin-bottom: 1rem;
+}
+
+.cross-match-page__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.cross-match-page__field-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #6b7280;
+}
+
+.cross-match-page__input,
+.cross-match-page__select {
+  font-size: 0.85rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.cross-match-page__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.cross-match-page__scan {
+  padding: 0.5rem 1rem;
+  font-weight: 600;
+  font-size: 0.875rem;
+  color: #fff;
+  background: #1d4ed8;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.cross-match-page__scan:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.cross-match-page__meta {
+  font-size: 0.8rem;
+  color: #6b7280;
+}
+
+.cross-match-page__progress {
+  font-size: 0.85rem;
+  color: #1d4ed8;
+  margin: 0 0 0.5rem 0;
+}
+
+.cross-match-page__error {
+  color: #b91c1c;
+  font-size: 0.875rem;
+  margin: 0 0 0.5rem 0;
+}
+
+.cross-match-page__details {
+  font-size: 0.8rem;
+  margin-bottom: 0.75rem;
+  color: #4b5563;
+}
+
+.cross-match-page__details summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.cross-match-page__results h2 {
+  margin: 1.25rem 0 0.35rem 0;
+  font-size: 1.05rem;
+  color: #111827;
+}
+
+.cross-match-page__hint {
+  font-size: 0.8rem;
+  color: #6b7280;
+  margin: 0 0 0.75rem 0;
+  line-height: 1.45;
+}
+
+.cross-match-page__empty {
+  font-size: 0.875rem;
+  color: #6b7280;
+}
+
+.cross-match-page__card-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.cross-match-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 0.65rem 0.75rem;
+  background: #fff;
+}
+
+.cross-match-card--combo {
+  background: #f8fafc;
+}
+
+.cross-match-card__head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.35rem;
+  margin-bottom: 0.35rem;
+}
+
+.cross-match-card__fixture {
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: #111827;
+}
+
+.cross-match-card__league {
+  font-size: 0.75rem;
+  color: #6b7280;
+}
+
+.cross-match-card__pick {
+  font-size: 0.875rem;
+  color: #1f2937;
+}
+
+.cross-match-card__bm {
+  color: #6b7280;
+  font-size: 0.8rem;
+}
+
+.cross-match-card__stats {
+  font-size: 0.78rem;
+  color: #4b5563;
+  margin-top: 0.25rem;
+}
+
+.cross-match-card__reason {
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: #374151;
+  margin: 0.4rem 0 0 0;
+}
+
+.cross-match-combo__legs {
+  margin: 0.35rem 0 0 1rem;
+  padding: 0;
+  font-size: 0.82rem;
+  color: #374151;
+}
+
+.cross-match-combo__leg-reason {
+  font-weight: 400;
+  color: #6b7280;
+}

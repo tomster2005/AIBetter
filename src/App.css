@@ -47,7 +47,8 @@
 
 .app-main .calendar-page,
 .app-main .bet-tracker-page,
-.app-main .bet-history {
+.app-main .bet-history,
+.app-main .cross-match-page {
   min-height: 100%;
 }
 
