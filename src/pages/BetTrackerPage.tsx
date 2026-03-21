@@ -308,6 +308,7 @@ export function BetTrackerPage() {
   const [quickAddNotes, setQuickAddNotes] = useState("");
   const [quickAddSelections, setQuickAddSelections] = useState<QuickAddSelectionDraft[]>([createSelectionDraft()]);
   const [quickAddErrors, setQuickAddErrors] = useState<QuickAddErrors>({});
+  const [expandedBetIds, setExpandedBetIds] = useState<Set<string>>(new Set());
   const quickAddTriggerRef = useRef<HTMLButtonElement | null>(null);
   const quickAddModalRef = useRef<HTMLDivElement | null>(null);
   const quickAddBookmakerRef = useRef<HTMLSelectElement | null>(null);
@@ -531,6 +532,15 @@ export function BetTrackerPage() {
     }
     setMessage("Bet could not be deleted.");
   }, [refresh]);
+
+  const toggleBetExpanded = useCallback((id: string) => {
+    setExpandedBetIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
 
   const resetQuickAdd = useCallback(() => {
     setQuickAddBookmakerId("");
@@ -959,30 +969,31 @@ export function BetTrackerPage() {
         ) : filteredAndSortedBets.length === 0 ? (
           <p className="bet-tracker-page__empty">No bets match current filters.</p>
         ) : (
-          <div className="bet-tracker-page__bets-table-wrap">
-            <table className="bet-tracker-page__bets-table">
-              <thead>
-                <tr>
-                  <th>Date</th>
-                  <th>Bookmaker</th>
-                  <th>Match</th>
-                  <th>League</th>
-                  <th>Kickoff</th>
-                  <th>Odds</th>
-                  <th>Stake</th>
-                  <th>Stake (U)</th>
-                  <th>Return</th>
-                  <th>Return (U)</th>
-                  <th>Model</th>
-                  <th>Score</th>
-                  <th>Status</th>
-                  <th>P/L</th>
-                  <th>P/L (U)</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredAndSortedBets.map(({ b, modelScore, normalizedScore, pl }) => {
+          <div className="bet-tracker-page__bet-cards">
+            {filteredAndSortedBets.map(({ b, modelScore, normalizedScore, pl }) => {
+              const isExpanded = expandedBetIds.has(b.id);
+              const previewLeg = b.legs[0];
+              const previewLabel = previewLeg
+                ? `${previewLeg.marketName}: ${previewLeg.label}`
+                : "No selection details";
+              const remainingLegCount = Math.max(0, b.legs.length - 1);
+              const modelBadge =
+                typeof modelScore === "number" || typeof normalizedScore === "number";
+              const scoreClass =
+                typeof normalizedScore === "number"
+                  ? normalizedScore >= 80
+                    ? "bet-tracker-page__score score-high"
+                    : normalizedScore >= 60
+                      ? "bet-tracker-page__score score-mid"
+                      : "bet-tracker-page__score score-low"
+                  : "bet-tracker-page__score";
+              const cardStatusClass =
+                b.status === "win"
+                  ? "bet-tracker-page__bet-card is-win"
+                  : b.status === "loss"
+                    ? "bet-tracker-page__bet-card is-loss"
+                    : "bet-tracker-page__bet-card";
+
                   const canonicalUnitSize =
                     Number.isFinite(b.unitSizeAtBet as number) && (b.unitSizeAtBet as number) > 0
                       ? (b.unitSizeAtBet as number)
@@ -1013,90 +1024,91 @@ export function BetTrackerPage() {
                           : displayStakeUnits != null && displayReturnUnits != null
                             ? displayReturnUnits - displayStakeUnits
                             : null;
-                  const firstLeg =
-                    b.legs[0] != null
-                      ? `${b.legs[0].matchLabel ?? b.matchLabel} - ${b.legs[0].label}`
-                      : "No leg details";
-                  const restCount = Math.max(0, b.legs.length - 1);
-                  const scoreClass =
-                    typeof normalizedScore === "number"
-                      ? normalizedScore >= 80
-                        ? "bet-tracker-page__score score-high"
-                        : normalizedScore >= 60
-                          ? "bet-tracker-page__score score-mid"
-                          : "bet-tracker-page__score score-low"
-                      : "bet-tracker-page__score";
                   return (
-                    <tr key={b.id}>
-                      <td>{fmtDate(b.createdAt)}</td>
-                      <td>{b.bookmakerName}</td>
-                      <td>
-                        <div className="bet-tracker-page__match-cell">
-                          <div className="bet-tracker-page__match-name">{b.matchLabel}</div>
-                          {b.sourceType === "manualMulti" && (
-                            <div className="bet-tracker-page__source-tag">Custom Multi</div>
-                          )}
-                          <details>
-                            <summary className="bet-tracker-page__legs-summary">{firstLeg}{restCount > 0 ? ` +${restCount} more` : ""}</summary>
-                            <ul>
-                              {b.legs.map((l, i) => (
-                                <li key={`${b.id}-leg-${i}`}>
-                                  <span className="bet-tracker-page__leg-main">
-                                    {l.matchLabel ?? b.matchLabel} - {l.marketName}: {l.label}
-                                  </span>
-                                  <span className="bet-tracker-page__leg-sub">
-                                    {[l.leagueName, l.kickoffTime, l.playerName, l.outcome, Number.isFinite(l.line) && l.line !== 0 ? `Line ${l.line}` : null, l.odds != null ? `Odds ${l.odds.toFixed(2)}` : null, l.legNotes ? `Note: ${l.legNotes}` : null]
-                                      .filter(Boolean)
-                                      .join(" | ") || "No extra details"}
-                                  </span>
-                                </li>
-                              ))}
-                            </ul>
-                          </details>
+                    <article key={b.id} className={cardStatusClass}>
+                      <header className="bet-tracker-page__bet-card-top">
+                        <div>
+                          <h3 className="bet-tracker-page__bet-match">{b.matchLabel}</h3>
+                          <p className="bet-tracker-page__bet-meta">
+                            {b.bookmakerName} • {fmtDate(b.createdAt)}
+                          </p>
+                          {b.sourceType === "manualMulti" && <span className="bet-tracker-page__source-tag">Custom Multi</span>}
                         </div>
-                      </td>
-                      <td>{b.leagueName}</td>
-                      <td>{b.kickoffTime}</td>
-                      <td>{b.oddsTaken.toFixed(2)}</td>
-                      <td>£{fmtMoney(b.stake)}</td>
-                      <td>{displayStakeUnits != null ? `${displayStakeUnits.toFixed(2)}u` : "—"}</td>
-                      <td>£{fmtMoney(b.returnAmount)}</td>
-                      <td>
-                        {displayReturnUnits != null ? `${displayReturnUnits.toFixed(2)}u` : "—"}
-                      </td>
-                      <td>{typeof modelScore === "number" ? Math.round(modelScore) : "—"}</td>
-                      <td className={scoreClass}>{typeof normalizedScore === "number" ? Math.round(normalizedScore) : "—"}</td>
-                      <td>
-                        <select
-                          className={`bet-tracker-page__status-select status-${b.status}`}
-                          value={b.status}
-                          onChange={(e) => onStatusChange(b.id, e.target.value as TrackedBetStatus)}
-                        >
-                          <option value="pending">pending</option>
-                          <option value="win">win</option>
-                          <option value="loss">loss</option>
-                        </select>
-                      </td>
-                      <td className={pl > 0 ? "bet-tracker-page__pl is-profit" : pl < 0 ? "bet-tracker-page__pl is-loss" : "bet-tracker-page__pl is-pending"}>
-                        {fmtSignedMoney(pl)}
-                      </td>
-                      <td className={(displayProfitUnits ?? 0) > 0 ? "bet-tracker-page__pl is-profit" : (displayProfitUnits ?? 0) < 0 ? "bet-tracker-page__pl is-loss" : "bet-tracker-page__pl is-pending"}>
-                        {displayProfitUnits != null ? `${displayProfitUnits > 0 ? "+" : ""}${displayProfitUnits.toFixed(2)}u` : "—"}
-                      </td>
-                      <td>
-                        <button
-                          type="button"
-                          className="bet-tracker-page__delete-btn"
-                          onClick={() => onDeleteBet(b.id)}
-                        >
-                          Delete
-                        </button>
-                      </td>
-                    </tr>
+                        <div className="bet-tracker-page__bet-kickoff">
+                          <div>{b.leagueName || "—"}</div>
+                          <strong>{b.kickoffTime || "—"}</strong>
+                        </div>
+                      </header>
+
+                      <section className="bet-tracker-page__bet-selections">
+                        <p className="bet-tracker-page__bet-selection-preview">{previewLabel}</p>
+                        {remainingLegCount > 0 && (
+                          <button type="button" className="bet-tracker-page__expand-btn" onClick={() => toggleBetExpanded(b.id)}>
+                            {isExpanded ? "Show less" : `+${remainingLegCount} more`}
+                          </button>
+                        )}
+                        {isExpanded && (
+                          <ul className="bet-tracker-page__bet-selection-list">
+                            {b.legs.map((l, i) => (
+                              <li key={`${b.id}-leg-${i}`}>
+                                <span className="bet-tracker-page__leg-main">{l.matchLabel ?? b.matchLabel} - {l.marketName}: {l.label}</span>
+                                <span className="bet-tracker-page__leg-sub">
+                                  {[l.leagueName, l.kickoffTime, l.playerName, l.outcome, Number.isFinite(l.line) && l.line !== 0 ? `Line ${l.line}` : null, l.odds != null ? `Odds ${l.odds.toFixed(2)}` : null, l.legNotes ? `Note: ${l.legNotes}` : null]
+                                    .filter(Boolean)
+                                    .join(" | ") || "No extra details"}
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </section>
+
+                      <section className="bet-tracker-page__bet-metrics">
+                        <div><span>Odds</span><strong>{b.oddsTaken.toFixed(2)}</strong></div>
+                        <div><span>Stake</span><strong>£{fmtMoney(b.stake)}</strong><small>{displayStakeUnits != null ? `${displayStakeUnits.toFixed(2)}u` : "—"}</small></div>
+                        <div><span>Return</span><strong>£{fmtMoney(b.returnAmount)}</strong><small>{displayReturnUnits != null ? `${displayReturnUnits.toFixed(2)}u` : "—"}</small></div>
+                        <div>
+                          <span>P/L</span>
+                          <strong className={pl > 0 ? "bet-tracker-page__pl is-profit" : pl < 0 ? "bet-tracker-page__pl is-loss" : "bet-tracker-page__pl is-pending"}>
+                            {fmtSignedMoney(pl)}
+                          </strong>
+                          <small className={(displayProfitUnits ?? 0) > 0 ? "bet-tracker-page__pl is-profit" : (displayProfitUnits ?? 0) < 0 ? "bet-tracker-page__pl is-loss" : "bet-tracker-page__pl is-pending"}>
+                            {displayProfitUnits != null ? `${displayProfitUnits > 0 ? "+" : ""}${displayProfitUnits.toFixed(2)}u` : "—"}
+                          </small>
+                        </div>
+                      </section>
+
+                      <footer className="bet-tracker-page__bet-card-bottom">
+                        <div className="bet-tracker-page__bet-badges">
+                          {modelBadge && (
+                            <span className="bet-tracker-page__bet-badge">
+                              Model {typeof modelScore === "number" ? Math.round(modelScore) : "—"} | Score{" "}
+                              <span className={scoreClass}>{typeof normalizedScore === "number" ? Math.round(normalizedScore) : "—"}</span>
+                            </span>
+                          )}
+                        </div>
+                        <div className="bet-tracker-page__bet-controls">
+                          <select
+                            className={`bet-tracker-page__status-select status-${b.status}`}
+                            value={b.status}
+                            onChange={(e) => onStatusChange(b.id, e.target.value as TrackedBetStatus)}
+                          >
+                            <option value="pending">pending</option>
+                            <option value="win">win</option>
+                            <option value="loss">loss</option>
+                          </select>
+                          <button
+                            type="button"
+                            className="bet-tracker-page__delete-btn"
+                            onClick={() => onDeleteBet(b.id)}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </footer>
+                    </article>
                   );
                 })}
-              </tbody>
-            </table>
           </div>
         )}
       </section>
