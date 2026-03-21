@@ -28,6 +28,7 @@ export const LINEUP_DETAIL_TYPE_IDS = {
   shotsOnTarget: 86,
   foulsCommitted: null as number | null,
   foulsWon: null as number | null,
+  tackles: null as number | null,
 } as const;
 
 export type RecentStatCategory = keyof typeof LINEUP_DETAIL_TYPE_IDS;
@@ -267,6 +268,8 @@ function pickStat(row: ReturnType<typeof parseFixtureDetailsToPlayerStats>[0], c
       return row.foulsCommitted ?? 0;
     case "foulsWon":
       return row.foulsWon ?? 0;
+    case "tackles":
+      return row.tackles ?? 0;
     default:
       return 0;
   }
@@ -375,7 +378,9 @@ async function buildSeriesForPlayer(
             ? row.foulsCommitted
             : category === "foulsWon"
               ? row.foulsWon
-              : undefined;
+              : category === "tackles"
+                ? row.tackles
+                : undefined;
 
     let finalValue: number | null = null;
 
@@ -562,10 +567,11 @@ export interface RecentStatsForPlayer {
   shotsOnTarget: number[];
   foulsCommitted: number[];
   foulsWon: number[];
+  tackles: number[];
 }
 
 /**
- * For each unique player (normalized name), fill all four stat series from Sportmonks.
+ * For each unique player (normalized name), fill all stat series from Sportmonks.
  */
 export async function fetchRecentStatsForPlayers(
   players: PlayerRecentLookup[],
@@ -589,14 +595,15 @@ export async function fetchRecentStatsForPlayers(
     seen.add(key);
     if (!Number.isFinite(p.playerId) || !Number.isFinite(p.teamId)) continue;
 
-    const [shots, shotsOnTarget, foulsCommitted, foulsWon] = await Promise.all([
+    const [shots, shotsOnTarget, foulsCommitted, foulsWon, tackles] = await Promise.all([
       getRecentPlayerStatSeries(p.playerId, p.teamId, "shots", limit, excludeFixtureId, p.playerName),
       getRecentPlayerStatSeries(p.playerId, p.teamId, "shotsOnTarget", limit, excludeFixtureId, p.playerName),
       getRecentPlayerStatSeries(p.playerId, p.teamId, "foulsCommitted", limit, excludeFixtureId, p.playerName),
       getRecentPlayerStatSeries(p.playerId, p.teamId, "foulsWon", limit, excludeFixtureId, p.playerName),
+      getRecentPlayerStatSeries(p.playerId, p.teamId, "tackles", limit, excludeFixtureId, p.playerName),
     ]);
 
-    out[key] = { shots, shotsOnTarget, foulsCommitted, foulsWon };
+    out[key] = { shots, shotsOnTarget, foulsCommitted, foulsWon, tackles };
   }
 
   return out;

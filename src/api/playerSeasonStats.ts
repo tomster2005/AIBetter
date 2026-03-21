@@ -1,5 +1,5 @@
 /**
- * Player season statistics for value-bet model (shots, shots on target, fouls, minutes, appearances).
+ * Player season statistics for value-bet model (shots, shots on target, fouls, tackles, minutes, appearances).
  * Uses Sportmonks GET /v3/football/players/{id}?include=statistics.details.type&filters=playerStatisticSeasons:{seasonId}
  */
 
@@ -13,6 +13,8 @@ export interface PlayerSeasonStatsForProps {
   /** Omit or set undefined when not parsed from API (do not default to 0 for missing). */
   foulsCommitted?: number;
   foulsWon?: number;
+  /** Present when Sportmonks season stats include tackles (e.g. type name "Tackles"). */
+  tackles?: number;
   minutesPlayed: number;
   appearances: number;
 }
@@ -79,6 +81,7 @@ export async function getPlayerSeasonStatsForProps(
   let shotsOnTarget = 0;
   let foulsCommitted: number | undefined = undefined;
   let foulsWon: number | undefined = undefined;
+  let tackles: number | undefined = undefined;
   let minutesPlayed = 0;
   let appearances = 0;
   let shotsSourceName: string | null = null;
@@ -116,6 +119,12 @@ export async function getPlayerSeasonStatsForProps(
       (name.includes("won") || name.includes("drawn") || name.includes("suffered"))
     ) {
       foulsWon = value;
+    } else if (
+      name === "tackles" ||
+      name === "total tackles" ||
+      (name.includes("tackle") && !name.includes("dribbled") && !name.includes("interception"))
+    ) {
+      tackles = value;
     }
     if (name.includes("minute")) {
       minutesPlayed = value;
@@ -137,6 +146,7 @@ export async function getPlayerSeasonStatsForProps(
       shotsOnTarget,
       foulsCommitted,
       foulsWon,
+      tackles,
       minutesPlayed,
       appearances,
     });
@@ -158,6 +168,7 @@ export async function getPlayerSeasonStatsForProps(
     shotsOnTarget,
     ...(foulsCommitted !== undefined && { foulsCommitted }),
     ...(foulsWon !== undefined && { foulsWon }),
+    ...(tackles !== undefined && { tackles }),
     minutesPlayed,
     appearances,
   };

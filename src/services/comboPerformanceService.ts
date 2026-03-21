@@ -44,6 +44,7 @@ export interface ComboResolutionPlayerStat {
   shotsOnTarget?: number;
   foulsCommitted?: number;
   foulsWon?: number;
+  tackles?: number;
 }
 
 export interface ComboResolutionInput {
@@ -355,6 +356,10 @@ function getPlayerStatForLeg(leg: StoredComboLeg, input: ComboResolutionInput): 
   }
   if (market.includes("fouls won")) {
     const v = playerById?.foulsWon ?? player.foulsWon;
+    return typeof v === "number" ? v : null;
+  }
+  if (market.includes("tackle")) {
+    const v = playerById?.tackles ?? player.tackles;
     return typeof v === "number" ? v : null;
   }
   return null;

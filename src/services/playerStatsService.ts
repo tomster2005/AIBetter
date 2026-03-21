@@ -9,6 +9,7 @@ export interface PlayerSeasonStats {
   shotsOnTarget: number;
   foulsCommitted?: number;
   foulsWon?: number;
+  tackles?: number;
   minutesPlayed: number;
   appearances: number;
 }

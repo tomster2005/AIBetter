@@ -1,3 +1,4 @@
+/** Player tackles not supported: backend needs season tackles + Poisson mapping before adding "tackles". */
 export type ValueEvalMarket = "shots" | "shotsOnTarget" | "goals";
 
 export interface ValueEvalInput {

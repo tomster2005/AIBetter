@@ -9,6 +9,7 @@ import {
   MARKET_ID_PLAYER_SHOTS_ON_TARGET,
   MARKET_ID_PLAYER_FOULS_COMMITTED,
   MARKET_ID_PLAYER_FOULS_WON,
+  MARKET_ID_PLAYER_TACKLES,
 } from "../constants/marketIds.js";
 
 export type ConfidenceLevel = "low" | "medium" | "high";
@@ -149,7 +150,9 @@ export function shouldRejectByHardFilterForMarket(
   marketId: number
 ): boolean {
   const filter =
-    marketId === MARKET_ID_PLAYER_FOULS_COMMITTED || marketId === MARKET_ID_PLAYER_FOULS_WON
+    marketId === MARKET_ID_PLAYER_FOULS_COMMITTED ||
+    marketId === MARKET_ID_PLAYER_FOULS_WON ||
+    marketId === MARKET_ID_PLAYER_TACKLES
       ? VALUE_BET_HARD_FILTER_FOULS
       : VALUE_BET_HARD_FILTER;
   return (
@@ -268,13 +271,15 @@ export function computeBetQualityScore(params: BetQualityParams): number {
     (marketId === MARKET_ID_PLAYER_SHOTS && line >= 0.5 && line <= 5.5) ||
     (marketId === MARKET_ID_PLAYER_SHOTS_ON_TARGET && line >= 0.5 && line <= 3.5) ||
     (marketId === MARKET_ID_PLAYER_FOULS_COMMITTED && line >= 0.5 && line <= 4.5) ||
-    (marketId === MARKET_ID_PLAYER_FOULS_WON && line >= 0.5 && line <= 3.5);
+    (marketId === MARKET_ID_PLAYER_FOULS_WON && line >= 0.5 && line <= 3.5) ||
+    (marketId === MARKET_ID_PLAYER_TACKLES && line >= 0.5 && line <= 4.5);
   if (lineReasonable) score += 15;
   else if (
     (marketId === MARKET_ID_PLAYER_SHOTS && line > 6) ||
     (marketId === MARKET_ID_PLAYER_SHOTS_ON_TARGET && line > 4) ||
     (marketId === MARKET_ID_PLAYER_FOULS_COMMITTED && line > 5) ||
-    (marketId === MARKET_ID_PLAYER_FOULS_WON && line > 4)
+    (marketId === MARKET_ID_PLAYER_FOULS_WON && line > 4) ||
+    (marketId === MARKET_ID_PLAYER_TACKLES && line > 5)
   )
     score -= 20;
 
@@ -293,6 +298,8 @@ export interface ValueBetModelInputs {
   shotsOnTarget: number;
   foulsCommitted?: number;
   foulsWon?: number;
+  /** Season total tackles when parsed from API; omit when unknown. */
+  tackles?: number;
   minutesPlayed: number;
   appearances: number;
   expectedMinutes: number;
@@ -313,6 +320,7 @@ export interface StatsForModel {
   shotsOnTarget: number;
   foulsCommitted?: number;
   foulsWon?: number;
+  tackles?: number;
   minutesPlayed: number;
   appearances: number;
 }
@@ -326,6 +334,7 @@ export interface StatsForModel {
  * • 334 (Player Shots On Target) → stats.shotsOnTarget
  * • 338 (Player Fouls Committed) → stats.foulsCommitted
  * • 339 (Player Fouls Won)       → stats.foulsWon
+ * • 340 (Player Tackles)         → stats.tackles
  */
 export function getRelevantStatForMarket(
   stats: StatsForModel,
@@ -341,6 +350,8 @@ export function getRelevantStatForMarket(
       return stats.foulsCommitted != null ? stats.foulsCommitted : null;
     case MARKET_ID_PLAYER_FOULS_WON:
       return stats.foulsWon != null ? stats.foulsWon : null;
+    case MARKET_ID_PLAYER_TACKLES:
+      return stats.tackles != null ? stats.tackles : null;
     default:
       return null;
   }

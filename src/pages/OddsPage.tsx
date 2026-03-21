@@ -13,7 +13,10 @@ import {
   MARKET_ID_BTTS,
   MARKET_ID_MATCH_GOALS,
   MARKET_ID_MATCH_RESULTS,
+  MARKET_ID_PLAYER_SHOTS,
+  MARKET_ID_PLAYER_SHOTS_ON_TARGET,
   MARKET_ID_TEAM_TOTAL_GOALS,
+  PLAYER_PROP_MARKET_IDS,
   TEAM_PROP_MARKET_IDS,
 } from "../constants/marketIds.js";
 import { loadPlayerPropsForFixture } from "../services/playerPropsService.js";
@@ -153,7 +156,7 @@ function isLadderMarket(marketId: number): boolean {
 
 /** Priority: player +3, core +2, secondary +1, ladder -2. */
 function getMarketPriorityScore(marketId: number): number {
-  if (marketId === 334 || marketId === 336) return 3;  // Player Shots, Player Shots On Target
+  if ((PLAYER_PROP_MARKET_IDS as readonly number[]).includes(marketId)) return 3; // All player props (incl. 340 tackles)
   if (marketId === 1 || marketId === 14 || marketId === 80) return 2;  // Match Result, BTTS, Over/Under Goals
   if (isLadderMarket(marketId)) return -2;  // Alternative Goals, Alternative Corners
   return 1;  // Corners, Team Totals, etc.
@@ -701,7 +704,9 @@ export function OddsPage() {
                           </div>
                           <div className="odds-page__player-props-selections">
                             {(player.selections || []).map((sel, i) => {
-                              const isSinglePrice = market.marketId === 334 || market.marketId === 336;
+                              const isSinglePrice =
+                                market.marketId === MARKET_ID_PLAYER_SHOTS_ON_TARGET ||
+                                market.marketId === MARKET_ID_PLAYER_SHOTS;
                               return (
                                 <span key={i} className="odds-page__player-props-line">
                                   {sel.line} — O: {sel.overOdds ?? "—"}
@@ -777,7 +782,9 @@ export function OddsPage() {
                   }
                   const selections = collectBuildBetSelections(oddsData, playerOddsData);
                   if (import.meta.env.DEV) {
-                    const playerProps = selections.filter((s) => s.marketId === 334 || s.marketId === 336).length;
+                    const playerProps = selections.filter((s) =>
+                      (PLAYER_PROP_MARKET_IDS as readonly number[]).includes(s.marketId)
+                    ).length;
                     const coreMarkets = selections.filter((s) => [1, 14, 80].includes(s.marketId)).length;
                     const ladderMarkets = selections.filter((s) => isLadderMarket(s.marketId)).length;
                     const secondaryMarkets = selections.length - playerProps - coreMarkets - ladderMarkets;

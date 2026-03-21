@@ -26,6 +26,7 @@ export interface PlayerMatchStats {
   shotsOnTarget?: number;
   foulsCommitted?: number;
   foulsWon?: number;
+  tackles?: number;
   /** Debug: detail type that produced `foulsCommitted`. */
   foulsCommittedDetailTypeId?: number;
   /** Debug: detail type name that produced `foulsCommitted`. */
@@ -248,6 +249,12 @@ function parseDetailsToStats(
       out.foulsCommitted = value;
       out.foulsCommittedDetailTypeId = Number.isFinite(typeId) ? typeId : undefined;
       out.foulsCommittedDetailTypeName = typeNameRaw;
+    } else if (
+      name === "tackles" ||
+      name === "total tackles" ||
+      (name.includes("tackle") && !name.includes("dribbled") && !name.includes("interception"))
+    ) {
+      out.tackles = value;
     }
 
     // Minutes mapping.
@@ -265,7 +272,7 @@ function parseDetailsToStats(
 }
 
 /**
- * Parse fixture.lineups[].details into player match stats (shots, shots on target, fouls).
+ * Parse fixture.lineups[].details into player match stats (shots, shots on target, fouls, tackles).
  * Missing stats stay undefined (NOT 0).
  */
 export function parseFixtureDetailsToPlayerStats(
@@ -388,6 +395,7 @@ export function parseFixtureDetailsToPlayerStats(
       stats.shotsOnTarget !== undefined ||
       stats.foulsCommitted !== undefined ||
       stats.foulsWon !== undefined ||
+      stats.tackles !== undefined ||
       stats.minutesPlayed !== undefined;
     if (!hasAny) continue;
 

@@ -34,7 +34,15 @@ const LINE_BOUNDS: Record<string, { min: number; max: number }> = {
   shotsOnTarget: { min: 0.5, max: 5 },
   foulsCommitted: { min: 0.5, max: 5 },
   foulsWon: { min: 0.5, max: 4 },
+  tackles: { min: 0.5, max: 5 },
 };
+
+/** Fouls + tackles: used for combo ranking boost and team-leg coherence (physical / midfield duels). */
+const PHYSICAL_PLAYER_PROP_CATS = ["foulsCommitted", "foulsWon", "tackles"] as const;
+
+function isPhysicalPlayerPropCategory(cat: string | null | undefined): boolean {
+  return cat != null && (PHYSICAL_PLAYER_PROP_CATS as readonly string[]).includes(cat);
+}
 
 /** One leg in a combo (player or team). */
 export interface BuildLeg {
@@ -112,7 +120,7 @@ export interface BuildEvidenceContext {
   /** Recent match-by-match stat values per player and market (e.g. last 5 starts). Key: normalized "playerName|marketCategory". */
   playerRecentStats?: Array<{
     playerName: string;
-    marketCategory: "shots" | "shotsOnTarget" | "foulsCommitted" | "foulsWon";
+    marketCategory: "shots" | "shotsOnTarget" | "foulsCommitted" | "foulsWon" | "tackles";
     per90: number;
     recentValues: number[];
   }>;
@@ -137,6 +145,7 @@ export interface RecentStatsByNormalizedName {
     shotsOnTarget?: number[];
     foulsCommitted?: number[];
     foulsWon?: number[];
+    tackles?: number[];
   };
 }
 
@@ -165,7 +174,8 @@ export function buildEvidenceContextFromRows(
       (cat === "shots" && playerStats?.shots) ||
       (cat === "shotsOnTarget" && playerStats?.shotsOnTarget) ||
       (cat === "foulsCommitted" && playerStats?.foulsCommitted) ||
-      (cat === "foulsWon" && playerStats?.foulsWon);
+      (cat === "foulsWon" && playerStats?.foulsWon) ||
+      (cat === "tackles" && playerStats?.tackles);
     const useRecent =
       Array.isArray(recentValues) && recentValues.length > 0 && recentValues.every((v) => typeof v === "number" && Number.isFinite(v));
     if (import.meta.env?.DEV) {
@@ -348,12 +358,16 @@ const SHOTS_MIN_PER90 = 0.8;
 /** Min shots on target per90 for SOT boost. */
 const SOT_MIN_PER90 = 0.25;
 
-function getMarketCategory(marketName: string): keyof typeof LINE_BOUNDS | null {
+/** Player-prop market buckets used for scoring, evidence, and line bounds. */
+export type ValueBetPlayerMarketCategory = "shots" | "shotsOnTarget" | "foulsCommitted" | "foulsWon" | "tackles";
+
+function getMarketCategory(marketName: string): ValueBetPlayerMarketCategory | null {
   const n = (marketName || "").toLowerCase();
   if (n.includes("shots on target")) return "shotsOnTarget";
-  if (n.includes("shots") && !n.includes("on target")) return "shots";
   if (n.includes("fouls committed")) return "foulsCommitted";
   if (n.includes("fouls won")) return "foulsWon";
+  if (n.includes("player tackles") || (n.includes("tackles") && !n.includes("foul"))) return "tackles";
+  if (n.includes("shots") && !n.includes("on target")) return "shots";
   return null;
 }
 
@@ -478,6 +492,7 @@ const SCORING_CONFIG = {
       shotsOnTarget: { projectedRate: 0.3, recency: 0.3, minutes: 0.2, sample: 0.2 },
       foulsCommitted: { projectedRate: 0.25, recency: 0.15, minutes: 0.3, sample: 0.3 },
       foulsWon: { projectedRate: 0.25, recency: 0.25, minutes: 0.25, sample: 0.25 },
+      tackles: { projectedRate: 0.25, recency: 0.2, minutes: 0.3, sample: 0.25 },
     },
   },
   comboQuality: {
@@ -970,6 +985,20 @@ function getShotsOnTargetPer90FromRows(playerName: string, rows: PlayerCandidate
   return null;
 }
 
+/** Get tackles per90 from any row for this player (Player Tackles market). */
+function getTacklesPer90FromRows(playerName: string, rows: PlayerCandidateInput[]): number | null {
+  const key = normalizePlayerNameForMatch(playerName);
+  for (const r of rows) {
+    if (normalizePlayerNameForMatch(r.playerName) !== key) continue;
+    const n = r.marketName?.toLowerCase();
+    if ((n?.includes("player tackles") || (n?.includes("tackles") && !n?.includes("foul"))) && r.modelInputs != null) {
+      const per90 = (r.modelInputs as { per90?: number }).per90;
+      if (typeof per90 === "number" && per90 >= 0) return per90;
+    }
+  }
+  return null;
+}
+
 /** Apply foul matchup boost to player legs (in-place). Only boosts when matchup supports and leg already has solid base. */
 function applyFoulMatchupBoost(
   legs: BuildLeg[],
@@ -1273,6 +1302,7 @@ function getBuilderMarketPriority(cat: string | null): number {
   if (!cat) return 0;
   if (cat === "foulsCommitted") return 20;
   if (cat === "foulsWon") return 18;
+  if (cat === "tackles") return 16;
   if (cat === "shotsOnTarget") return 6;
   if (cat === "shots") return 4;
   return 0;
@@ -1381,6 +1411,11 @@ function computePlayerLegQualitySignals(
     );
   } else if (cat === "foulsWon") {
     const w = SCORING_CONFIG.playerQualityAggregation.marketSpecificWeights.foulsWon;
+    marketSpecificScore = clamp01(
+      projectedRateStrength * w.projectedRate + recencyScore * w.recency + minutesReliability * w.minutes + sampleReliability * w.sample
+    );
+  } else if (cat === "tackles") {
+    const w = SCORING_CONFIG.playerQualityAggregation.marketSpecificWeights.tackles;
     marketSpecificScore = clamp01(
       projectedRateStrength * w.projectedRate + recencyScore * w.recency + minutesReliability * w.minutes + sampleReliability * w.sample
     );
@@ -2027,6 +2062,9 @@ function getPer90AndLabelForLeg(
   } else if (cat === "foulsWon") {
     per90 = getFoulsWonPer90FromRows(leg.playerName, rows);
     statLabel = "fouls won";
+  } else if (cat === "tackles") {
+    per90 = getTacklesPer90FromRows(leg.playerName, rows);
+    statLabel = "tackles";
   }
   if (per90 == null || statLabel === "") return null;
   return { per90, statLabel };
@@ -2077,6 +2115,7 @@ function statLabelForCategory(cat: MarketCat | null): string {
   if (cat === "shotsOnTarget") return "shots on target";
   if (cat === "foulsCommitted") return "fouls committed";
   if (cat === "foulsWon") return "fouls won";
+  if (cat === "tackles") return "tackles";
   return "";
 }
 
@@ -2098,6 +2137,10 @@ function selectionTitleForPlayerLeg(leg: BuildLeg, cat: MarketCat | null, statLa
     if (leg.outcome === "Over") return "to be fouled";
     return `Under ${leg.line % 1 === 0 ? `${leg.line}.0` : leg.line.toFixed(1)} Fouls Won`;
   }
+  if (cat === "tackles") {
+    if (leg.outcome === "Over") return `${Math.round(leg.line + 0.5)}+ Tackles`;
+    return `Under ${leg.line % 1 === 0 ? `${leg.line}.0` : leg.line.toFixed(1)} Tackles`;
+  }
   if (statLabel && (leg.outcome === "Over" || leg.outcome === "Under")) {
     const st = statLabel
       .split(" ")
@@ -2115,6 +2158,7 @@ function shortFallbackContextLine(cat: MarketCat | null): string {
   // One sentence only: tight, market-specific, and betting-style.
   if (cat === "foulsCommitted") return "Recent foul counts support this line.";
   if (cat === "foulsWon") return "Recent drawn-foul numbers support this line.";
+  if (cat === "tackles") return "Recent tackle volumes support this line.";
   if (cat === "shotsOnTarget") return "Recent SOT volume supports this line.";
   if (cat === "shots") return "Recent shot volume supports this line.";
   return "Recent involvement supports this angle.";
@@ -2141,6 +2185,7 @@ function extractTipsterContextFromReason(reason: string | null | undefined): str
       (low.includes("draws") && low.includes("foul")) ||
       (low.includes("commit") && low.includes("foul")) ||
       low.includes("flank") ||
+      low.includes("tackle") ||
       low.includes("role") && (low.includes("foul") || low.includes("shot"))
     ) {
       const t = p.endsWith(".") ? p : `${p}.`;
@@ -2578,10 +2623,10 @@ export function buildValueBetCombos(
       : [];
   const allLegs = [...playerLegs, ...teamLegs];
 
-  type PlayerCat = "shots" | "shotsOnTarget" | "foulsWon" | "foulsCommitted";
-  const playerCats: PlayerCat[] = ["shots", "shotsOnTarget", "foulsWon", "foulsCommitted"];
+  type PlayerCat = "shots" | "shotsOnTarget" | "foulsWon" | "foulsCommitted" | "tackles";
+  const playerCats: PlayerCat[] = ["shots", "shotsOnTarget", "foulsWon", "foulsCommitted", "tackles"];
   const countByPlayerCat = (legs: Array<BuildLeg>): Record<PlayerCat, number> => {
-    const out = { shots: 0, shotsOnTarget: 0, foulsWon: 0, foulsCommitted: 0 };
+    const out = { shots: 0, shotsOnTarget: 0, foulsWon: 0, foulsCommitted: 0, tackles: 0 };
     for (const l of legs) {
       if (l.type !== "player") continue;
       const cat = getMarketCategory(l.marketName);
@@ -2590,7 +2635,7 @@ export function buildValueBetCombos(
     return out;
   };
   const countCombosByPlayerCatPresence = (combosArr: BuildCombo[]): Record<PlayerCat, number> => {
-    const out = { shots: 0, shotsOnTarget: 0, foulsWon: 0, foulsCommitted: 0 };
+    const out = { shots: 0, shotsOnTarget: 0, foulsWon: 0, foulsCommitted: 0, tackles: 0 };
     for (const c of combosArr) {
       const catsInCombo = new Set<PlayerCat>();
       for (const l of c.legs) {
@@ -2602,7 +2647,7 @@ export function buildValueBetCombos(
     }
     return out;
   };
-  const rawRowsByPlayerCat: Record<PlayerCat, number> = { shots: 0, shotsOnTarget: 0, foulsWon: 0, foulsCommitted: 0 };
+  const rawRowsByPlayerCat: Record<PlayerCat, number> = { shots: 0, shotsOnTarget: 0, foulsWon: 0, foulsCommitted: 0, tackles: 0 };
   for (const r of playerRows) {
     const cat = getMarketCategory(r.marketName);
     if (cat && (playerCats as string[]).includes(cat)) rawRowsByPlayerCat[cat as PlayerCat] += 1;
@@ -2773,7 +2818,8 @@ export function buildValueBetCombos(
     if (playerCats.size === 0) return false;
     const impl = getTeamLegImplications(leg);
     const hasShotsLike = playerCats.has("shots") || playerCats.has("shotsOnTarget");
-    const hasFoulsLike = playerCats.has("foulsCommitted") || playerCats.has("foulsWon");
+    const hasFoulsLike =
+      playerCats.has("foulsCommitted") || playerCats.has("foulsWon") || playerCats.has("tackles");
 
     if (hasShotsLike) {
       if (impl.some((i) => i.kind === "btts" && i.value === true)) return true;
@@ -3100,6 +3146,7 @@ export function buildValueBetCombos(
       const sotCount = cats.filter((c) => c === "shotsOnTarget").length;
       const foulsCommittedCount = cats.filter((c) => c === "foulsCommitted").length;
       const foulsWonCount = cats.filter((c) => c === "foulsWon").length;
+      const tacklesCount = cats.filter((c) => c === "tackles").length;
 
       if (shotsCount >= 1 && sotCount >= 1) {
         attackingClusterCount += 1;
@@ -3109,7 +3156,13 @@ export function buildValueBetCombos(
         attackingClusterCount += 1;
         coherenceScore += SCORING_CONFIG.playerCoherence.attackingMultiBonus;
       }
-      if (foulsCommittedCount >= 2 || foulsWonCount >= 2 || (foulsCommittedCount >= 1 && foulsWonCount >= 1)) {
+      if (
+        foulsCommittedCount >= 2 ||
+        foulsWonCount >= 2 ||
+        (foulsCommittedCount >= 1 && foulsWonCount >= 1) ||
+        tacklesCount >= 2 ||
+        (tacklesCount >= 1 && (foulsCommittedCount >= 1 || foulsWonCount >= 1))
+      ) {
         defensiveClusterCount += 1;
         coherenceScore += SCORING_CONFIG.playerCoherence.defensiveClusterBonus;
       }
@@ -3136,14 +3189,12 @@ export function buildValueBetCombos(
     };
   }
 
-  // Fouls-first preference: boost combos that contain fouls legs (338/339) when available.
-  const hasAnyFoulsLegs = allLegs.some(
-    (l) => l.type === "player" && ["foulsCommitted", "foulsWon"].includes(getMarketCategory(l.marketName) ?? "")
-  );
+  // Physical props preference: boost combos that contain fouls / tackles legs when available.
+  const hasAnyFoulsLegs = allLegs.some((l) => l.type === "player" && isPhysicalPlayerPropCategory(getMarketCategory(l.marketName)));
   if (hasAnyFoulsLegs) {
     combos = combos.map((c) => {
       const foulsLegCount = c.legs.filter(
-        (l) => l.type === "player" && ["foulsCommitted", "foulsWon"].includes(getMarketCategory(l.marketName) ?? "")
+        (l) => l.type === "player" && isPhysicalPlayerPropCategory(getMarketCategory(l.marketName))
       ).length;
       let bonus = 0;
       if (foulsLegCount >= 1) bonus += 18;
@@ -3355,7 +3406,7 @@ export function buildValueBetCombos(
 
   if (BUILDER_DEBUG_VERBOSE && combos.length > 0) {
     const combosWithFouls = combos.filter((c) =>
-      c.legs.some((l) => l.type === "player" && ["foulsCommitted", "foulsWon"].includes(getMarketCategory(l.marketName) ?? ""))
+      c.legs.some((l) => l.type === "player" && isPhysicalPlayerPropCategory(getMarketCategory(l.marketName)))
     );
     console.log("[build-value-bets] combo fouls stats", {
       totalCombos: combos.length,
@@ -3407,9 +3458,7 @@ export function buildValueBetCombos(
         score: c.comboScore,
         playerLegCount: c.legs.filter((l) => l.type === "player").length,
         legs: c.legs.map((l) => l.label),
-        hasFoulsLeg: c.legs.some(
-          (l) => l.type === "player" && ["foulsCommitted", "foulsWon"].includes(getMarketCategory(l.marketName) ?? "")
-        ),
+        hasFoulsLeg: c.legs.some((l) => l.type === "player" && isPhysicalPlayerPropCategory(getMarketCategory(l.marketName))),
         explanationLines: c.explanation?.lines.length ?? 0,
       }))
     );
@@ -3434,7 +3483,7 @@ export function buildValueBetCombos(
         const cat = getMarketCategory(p.marketName) ?? "other";
         returnedPlayerLegStats.byCategory[cat] = (returnedPlayerLegStats.byCategory[cat] ?? 0) + 1;
         returnedPlayerLegStats.byMarketFamily[p.marketFamily] = (returnedPlayerLegStats.byMarketFamily[p.marketFamily] ?? 0) + 1;
-        if (cat === "foulsCommitted" || cat === "foulsWon") returnedPlayerLegStats.foulsLegCount += 1;
+        if (isPhysicalPlayerPropCategory(cat)) returnedPlayerLegStats.foulsLegCount += 1;
       }
     }
 

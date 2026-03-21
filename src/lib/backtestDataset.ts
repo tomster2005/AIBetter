@@ -8,6 +8,7 @@ import {
   MARKET_ID_PLAYER_SHOTS_ON_TARGET,
   MARKET_ID_PLAYER_FOULS_COMMITTED,
   MARKET_ID_PLAYER_FOULS_WON,
+  MARKET_ID_PLAYER_TACKLES,
 } from "../constants/marketIds.js";
 import { isMarketSupportedForBacktest } from "./marketCapabilities.js";
 
@@ -45,6 +46,7 @@ const MARKET_NAME_TO_ID: Record<string, number> = {
   "Player Shots On Target": MARKET_ID_PLAYER_SHOTS_ON_TARGET,
   "Player Fouls Committed": MARKET_ID_PLAYER_FOULS_COMMITTED,
   "Player Fouls Won": MARKET_ID_PLAYER_FOULS_WON,
+  "Player Tackles": MARKET_ID_PLAYER_TACKLES,
 };
 
 function marketIdFromName(marketName: string): number {
@@ -53,7 +55,13 @@ function marketIdFromName(marketName: string): number {
 }
 
 function statValueFromModelInputs(
-  modelInputs: { shots?: number; shotsOnTarget?: number; foulsCommitted?: number; foulsWon?: number } | undefined,
+  modelInputs: {
+    shots?: number;
+    shotsOnTarget?: number;
+    foulsCommitted?: number;
+    foulsWon?: number;
+    tackles?: number;
+  } | undefined,
   marketId: number
 ): number | null {
   if (!modelInputs) return null;
@@ -66,6 +74,8 @@ function statValueFromModelInputs(
       return modelInputs.foulsCommitted != null ? modelInputs.foulsCommitted : null;
     case MARKET_ID_PLAYER_FOULS_WON:
       return modelInputs.foulsWon != null ? modelInputs.foulsWon : null;
+    case MARKET_ID_PLAYER_TACKLES:
+      return modelInputs.tackles != null ? modelInputs.tackles : null;
     default:
       return null;
   }
@@ -92,6 +102,7 @@ export interface ValueBetRowLike {
     shotsOnTarget?: number;
     foulsCommitted?: number;
     foulsWon?: number;
+    tackles?: number;
   } | null;
 }
 

@@ -18,6 +18,7 @@ import {
   MARKET_ID_PLAYER_SHOTS_ON_TARGET,
   MARKET_ID_PLAYER_FOULS_COMMITTED,
   MARKET_ID_PLAYER_FOULS_WON,
+  MARKET_ID_PLAYER_TACKLES,
 } from "../src/constants/marketIds.js";
 import type { PlayerMatchStats } from "../src/api/fixtureSettlement.js";
 import { getFixtureStateAndPlayerStats, getFixtureDetailsForSettlementDebug, SETTLEMENT_INCLUDES } from "../src/api/fixtureSettlement.js";
@@ -59,6 +60,8 @@ function getActualCountForMarket(stats: PlayerMatchStats, marketId: number): num
       return stats.foulsCommitted != null ? stats.foulsCommitted : null;
     case MARKET_ID_PLAYER_FOULS_WON:
       return stats.foulsWon != null ? stats.foulsWon : null;
+    case MARKET_ID_PLAYER_TACKLES:
+      return stats.tackles != null ? stats.tackles : null;
     default:
       return null;
   }

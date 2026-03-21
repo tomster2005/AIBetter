@@ -309,6 +309,7 @@ app.get("/api/fixtures/:id/player-odds", async (req, res) => {
           { marketId: 334, marketName: "Player Shots On Target", players: [] },
           { marketId: 338, marketName: "Player Fouls Committed", players: [] },
           { marketId: 339, marketName: "Player Fouls Won", players: [] },
+          { marketId: 340, marketName: "Player Tackles", players: [] },
         ],
         lineupSource: "none",
         playerCount: 0,
@@ -490,6 +491,7 @@ app.get("/api/player-stats/:playerId", async (req, res) => {
   }
 });
 
+// Player tackles: not in ValueEvalMarket until season tackles + Poisson mapping match getPlayerSeasonStatsForProps.
 app.post("/api/value-evaluator", async (req, res) => {
   try {
     const body = req.body as { playerName?: string; market?: ValueEvalMarket; line?: number; odds?: number };

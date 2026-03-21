@@ -11,6 +11,7 @@ import {
   MARKET_ID_PLAYER_SHOTS_ON_TARGET,
   MARKET_ID_PLAYER_FOULS_COMMITTED,
   MARKET_ID_PLAYER_FOULS_WON,
+  MARKET_ID_PLAYER_TACKLES,
 } from "../constants/marketIds.js";
 
 export type CapabilityArea = "analysis" | "builder" | "backtest" | "settlement" | "optimisation";
@@ -60,6 +61,15 @@ const CAPABILITIES: Record<number, MarketCapability> = {
     supportedForSettlement: false,
     supportedForOptimisation: false,
     note: "Player shots on target not reliably available in lineup details for settlement yet",
+  },
+  [MARKET_ID_PLAYER_TACKLES]: {
+    marketId: MARKET_ID_PLAYER_TACKLES,
+    supportedForAnalysis: true,
+    supportedForBuilder: true,
+    supportedForBacktest: true,
+    supportedForSettlement: true,
+    supportedForOptimisation: true,
+    note: "Settlement uses lineup detail tackles when the feed includes them",
   },
 };
 

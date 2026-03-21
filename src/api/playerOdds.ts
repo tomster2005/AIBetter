@@ -1,7 +1,7 @@
 /**
  * Player odds for value-bet analysis.
  * Fetches markets 336 (Player Shots), 334 (Player Shots On Target) from the generic fixture odds endpoint,
- * and 338 (Player Fouls Committed), 339 (Player Fouls Won) from the fixture+market-specific endpoints.
+ * and 338/339/340 (Fouls Committed, Fouls Won, Player Tackles) from fixture+market-specific endpoints.
  */
 
 import { getFixtureDetails, extractLineupConfirmed } from "./fixtureDetails.js";
@@ -11,14 +11,15 @@ export type LineupSource = "confirmed" | "predicted" | "none";
 
 const SPORTMONKS_ODDS_BASE = "https://api.sportmonks.com/v3/football/odds/pre-match/fixtures";
 
-/** Only these market IDs are treated as player props. Order: 336, 334, then 338, 339. */
-const PLAYER_PROP_MARKET_IDS = [336, 334, 338, 339];
+/** Only these market IDs are treated as player props. Order: 336, 334, then 338, 339, 340. */
+const PLAYER_PROP_MARKET_IDS = [336, 334, 338, 339, 340];
 /** Display names for UI. Fouls names are normalized (Sportmonks may return "Player To Be Fouled" etc.). */
 const PLAYER_PROP_MARKET_NAMES: Record<number, string> = {
   336: "Player Shots",
   334: "Player Shots On Target",
   338: "Player Fouls Committed",
   339: "Player Fouls Won",
+  340: "Player Tackles",
 };
 
 /** type_id 11 = starting XI in Sportmonks */
@@ -156,9 +157,6 @@ async function fetchPlayerPropOdds(
   }
 }
 
-/** Market IDs we fetch via the fixture+market endpoint (fouls). */
-const FOULS_MARKET_IDS = [338, 339] as const;
-
 /**
  * Fetch odds for a single market (e.g. 338 or 339) from
  * GET /v3/football/odds/pre-match/fixtures/{fixtureId}/markets/{marketId}
@@ -188,10 +186,13 @@ async function fetchFixtureMarketOdds(
   }
 }
 
-/** Only rows with market_id 334, 336, 338, or 339 are valid player props. */
+/** Only rows with market_id 334, 336, 338, 339, or 340 are valid player props. */
 function isPlayerPropRow(row: PlayerOddRow): boolean {
   const marketId = row.market_id ?? row.market?.id ?? (row.market as { data?: { id?: number } })?.data?.id;
-  return typeof marketId === "number" && (marketId === 334 || marketId === 336 || marketId === 338 || marketId === 339);
+  return (
+    typeof marketId === "number" &&
+    (marketId === 334 || marketId === 336 || marketId === 338 || marketId === 339 || marketId === 340)
+  );
 }
 
 /** Extract player id from a player-prop row. Returns null if not present. */
@@ -230,15 +231,15 @@ function parseOddsValue(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-/** For 334/336/338/339, line comes from row.label. Fouls (338/339) use numeric-only labels e.g. "1.5", "2.5". */
+/** For 334/336/338/339/340, line comes from row.label. Fouls/tackles use numeric-only labels e.g. "1.5", "2.5". */
 function getLineFromRow(row: PlayerOddRow, marketId?: number): number | null {
-  if (marketId === 334 || marketId === 336 || marketId === 338 || marketId === 339) {
+  if (marketId === 334 || marketId === 336 || marketId === 338 || marketId === 339 || marketId === 340) {
     const label = String(row.label ?? "").trim();
     if (label) {
       const normalized = label.replace(/,/g, ".");
       let n = parseFloat(normalized);
       if (Number.isFinite(n)) return n;
-      if (marketId === 338 || marketId === 339) {
+      if (marketId === 338 || marketId === 339 || marketId === 340) {
         const digitsOnly = normalized.replace(/[^\d.]/g, "").replace(/\.+$/, "");
         if (digitsOnly) {
           n = parseFloat(digitsOnly);
@@ -330,7 +331,7 @@ function getMarketName(marketId: number): string {
 }
 
 /**
- * Fetches player prop odds for markets 334 and 336. Returns full PlayerOddsResponse with
+ * Fetches player prop odds for markets 334, 336, 338, 339, 340. Returns full PlayerOddsResponse with
  * markets[].players[].selections[]. Optional bookmakerId adds ;bookmakers:{id} to filters.
  */
 export async function getPlayerOddsForFixture(
@@ -374,13 +375,14 @@ export async function getPlayerOddsForFixture(
 
   const { rows: mainRows } = await fetchPlayerPropOdds(fixtureId, token, bookmakerId);
 
-  const [rows338, rows339] = await Promise.all([
+  const [rows338, rows339, rows340] = await Promise.all([
     fetchFixtureMarketOdds(fixtureId, 338, token, bookmakerId),
     fetchFixtureMarketOdds(fixtureId, 339, token, bookmakerId),
+    fetchFixtureMarketOdds(fixtureId, 340, token, bookmakerId),
   ]);
 
-  /** Normalize fouls market row: ensure market_id and use participant name when row.name is outcome (Over/Under). */
-  const toFoulsRow = (r: PlayerOddRow, marketId: 338 | 339): PlayerOddRow => {
+  /** Normalize per-market player prop row: ensure market_id and use participant name when row.name is outcome (Over/Under). */
+  const toFoulsRow = (r: PlayerOddRow, marketId: 338 | 339 | 340): PlayerOddRow => {
     const out = { ...r, market_id: marketId };
     const currentName = String(r.name ?? "").trim();
     const looksLikeOutcome = /^(over|under)\s/i.test(currentName) || /^\d+\.?\d*$/.test(currentName);
@@ -403,6 +405,7 @@ export async function getPlayerOddsForFixture(
 
   const normalized338 = rows338.map((r) => toFoulsRow(r, 338));
   const normalized339 = rows339.map((r) => toFoulsRow(r, 339));
+  const normalized340 = rows340.map((r) => toFoulsRow(r, 340));
 
   /** For 334/336, row.name may be outcome (e.g. "Over 2.5"); use participant name when so. */
   const toShotsRow = (r: PlayerOddRow): PlayerOddRow => {
@@ -429,7 +432,7 @@ export async function getPlayerOddsForFixture(
   };
   const normalizedMainRows = mainRows.map(toShotsRow);
 
-  const rows = [...normalizedMainRows, ...normalized338, ...normalized339];
+  const rows = [...normalizedMainRows, ...normalized338, ...normalized339, ...normalized340];
 
   type PlayerEntry = {
     playerName: string;
@@ -447,7 +450,7 @@ export async function getPlayerOddsForFixture(
     if (row.suspended === true || row.stopped === true) continue;
     const rawMarketId = row.market_id ?? row.market?.id ?? (row.market as { data?: { id?: number } })?.data?.id;
     const marketId = typeof rawMarketId === "number" ? rawMarketId : parseInt(String(rawMarketId), 10);
-    if (marketId !== 334 && marketId !== 336 && marketId !== 338 && marketId !== 339) continue;
+    if (marketId !== 334 && marketId !== 336 && marketId !== 338 && marketId !== 339 && marketId !== 340) continue;
     const hasName = row.name != null && String(row.name).trim() !== "";
     const hasLabel = row.label != null && String(row.label).trim() !== "";
     const hasValue = row.value != null;
@@ -467,7 +470,7 @@ export async function getPlayerOddsForFixture(
     const labelStr = String(row.label ?? "").trim();
     const isNumericOnly = /^\d+\.?\d*$/.test(labelStr.replace(/,/g, "."));
     const outcome =
-      (marketId === 334 || marketId === 336 || marketId === 338 || marketId === 339) && isNumericOnly
+      (marketId === 334 || marketId === 336 || marketId === 338 || marketId === 339 || marketId === 340) && isNumericOnly
         ? "Over"
         : isOver(labelStr)
           ? "Over"
@@ -526,6 +529,7 @@ export async function getPlayerOddsForFixture(
     const m336 = markets.find((m) => m.marketId === 336);
     const m338 = markets.find((m) => m.marketId === 338);
     const m339 = markets.find((m) => m.marketId === 339);
+    const m340 = markets.find((m) => m.marketId === 340);
     const players = (m: { players?: unknown[] } | undefined) => m?.players?.length ?? 0;
     const selections = (m: { players?: Array<{ selections?: unknown[] }> } | undefined) =>
       m?.players?.reduce((sum, p) => sum + (p.selections?.length ?? 0), 0) ?? 0;
@@ -535,10 +539,12 @@ export async function getPlayerOddsForFixture(
       market336Players: players(m336),
       market338Players: players(m338),
       market339Players: players(m339),
+      market340Players: players(m340),
       market334Selections: selections(m334),
       market336Selections: selections(m336),
       market338Selections: selections(m338),
       market339Selections: selections(m339),
+      market340Selections: selections(m340),
     });
   }
 

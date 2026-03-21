@@ -5,6 +5,7 @@ type ResolutionPlayerStats = {
   shotsOnTarget?: number;
   foulsCommitted?: number;
   foulsWon?: number;
+  tackles?: number;
 };
 
 export interface FixtureResolutionData {
@@ -206,6 +207,13 @@ export function parseResolutionPlayerStats(details: unknown): ResolutionPlayerSt
       else if (n === "shots on target" || n === "shots on goal" || n === "on target shots") stats.shotsOnTarget = v;
       else if (n.includes("foul") && (n.includes("commit") || n.includes("committed") || n === "fouls")) stats.foulsCommitted = v;
       else if (n.includes("foul") && (n.includes("won") || n.includes("drawn") || n.includes("suffered"))) stats.foulsWon = v;
+      else if (
+        n === "tackles" ||
+        n === "total tackles" ||
+        (n.includes("tackle") && !n.includes("dribbled") && !n.includes("interception"))
+      ) {
+        stats.tackles = v;
+      }
     }
     out.push(stats);
   }
