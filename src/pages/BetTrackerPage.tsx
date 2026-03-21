@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   addBookmaker,
-  addManualMultiBet,
+  addManualMultiBetShared,
   explainManualMultiBetFailure,
   getAllBookmakerStats,
   getBankrollTimeline,
@@ -9,14 +9,16 @@ import {
   getBalanceAdjustments,
   getUnitSize,
   refreshTrackedBetsFromServer,
+  restoreTrackedBetsFromBackup,
   settlePendingTrackedBets,
+  getTrackedBetsDebugState,
   getScoreBandAnalysis,
   setUnitSize,
   getTrackedBetStats,
   getTrackedBets,
   adjustBalance,
-  deleteTrackedBet,
-  updateTrackedBetStatus,
+  deleteTrackedBetShared,
+  updateTrackedBetStatusShared,
   type BookmakerStats,
   type ManualTrackedSelectionInput,
   type ScoreBandAnalysisRow,
@@ -309,6 +311,12 @@ export function BetTrackerPage() {
   const [quickAddSelections, setQuickAddSelections] = useState<QuickAddSelectionDraft[]>([createSelectionDraft()]);
   const [quickAddErrors, setQuickAddErrors] = useState<QuickAddErrors>({});
   const [expandedBetIds, setExpandedBetIds] = useState<Set<string>>(new Set());
+  const [debugStorageCount, setDebugStorageCount] = useState(0);
+  const [debugBackupExists, setDebugBackupExists] = useState(false);
+  const [debugBackupCount, setDebugBackupCount] = useState(0);
+  const [debugServerCount, setDebugServerCount] = useState<number | null>(null);
+  const [debugLastSync, setDebugLastSync] = useState<number | null>(null);
+  const [debugSyncSource, setDebugSyncSource] = useState<string>("local-fallback");
   const quickAddTriggerRef = useRef<HTMLButtonElement | null>(null);
   const quickAddModalRef = useRef<HTMLDivElement | null>(null);
   const quickAddBookmakerRef = useRef<HTMLSelectElement | null>(null);
@@ -325,6 +333,15 @@ export function BetTrackerPage() {
     setBookmakers(getAllBookmakerStats());
     setBalanceAdjustments(getBalanceAdjustments());
     setBets(getTrackedBets());
+    if (import.meta.env.DEV) {
+      const dbg = getTrackedBetsDebugState();
+      setDebugStorageCount(dbg.storageCount);
+      setDebugBackupExists(dbg.backupExists);
+      setDebugBackupCount(dbg.backupCount);
+      setDebugServerCount(dbg.serverCount);
+      setDebugLastSync(dbg.lastSyncTimestamp);
+      setDebugSyncSource(dbg.syncSource);
+    }
   }, []);
 
   useEffect(() => {
@@ -531,21 +548,35 @@ export function BetTrackerPage() {
     setMessage(`Balance adjusted: ${fmtAdjustmentLine(created)}`);
   }, [adjustBookmakerId, adjustAmount, adjustType, adjustNote, closeAdjustBalance, refresh]);
 
-  const onStatusChange = useCallback((id: string, status: TrackedBetStatus) => {
-    updateTrackedBetStatus(id, status);
+  const onStatusChange = useCallback(async (id: string, status: TrackedBetStatus) => {
+    const updated = await updateTrackedBetStatusShared(id, status);
+    if (!updated) {
+      setMessage("Status update failed (server unavailable).");
+      return;
+    }
     refresh();
   }, [refresh]);
 
-  const onDeleteBet = useCallback((id: string) => {
+  const onDeleteBet = useCallback(async (id: string) => {
     const ok = window.confirm("Delete this bet? This cannot be undone.");
     if (!ok) return;
-    const deleted = deleteTrackedBet(id);
+    const deleted = await deleteTrackedBetShared(id);
     if (deleted) {
       setMessage("Bet deleted.");
       refresh();
       return;
     }
-    setMessage("Bet could not be deleted.");
+    setMessage("Bet could not be deleted (server unavailable).");
+  }, [refresh]);
+
+  const onRestoreFromBackup = useCallback(() => {
+    const result = restoreTrackedBetsFromBackup();
+    if (result.restored) {
+      setMessage(`Restored ${result.count} bet(s) from backup.`);
+      refresh();
+    } else {
+      setMessage("No valid backup available to restore.");
+    }
   }, [refresh]);
 
   const toggleBetExpanded = useCallback((id: string) => {
@@ -679,7 +710,7 @@ export function BetTrackerPage() {
     });
   }, []);
 
-  const onSaveQuickAdd = useCallback(() => {
+  const onSaveQuickAdd = useCallback(async () => {
     const nextErrors: QuickAddErrors = {};
     if (!quickAddBookmakerId) nextErrors.bookmakerId = "Select a bookmaker.";
     const stake = Number(quickAddStake);
@@ -723,13 +754,11 @@ export function BetTrackerPage() {
       notes: quickAddNotes.trim() || undefined,
       selections: mappedSelections,
     };
-    let created: ReturnType<typeof addManualMultiBet>;
+    let created: Awaited<ReturnType<typeof addManualMultiBetShared>>;
     try {
-      created = addManualMultiBet(savePayload);
+      created = await addManualMultiBetShared(savePayload);
     } catch (err) {
-      setQuickAddErrors({
-        selections: err instanceof Error ? err.message : "Save failed unexpectedly. Try again.",
-      });
+      setQuickAddErrors({ selections: err instanceof Error ? err.message : "Save failed unexpectedly. Try again." });
       return;
     }
     if (!created) {
@@ -757,6 +786,10 @@ export function BetTrackerPage() {
         selections: expl.selections,
         selectionRows: Object.keys(selectionRowsFromService).length > 0 ? selectionRowsFromService : undefined,
       });
+      setQuickAddErrors((prev) => ({
+        ...prev,
+        selections: prev.selections || "Save failed (server unavailable).",
+      }));
       return;
     }
     refresh();
@@ -979,6 +1012,20 @@ export function BetTrackerPage() {
           </label>
         </div>
         {message && <p className="bet-tracker-page__message">{message}</p>}
+        {import.meta.env.DEV && (
+          <div className="bet-tracker-page__debug-panel">
+            <div className="bet-tracker-page__debug-stats">
+              <span>Storage: <strong>{debugStorageCount}</strong></span>
+              <span>Backup: <strong>{debugBackupExists ? `yes (${debugBackupCount})` : "no"}</strong></span>
+              <span>Server count: <strong>{debugServerCount ?? "n/a"}</strong></span>
+              <span>Last sync: <strong>{debugLastSync ? new Date(debugLastSync).toLocaleTimeString() : "n/a"}</strong></span>
+              <span>Source: <strong>{debugSyncSource}</strong></span>
+            </div>
+            <button type="button" className="bet-tracker-page__restore-btn" onClick={onRestoreFromBackup}>
+              Restore from Backup
+            </button>
+          </div>
+        )}
         {bets.length === 0 ? (
           <p className="bet-tracker-page__empty">No tracked bets yet. Add a bet from Build Value Bets using the + button, or use Quick Add to start tracking.</p>
         ) : filteredAndSortedBets.length === 0 ? (

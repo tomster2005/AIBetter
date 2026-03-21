@@ -19,7 +19,7 @@ import {
 import { loadHeadToHeadContext } from "../services/headToHeadContextService.js";
 import { saveGeneratedCombosForFixture, getBetPerformanceSummary, resolveStoredCombosForFixture } from "../services/comboPerformanceService.js";
 import { fetchFixtureResolutionData } from "../services/comboResolutionDataService.js";
-import { addTrackedBet, getBookmakers, getBookmakerStats, getUnitSize, settleTrackedBetsForFixture, type TrackedBookmaker } from "../services/betTrackerService.js";
+import { addTrackedBetShared, getBookmakers, getBookmakerStats, getUnitSize, settleTrackedBetsForFixture, type TrackedBookmaker } from "../services/betTrackerService.js";
 import "./BuildValueBetsModal.css";
 
 function getApiOrigin(): string {
@@ -356,7 +356,7 @@ export function BuildValueBetsModal({
     }
   }, []);
 
-  const handleAddTrackedBet = useCallback((combo: BuildCombo) => {
+  const handleAddTrackedBet = useCallback(async (combo: BuildCombo) => {
     if (!fixture) return;
     if (bookmakers.length === 0) {
       setTrackerError("Add a bookmaker first in Bet Tracker.");
@@ -381,7 +381,7 @@ export function BuildValueBetsModal({
       setTrackerError("Odds taken must be greater than 1.");
       return;
     }
-    const record = addTrackedBet({
+    const record = await addTrackedBetShared({
       bookmakerId: trackerBookmakerId,
       stake,
       oddsTaken,
@@ -393,7 +393,7 @@ export function BuildValueBetsModal({
       combo,
     });
     if (!record) {
-      setTrackerError("Could not add bet to tracker.");
+      setTrackerError("Could not add bet to tracker (server unavailable).");
       return;
     }
     setTrackerSuccess("Added to Bet Tracker.");

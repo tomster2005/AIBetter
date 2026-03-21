@@ -542,6 +542,38 @@
   gap: 0.45rem;
 }
 
+.bet-tracker-page__debug-panel {
+  margin: 0.35rem 0 0.65rem;
+  border: 1px dashed #cbd5e1;
+  border-radius: 8px;
+  padding: 0.5rem 0.6rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  background: #f8fafc;
+}
+
+.bet-tracker-page__debug-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  font-size: 0.76rem;
+  color: #334155;
+}
+
+.bet-tracker-page__restore-btn {
+  border: 1px solid #334155;
+  background: #fff;
+  color: #0f172a;
+  border-radius: 6px;
+  padding: 0.3rem 0.55rem;
+  font-size: 0.76rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
 .bet-tracker-page__quick-add-overlay {
   position: fixed;
   inset: 0;

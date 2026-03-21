@@ -7,6 +7,8 @@ const TRACKED_BETS_STORAGE_KEY = "betTracker:trackedBets:v1";
 const BALANCE_ADJUSTMENTS_STORAGE_KEY = "betTracker:balanceAdjustments:v1";
 const UNIT_SIZE_STORAGE_KEY = "bet_tracker_unit_size";
 const SHARED_BETS_API_PATH = "/api/bets";
+const TRACKED_BETS_BACKUP_KEY = "betTracker_backup";
+const LEGACY_TRACKED_BETS_KEYS = ["betTracker:trackedBets", "trackedBets", "bet_tracker_bets", "betTrackerBets"];
 
 /** Shared bets API: same origin when UI is served by Express (`dist/`); local API in dev. */
 const API_BASE = import.meta.env.PROD ? "" : "http://localhost:3001";
@@ -118,6 +120,10 @@ export interface BankrollTimelinePoint {
   date: string;
   balance: number;
 }
+
+let lastSyncTimestamp: number | null = null;
+let lastSyncServerCount: number | null = null;
+let lastSyncSource: "server" | "local-fallback" | "merged" = "local-fallback";
 
 function canUseStorage(): boolean {
   return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
@@ -493,6 +499,16 @@ function readTrackedBets(): TrackedBetRecord[] {
 }
 
 function writeTrackedBets(value: TrackedBetRecord[]): void {
+  if (canUseStorage()) {
+    try {
+      const currentRaw = window.localStorage.getItem(TRACKED_BETS_STORAGE_KEY);
+      if (currentRaw) {
+        window.localStorage.setItem(TRACKED_BETS_BACKUP_KEY, currentRaw);
+      }
+    } catch {
+      // ignore backup write failures
+    }
+  }
   write(TRACKED_BETS_STORAGE_KEY, value);
 }
 
@@ -501,6 +517,17 @@ function sanitizeTrackedBetsList(value: unknown): TrackedBetRecord[] {
   const sanitized = raw.map(sanitizeTrackedBet).filter((b): b is TrackedBetRecord => b != null).map(repairUnits);
   sanitized.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
   return sanitized;
+}
+
+function betFingerprint(record: Pick<TrackedBetRecord, "id" | "matchLabel" | "bookmakerId" | "createdAt" | "oddsTaken" | "stake">): string {
+  return [
+    normalizeText(record.id),
+    normalizeText(record.matchLabel).toLowerCase(),
+    normalizeText(record.bookmakerId),
+    normalizeText(record.createdAt),
+    round2(toNumber(record.oddsTaken, 0)).toFixed(2),
+    round2(toNumber(record.stake, 0)).toFixed(2),
+  ].join("|");
 }
 
 export function replaceTrackedBets(records: unknown): TrackedBetRecord[] {
@@ -522,6 +549,20 @@ async function postSharedBet(record: TrackedBetRecord): Promise<void> {
   }
 }
 
+async function postSharedBetStrict(record: TrackedBetRecord): Promise<boolean> {
+  if (typeof window === "undefined") return false;
+  try {
+    const res = await fetch(getSharedBetsApiUrl(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(record),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 async function putSharedBet(record: TrackedBetRecord): Promise<void> {
   if (typeof window === "undefined") return;
   try {
@@ -532,6 +573,20 @@ async function putSharedBet(record: TrackedBetRecord): Promise<void> {
     });
   } catch {
     // best-effort sync only
+  }
+}
+
+async function putSharedBetStrict(record: TrackedBetRecord): Promise<boolean> {
+  if (typeof window === "undefined") return false;
+  try {
+    const res = await fetch(`${getSharedBetsApiUrl()}/${encodeURIComponent(record.id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(record),
+    });
+    return res.ok;
+  } catch {
+    return false;
   }
 }
 
@@ -546,14 +601,90 @@ async function deleteSharedBetById(id: string): Promise<void> {
   }
 }
 
+async function deleteSharedBetByIdStrict(id: string): Promise<boolean> {
+  if (typeof window === "undefined") return false;
+  try {
+    const res = await fetch(`${getSharedBetsApiUrl()}/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 export async function refreshTrackedBetsFromServer(): Promise<TrackedBetRecord[] | null> {
   if (typeof window === "undefined") return null;
+  const local = readTrackedBets();
   try {
     const res = await fetch(getSharedBetsApiUrl());
-    if (!res.ok) return null;
+    if (!res.ok) {
+      lastSyncTimestamp = Date.now();
+      lastSyncSource = "local-fallback";
+      return local;
+    }
     const json = await res.json();
-    const server = sanitizeTrackedBetsList(json);
-    const local = readTrackedBets();
+    if (import.meta.env.DEV) {
+      console.log("[bet-tracker] server response payload", json);
+      try {
+        const localKeys = Object.keys(window.localStorage);
+        const sessionKeys = typeof window.sessionStorage !== "undefined" ? Object.keys(window.sessionStorage) : [];
+        const localKeySizes = localKeys.map((k) => ({ key: k, size: (window.localStorage.getItem(k) ?? "").length }));
+        console.log("[bet-tracker] storage scan", {
+          localStorageKeys: localKeySizes,
+          sessionStorageKeys: sessionKeys,
+          legacyTrackedBets: LEGACY_TRACKED_BETS_KEYS.map((k) => ({
+            key: k,
+            present: window.localStorage.getItem(k) != null,
+            rawLength: (window.localStorage.getItem(k) ?? "").length,
+          })),
+        });
+      } catch {
+        // ignore dev-only scan failures
+      }
+    }
+    let server = sanitizeTrackedBetsList(json);
+    const serverCount = server.length;
+    const localCount = local.length;
+    lastSyncTimestamp = Date.now();
+    lastSyncServerCount = serverCount;
+
+    if (serverCount === 0) {
+      if (localCount > 0) {
+        let uploaded = 0;
+        for (const b of local) {
+          if (await postSharedBetStrict(b)) uploaded += 1;
+        }
+        if (uploaded > 0) {
+          const verify = await fetch(getSharedBetsApiUrl());
+          if (verify.ok) {
+            server = sanitizeTrackedBetsList(await verify.json());
+          }
+        }
+      }
+      if (server.length === 0) {
+        if (import.meta.env.DEV) console.warn("[bet-tracker] server returned 0 bets, skipping sync");
+        lastSyncSource = "local-fallback";
+        return local;
+      }
+    }
+
+    const missingLocal = local.filter(
+      (lb) => !server.some((sb) => sb.id === lb.id) && !server.some((sb) => betFingerprint(sb) === betFingerprint(lb))
+    );
+    if (missingLocal.length > 0) {
+      if (import.meta.env.DEV) {
+        console.warn("[bet-tracker] partial server data, merging only", {
+          serverCount: server.length,
+          localCount,
+          missingLocalCount: missingLocal.length,
+        });
+      }
+      for (const b of missingLocal) {
+        await postSharedBetStrict(b);
+      }
+    }
+
     const mergedById = new Map<string, TrackedBetRecord>();
     for (const b of local) mergedById.set(b.id, b);
     for (const b of server) {
@@ -564,25 +695,82 @@ export async function refreshTrackedBetsFromServer(): Promise<TrackedBetRecord[]
       }
       const existingTs = Date.parse(existing.updatedAt || existing.createdAt);
       const incomingTs = Date.parse(b.updatedAt || b.createdAt);
-      mergedById.set(
-        b.id,
-        Number.isFinite(incomingTs) && incomingTs >= (Number.isFinite(existingTs) ? existingTs : -Infinity) ? b : existing
-      );
+      mergedById.set(b.id, Number.isFinite(incomingTs) && incomingTs >= (Number.isFinite(existingTs) ? existingTs : -Infinity) ? b : existing);
     }
     const merged = [...mergedById.values()].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
     writeTrackedBets(merged);
+    lastSyncServerCount = server.length;
+    lastSyncSource = server.length >= localCount ? "server" : "merged";
     if (import.meta.env.DEV) {
       console.log("[bet-tracker sync]", {
         serverCount: server.length,
-        localCountBefore: local.length,
+        localCountBefore: localCount,
         mergedCount: merged.length,
-        hiddenOrDropped: Math.max(0, local.length - merged.length),
+        hiddenOrDropped: Math.max(0, localCount - merged.length),
       });
     }
     return merged;
   } catch {
-    return null;
+    lastSyncTimestamp = Date.now();
+    lastSyncSource = "local-fallback";
+    return local;
   }
+}
+
+export function restoreTrackedBetsFromBackup(): { restored: boolean; count: number } {
+  if (!canUseStorage()) return { restored: false, count: 0 };
+  try {
+    const raw = window.localStorage.getItem(TRACKED_BETS_BACKUP_KEY);
+    if (!raw) return { restored: false, count: 0 };
+    const parsed = JSON.parse(raw) as unknown;
+    const next = sanitizeTrackedBetsList(parsed);
+    if (next.length === 0) return { restored: false, count: 0 };
+    write(TRACKED_BETS_STORAGE_KEY, next);
+    return { restored: true, count: next.length };
+  } catch {
+    return { restored: false, count: 0 };
+  }
+}
+
+export function getTrackedBetsDebugState(): {
+  storageCount: number;
+  backupExists: boolean;
+  backupCount: number;
+  serverCount: number | null;
+  lastSyncTimestamp: number | null;
+  syncSource: "server" | "local-fallback" | "merged";
+} {
+  const storageCount = readTrackedBets().length;
+  if (!canUseStorage()) {
+    return {
+      storageCount,
+      backupExists: false,
+      backupCount: 0,
+      serverCount: lastSyncServerCount,
+      lastSyncTimestamp,
+      syncSource: lastSyncSource,
+    };
+  }
+  let backupExists = false;
+  let backupCount = 0;
+  try {
+    const raw = window.localStorage.getItem(TRACKED_BETS_BACKUP_KEY);
+    backupExists = !!raw;
+    if (raw) {
+      const parsed = JSON.parse(raw) as unknown;
+      backupCount = sanitizeTrackedBetsList(parsed).length;
+    }
+  } catch {
+    // ignore
+  }
+  return {
+    storageCount,
+    backupExists,
+    backupCount,
+    serverCount: lastSyncServerCount,
+    lastSyncTimestamp,
+    syncSource: lastSyncSource,
+  };
 }
 
 const MAX_FIXTURES_TO_SETTLE_PER_RUN = 5;
@@ -644,7 +832,7 @@ export async function settleTrackedBetsForFixture(fixtureId: number): Promise<nu
         result,
       });
     }
-    const updated = updateTrackedBetStatus(bet.id, result);
+    const updated = await updateTrackedBetStatusShared(bet.id, result);
     if (updated) {
       settled += 1;
       if (import.meta.env.DEV) {
@@ -951,6 +1139,17 @@ export function addManualMultiBet(input: AddManualMultiBetInput): TrackedBetReco
   return record;
 }
 
+export async function addManualMultiBetShared(input: AddManualMultiBetInput): Promise<TrackedBetRecord | null> {
+  const draft = addManualMultiBet(input);
+  if (!draft) return null;
+  // revert local-first write from legacy helper; shared server is authoritative
+  writeTrackedBets(readTrackedBets().filter((b) => b.id !== draft.id));
+  const saved = await postSharedBetStrict(draft);
+  if (!saved) return null;
+  writeTrackedBets([draft, ...readTrackedBets()]);
+  return draft;
+}
+
 export function addTrackedBet(input: AddTrackedBetInput): TrackedBetRecord | null {
   const bookmakers = readBookmakers();
   const bookmaker = bookmakers.find((b) => b.id === input.bookmakerId);
@@ -1011,6 +1210,17 @@ export function addTrackedBet(input: AddTrackedBetInput): TrackedBetRecord | nul
   return record;
 }
 
+export async function addTrackedBetShared(input: AddTrackedBetInput): Promise<TrackedBetRecord | null> {
+  const draft = addTrackedBet(input);
+  if (!draft) return null;
+  // revert local-first write from legacy helper; shared server is authoritative
+  writeTrackedBets(readTrackedBets().filter((b) => b.id !== draft.id));
+  const saved = await postSharedBetStrict(draft);
+  if (!saved) return null;
+  writeTrackedBets([draft, ...readTrackedBets()]);
+  return draft;
+}
+
 export function updateTrackedBetStatus(id: string, status: TrackedBetStatus): TrackedBetRecord | null {
   const current = readTrackedBets();
   let updatedRecord: TrackedBetRecord | null = null;
@@ -1061,12 +1271,64 @@ export function updateTrackedBetStatus(id: string, status: TrackedBetStatus): Tr
   return updatedRecord;
 }
 
+export async function updateTrackedBetStatusShared(id: string, status: TrackedBetStatus): Promise<TrackedBetRecord | null> {
+  const current = readTrackedBets();
+  const existing = current.find((r) => r.id === id);
+  if (!existing) return null;
+  const now = new Date().toISOString();
+  const hasUnitSizeAtBet = Number.isFinite(existing.unitSizeAtBet as number) && (existing.unitSizeAtBet as number) > 0;
+  const inferredUnitSize =
+    existing.stake > 0 && Number.isFinite(existing.stakeUnits as number) && (existing.stakeUnits as number) > 0
+      ? existing.stake / (existing.stakeUnits as number)
+      : undefined;
+  const canonicalUnitSize = hasUnitSizeAtBet
+    ? (existing.unitSizeAtBet as number)
+    : inferredUnitSize && Number.isFinite(inferredUnitSize) && inferredUnitSize > 0
+      ? inferredUnitSize
+      : undefined;
+  const stableStakeUnits =
+    canonicalUnitSize && canonicalUnitSize > 0
+      ? existing.stake / canonicalUnitSize
+      : Number.isFinite(existing.stakeUnits as number)
+        ? (existing.stakeUnits as number)
+        : 0;
+  const stableReturnUnits =
+    canonicalUnitSize && canonicalUnitSize > 0
+      ? existing.returnAmount / canonicalUnitSize
+      : Number.isFinite(existing.returnUnits as number)
+        ? (existing.returnUnits as number)
+        : 0;
+  const profitUnits = status === "win" ? stableReturnUnits - stableStakeUnits : status === "loss" ? -stableStakeUnits : 0;
+  const updated: TrackedBetRecord = {
+    ...existing,
+    status,
+    updatedAt: now,
+    unitSizeAtBet: canonicalUnitSize != null && canonicalUnitSize > 0 ? Number(canonicalUnitSize.toFixed(6)) : existing.unitSizeAtBet,
+    stakeUnits: Number(stableStakeUnits.toFixed(4)),
+    returnUnits: Number(stableReturnUnits.toFixed(4)),
+    profitUnits: Number(profitUnits.toFixed(4)),
+  };
+  const saved = await putSharedBetStrict(updated);
+  if (!saved) return null;
+  writeTrackedBets(current.map((r) => (r.id === id ? updated : r)));
+  return updated;
+}
+
 export function deleteTrackedBet(id: string): boolean {
   const current = readTrackedBets();
   const next = current.filter((b) => b.id !== id);
   if (next.length === current.length) return false;
   writeTrackedBets(next);
   void deleteSharedBetById(id);
+  return true;
+}
+
+export async function deleteTrackedBetShared(id: string): Promise<boolean> {
+  const current = readTrackedBets();
+  if (!current.some((b) => b.id === id)) return false;
+  const ok = await deleteSharedBetByIdStrict(id);
+  if (!ok) return false;
+  writeTrackedBets(current.filter((b) => b.id !== id));
   return true;
 }
 
