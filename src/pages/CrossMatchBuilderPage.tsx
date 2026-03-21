@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Fixture } from "../types/fixture.js";
 import { getFixtureDateKey } from "../utils/groupFixturesByDate.js";
 import { useLeagueFavourites } from "../hooks/useLeagueFavourites.js";
@@ -17,8 +17,9 @@ import {
   type CrossMatchTeamSingle,
 } from "../lib/crossMatchRanking.js";
 import {
-  buildCrossFixtureCombos,
+  buildCrossFixtureCombosAsync,
   buildStratifiedCrossMatchLegPool,
+  type CrossFixtureComboPipelineMetrics,
 } from "../lib/crossMatchCombos.js";
 import type { BuildCombo, BuildLeg } from "../lib/valueBetBuilder.js";
 import "./CrossMatchBuilderPage.css";
@@ -74,6 +75,25 @@ function fixtureIdFromTaggedLeg(leg: BuildLeg): number | null {
   return m ? Number(m[1]) : null;
 }
 
+function emptyPipelineMetrics(): CrossFixtureComboPipelineMetrics {
+  return {
+    stratifiedPlayerLegsBuilt: 0,
+    stratifiedTeamLegsBuilt: 0,
+    legPoolSize: 0,
+    distinctFixturesInPool: 0,
+    generateCombos: {
+      preEvComboCount: 0,
+      postMinEvComboCount: 0,
+      afterPositiveNearFilterCount: 0,
+      returnedCount: 0,
+      rejectedSameFamilyOverlap: 0,
+    },
+    afterDistinctFixtureFilter: 0,
+    finalRenderedCap: 0,
+    comboSearchTruncated: false,
+  };
+}
+
 export function CrossMatchBuilderPage() {
   const { favouriteIds } = useLeagueFavourites();
   const [fixtures, setFixtures] = useState<Fixture[]>([]);
@@ -101,6 +121,11 @@ export function CrossMatchBuilderPage() {
   const [selectedFixtureIds, setSelectedFixtureIds] = useState<number[]>([]);
   const [fixturePickerExpanded, setFixturePickerExpanded] = useState(false);
   const [fixturePickerShowAll, setFixturePickerShowAll] = useState(false);
+
+  const [crossCombos, setCrossCombos] = useState<BuildCombo[]>([]);
+  const [comboPipelineMetrics, setComboPipelineMetrics] = useState<CrossFixtureComboPipelineMetrics>(emptyPipelineMetrics);
+  const [crossComboBusy, setCrossComboBusy] = useState(false);
+  const comboGenRef = useRef(0);
 
   const fetchRange = useMemo(() => {
     const today = toLondonDateKey(new Date());
@@ -282,26 +307,18 @@ export function CrossMatchBuilderPage() {
     return m;
   }, [eligibleFixtures, scanResult]);
 
-  const { crossCombos, finalComboRenderCount, comboPipelineMetrics } = useMemo(() => {
-    const emptyMetrics = {
-      stratifiedPlayerLegsBuilt: 0,
-      stratifiedTeamLegsBuilt: 0,
-      legPoolSize: 0,
-      distinctFixturesInPool: 0,
-      generateCombos: {
-        preEvComboCount: 0,
-        postMinEvComboCount: 0,
-        afterPositiveNearFilterCount: 0,
-        returnedCount: 0,
-        rejectedSameFamilyOverlap: 0,
-      },
-      afterDistinctFixtureFilter: 0,
-      finalRenderedCap: 0,
-    };
-    if (targetOddsNumber == null) {
-      return { crossCombos: [] as BuildCombo[], finalComboRenderCount: 0, comboPipelineMetrics: emptyMetrics };
+  const finalComboRenderCount = crossCombos.length;
+
+  useEffect(() => {
+    const gen = ++comboGenRef.current;
+    if (!scanResult || targetOddsNumber == null) {
+      setCrossCombos([]);
+      setComboPipelineMetrics(emptyPipelineMetrics());
+      setCrossComboBusy(false);
+      return;
     }
-    const { legs, stratifiedPlayerLegsBuilt, stratifiedTeamLegsBuilt } = buildStratifiedCrossMatchLegPool(
+    setCrossComboBusy(true);
+    const { legs, stratifiedPlayerLegsBuilt, stratifiedTeamLegsBuilt, legsBeforeFinalCap } = buildStratifiedCrossMatchLegPool(
       rankedPlayer,
       rankedTeam,
       marketMode
@@ -315,40 +332,54 @@ export function CrossMatchBuilderPage() {
           rankedTeam: rankedTeam.length,
         });
       }
-      return { crossCombos: [] as BuildCombo[], finalComboRenderCount: 0, comboPipelineMetrics: emptyMetrics };
+      if (gen !== comboGenRef.current) return;
+      setCrossCombos([]);
+      setComboPipelineMetrics(emptyPipelineMetrics());
+      setCrossComboBusy(false);
+      return;
     }
-    const metrics = { ...emptyMetrics };
-    const combos = buildCrossFixtureCombos(legs, targetOddsNumber, {
-      maxCombos: COMBO_RENDER_CAP,
-      maxLegs: 3,
-      metrics,
-      stratifiedLegCounts: { player: stratifiedPlayerLegsBuilt, team: stratifiedTeamLegsBuilt },
-    });
-    const rendered = combos.slice(0, COMBO_RENDER_CAP);
-    metrics.finalRenderedCap = rendered.length;
-    if (import.meta.env.DEV) {
-      const g = metrics.generateCombos;
-      console.log("[cross-match-builder] combo pipeline", {
-        fixturesInScope: eligibleFixtures.length,
-        fixturesSelected: selectedFixtureIds.length,
-        fixturesScanned: fixturesToScan.length,
-        eligibleLegsBeforeSingleFilters: eligibleLegCountBeforeSingleFilters,
-        eligibleLegsAfterSingleFilters: eligibleLegCountAfterFilters,
-        distinctFixturesAmongSingles: distinctSinglesFixtureCount,
-        stratifiedPlayerLegsBuilt,
-        stratifiedTeamLegsBuilt,
-        legPoolSize: metrics.legPoolSize,
-        distinctFixturesInLegPool: metrics.distinctFixturesInPool,
-        combosGeneratedPreDistinct: g.preEvComboCount,
-        generateCombosReturnedAfterRanking: g.returnedCount,
-        combosAfterDistinctFixtureFilter: metrics.afterDistinctFixtureFilter,
-        combosAfterEvAndPositiveNearFilter: g.afterPositiveNearFilterCount,
-        rejectedSameFamilyOverlap: g.rejectedSameFamilyOverlap,
-        finalCombosRendered: rendered.length,
-      });
-    }
-    return { crossCombos: rendered, finalComboRenderCount: rendered.length, comboPipelineMetrics: metrics };
+    const metrics: CrossFixtureComboPipelineMetrics = { ...emptyPipelineMetrics() };
+    void (async () => {
+      try {
+        const combos = await buildCrossFixtureCombosAsync(legs, targetOddsNumber, {
+          maxCombos: COMBO_RENDER_CAP,
+          maxLegs: 3,
+          metrics,
+          stratifiedLegCounts: { player: stratifiedPlayerLegsBuilt, team: stratifiedTeamLegsBuilt },
+          legsBeforeFinalCap,
+        });
+        if (gen !== comboGenRef.current) return;
+        setCrossCombos(combos);
+        setComboPipelineMetrics(metrics);
+        if (import.meta.env.DEV) {
+          const g = metrics.generateCombos;
+          const b = metrics.bounded;
+          console.log("[cross-match-builder] combo pipeline", {
+            fixturesInScope: eligibleFixtures.length,
+            fixturesSelected: selectedFixtureIds.length,
+            fixturesScanned: fixturesToScan.length,
+            eligibleLegsBeforeSingleFilters: eligibleLegCountBeforeSingleFilters,
+            eligibleLegsAfterSingleFilters: eligibleLegCountAfterFilters,
+            distinctFixturesAmongSingles: distinctSinglesFixtureCount,
+            stratifiedPlayerLegsBuilt,
+            stratifiedTeamLegsBuilt,
+            legsBeforeCap: b?.legsInputBeforeFinalCap,
+            legPoolSize: metrics.legPoolSize,
+            distinctFixturesInLegPool: metrics.distinctFixturesInPool,
+            evaluatedLeaves: b?.evaluatedLeaves,
+            combosAfterDistinct: metrics.afterDistinctFixtureFilter,
+            finalCombosRendered: combos.length,
+            comboMs: b?.ms,
+            truncated: metrics.comboSearchTruncated,
+            rejectedSameFamilyOverlap: g.rejectedSameFamilyOverlap,
+          });
+        }
+      } finally {
+        if (gen === comboGenRef.current) setCrossComboBusy(false);
+      }
+    })();
   }, [
+    scanResult,
     targetOddsNumber,
     rankedPlayer,
     rankedTeam,
@@ -629,8 +660,18 @@ export function CrossMatchBuilderPage() {
             {showCombosPrimary ? (
               <>
                 {" "}
-                · {finalComboRenderCount} cross-match combo{finalComboRenderCount === 1 ? "" : "s"} shown
-                {comboPipelineMetrics.legPoolSize > 0 ? (
+                ·{" "}
+                {crossComboBusy
+                  ? "updating cross-match combos…"
+                  : `${finalComboRenderCount} cross-match combo${finalComboRenderCount === 1 ? "" : "s"} shown`}
+                {comboPipelineMetrics.bounded && comboPipelineMetrics.legPoolSize > 0 && !crossComboBusy ? (
+                  <>
+                    {" "}
+                    (legs capped {comboPipelineMetrics.bounded.legsInputBeforeFinalCap}→
+                    {comboPipelineMetrics.bounded.legsAfterFinalCap} · evaluated{" "}
+                    {comboPipelineMetrics.bounded.evaluatedLeaves} · {comboPipelineMetrics.bounded.ms.toFixed(0)}ms)
+                  </>
+                ) : comboPipelineMetrics.legPoolSize > 0 && !crossComboBusy ? (
                   <>
                     {" "}
                     (pool {comboPipelineMetrics.legPoolSize} legs, {comboPipelineMetrics.distinctFixturesInPool} fixtures)
@@ -721,10 +762,17 @@ export function CrossMatchBuilderPage() {
                   2–3 legs, each from a different fixture; ordered by closeness to target odds, then EV. Uses the same
                   deterministic combo rules as Build Value Bets (including distinct-fixture enforcement here).
                 </p>
+                {comboPipelineMetrics.comboSearchTruncated && !crossComboBusy ? (
+                  <p className="cross-match-page__speed-note">Showing best combinations (optimised for speed)</p>
+                ) : null}
                 {distinctSinglesFixtureCount < 2 ? (
                   <p className="cross-match-page__empty cross-match-page__empty--prominent">
                     Cross-match combos need legs from at least two different fixtures. Select more matches or relax filters
                     (odds, edge, bookmaker, quality).
+                  </p>
+                ) : crossComboBusy ? (
+                  <p className="cross-match-page__hint" role="status">
+                    Building cross-match combos (bounded search, non-blocking)…
                   </p>
                 ) : crossCombos.length === 0 ? (
                   <p className="cross-match-page__empty cross-match-page__empty--prominent">

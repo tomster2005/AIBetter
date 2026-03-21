@@ -213,6 +213,13 @@
   border: 1px solid #e5e7eb;
 }
 
+.cross-match-page__speed-note {
+  font-size: 0.78rem;
+  color: #4f46e5;
+  margin: 0 0 0.65rem 0;
+  font-weight: 500;
+}
+
 .cross-match-page__section-title {
   margin: 1.25rem 0 0.35rem 0;
   font-size: 1.05rem;

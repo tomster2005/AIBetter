@@ -1,12 +1,12 @@
 /**
- * Cross-fixture combo helpers: tag legs with fixture scope so generateCombos
- * can run on a merged pool without false same-player correlation, then keep only
- * combos whose legs come from distinct fixtures.
+ * Cross-fixture combo helpers: tag legs with fixture scope, cap pools aggressively,
+ * then search combos with bounded evaluation, pruning, and async yields (no UI freeze).
  */
 
 import {
-  generateCombos,
   filterPlayerCandidates,
+  buildComboFromSelectedLegs,
+  hasSameFamilyOverlap,
   type BuildCombo,
   type BuildLeg,
   type GenerateCombosMetrics,
@@ -15,6 +15,17 @@ import type { CrossMatchPlayerSingle, CrossMatchTeamSingle } from "./crossMatchR
 import { valueBetRowToCandidate } from "./crossMatchRanking.js";
 
 export type CrossMatchComboMarketMode = "player" | "team" | "both";
+
+/** Hard limits — cross-match only (single-fixture modal unchanged). */
+const CROSS_STRATIFY_MAX_PER_FIXTURE = 3;
+const CROSS_STRATIFY_MAX_PLAYER = 48;
+const CROSS_STRATIFY_MAX_TEAM = 48;
+const CROSS_LEG_POOL_GLOBAL_MAX = 40;
+const CROSS_LEGS_PER_FIXTURE_MAX = 3;
+
+const CROSS_MAX_COMBOS_EVALUATED = 8000;
+const CROSS_COMBO_TIME_LIMIT_MS = 150;
+const CROSS_YIELD_EVERY_STEPS = 200;
 
 function marketFamilyWithFixture(leg: BuildLeg, fixtureId: number): string {
   const prefix = `xf:${fixtureId}:`;
@@ -46,19 +57,12 @@ export function extractFixtureIdsFromCombo(combo: BuildCombo): Set<number> {
   return ids;
 }
 
-/**
- * True when each leg maps to a different fixture (cross-match), using xf:{id}: tags.
- */
 export function isDistinctFixtureCombo(combo: BuildCombo): boolean {
   const n = combo.legs.length;
   if (n < 2) return false;
   return extractFixtureIdsFromCombo(combo).size === n;
 }
 
-/**
- * Round-robin across fixtures so the combo pool is not dominated by one match’s top legs
- * (which makes distinct-fixture combos impossible).
- */
 export function stratifyPreRankedByFixture<T>(
   globallyRanked: T[],
   getFixtureId: (t: T) => number,
@@ -98,12 +102,58 @@ export function stratifyPreRankedByFixture<T>(
   return out;
 }
 
-const CROSS_MAX_PLAYER_LEGS = 72;
-const CROSS_MAX_TEAM_LEGS = 48;
-const CROSS_MAX_PER_FIXTURE_PLAYER = 12;
-const CROSS_MAX_PER_FIXTURE_TEAM = 10;
-const CROSS_LEG_POOL_CAP = 96;
-const CROSS_RAW_COMBO_MULTIPLIER = 10;
+function legConfidenceScore(leg: BuildLeg): number {
+  const pq = leg.playerQuality;
+  if (pq) {
+    return pq.sampleReliability + pq.qualityScore + pq.recencyScore * 0.5;
+  }
+  return leg.score * 0.25;
+}
+
+/** Deterministic: edge → score → confidence → id. */
+export function compareLegsForCrossMatchSearch(a: BuildLeg, b: BuildLeg): number {
+  const edgeA = Number.isFinite(a.edge as number) ? (a.edge as number) : -999;
+  const edgeB = Number.isFinite(b.edge as number) ? (b.edge as number) : -999;
+  if (edgeA !== edgeB) return edgeB - edgeA;
+  if (a.score !== b.score) return b.score - a.score;
+  const ca = legConfidenceScore(a);
+  const cb = legConfidenceScore(b);
+  if (ca !== cb) return cb - ca;
+  return a.id.localeCompare(b.id);
+}
+
+/**
+ * After stratified merge: at most `maxPerFixture` legs per fixture, `maxTotal` overall (greedy on sort order).
+ */
+export function applyPerFixtureAndGlobalLegCap(legs: BuildLeg[], maxPerFixture: number, maxTotal: number): BuildLeg[] {
+  const sorted = [...legs].sort(compareLegsForCrossMatchSearch);
+  const countByFix = new Map<number, number>();
+  const out: BuildLeg[] = [];
+  for (const leg of sorted) {
+    const m = /^xf:(\d+):/.exec(leg.marketFamily);
+    const fid = m ? Number(m[1]) : -1;
+    if (fid < 0) continue;
+    const c = countByFix.get(fid) ?? 0;
+    if (c >= maxPerFixture) continue;
+    countByFix.set(fid, c + 1);
+    out.push(leg);
+    if (out.length >= maxTotal) break;
+  }
+  return out.sort(compareLegsForCrossMatchSearch);
+}
+
+export interface CrossMatchBoundedRunMetrics {
+  legsInputBeforeFinalCap: number;
+  legsAfterFinalCap: number;
+  evaluatedLeaves: number;
+  returnedAfterDistinct: number;
+  returnedFinal: number;
+  ms: number;
+  truncatedEval: boolean;
+  truncatedTime: boolean;
+  steps: number;
+  rejectedSameFamilyOverlap: number;
+}
 
 export interface CrossFixtureComboPipelineMetrics {
   stratifiedPlayerLegsBuilt: number;
@@ -113,13 +163,200 @@ export interface CrossFixtureComboPipelineMetrics {
   generateCombos: GenerateCombosMetrics;
   afterDistinctFixtureFilter: number;
   finalRenderedCap: number;
+  bounded?: CrossMatchBoundedRunMetrics;
+  comboSearchTruncated: boolean;
+}
+
+function finalizeRankedCombos(combos: BuildCombo[], maxCombos: number, minComboEV: number): BuildCombo[] {
+  const evFiltered = combos.filter((c) => c.comboEV >= minComboEV);
+  const baseCombos = evFiltered.length > 0 ? evFiltered : combos;
+  const DISTANCE_EDGE_WINDOW = 0.1;
+  const nearbyPositiveExists = baseCombos.some(
+    (c) =>
+      c.comboEV > 0 &&
+      baseCombos.some(
+        (other) =>
+          other !== c &&
+          other.comboEV < 0 &&
+          Math.abs(other.distanceFromTarget - c.distanceFromTarget) <= DISTANCE_EDGE_WINDOW
+      )
+  );
+  const rankedSource = nearbyPositiveExists ? baseCombos.filter((c) => c.comboEV >= 0) : baseCombos;
+  rankedSource.sort((a, b) => {
+    if (a.distanceFromTarget !== b.distanceFromTarget) return a.distanceFromTarget - b.distanceFromTarget;
+    if (a.comboEV !== b.comboEV) return b.comboEV - a.comboEV;
+    if (a.comboScore !== b.comboScore) return b.comboScore - a.comboScore;
+    return (a.fingerprint ?? "").localeCompare(b.fingerprint ?? "");
+  });
+  return rankedSource.slice(0, maxCombos);
+}
+
+function yieldToMain(): Promise<void> {
+  return new Promise((r) => setTimeout(r, 0));
+}
+
+/**
+ * Bounded async search: max evaluated leaves, time limit, yield every N steps, branch pruning.
+ * Deterministic for a fixed leg order and caps; time limit may truncate earlier on slow devices.
+ */
+export async function generateCrossMatchCombosBoundedAsync(
+  legs: BuildLeg[],
+  targetOdds: number,
+  options: {
+    maxCombos?: number;
+    maxLegs?: number;
+    minComboEV?: number;
+    maxEvaluated?: number;
+    timeLimitMs?: number;
+    yieldEvery?: number;
+    metrics?: CrossMatchBoundedRunMetrics;
+    /** Leg count before final per-fixture/global cap (cross-match pool only). */
+    legsInputBeforeCap?: number;
+  } = {}
+): Promise<BuildCombo[]> {
+  const maxCombos = options.maxCombos ?? 20;
+  const maxLegs = Math.min(options.maxLegs ?? 3, 3);
+  const maxEvaluated = options.maxEvaluated ?? CROSS_MAX_COMBOS_EVALUATED;
+  const timeLimitMs = options.timeLimitMs ?? CROSS_COMBO_TIME_LIMIT_MS;
+  const yieldEvery = options.yieldEvery ?? CROSS_YIELD_EVERY_STEPS;
+  const minComboEV = options.minComboEV ?? 0;
+
+  if (legs.length < 2 || !Number.isFinite(targetOdds) || targetOdds <= 1) {
+    return [];
+  }
+
+  const validOdds = legs.map((l) => l.odds).filter((o) => o > 1 && Number.isFinite(o));
+  const globalMaxO = validOdds.length ? Math.max(...validOdds) : 15;
+  const globalMinO = validOdds.length ? Math.min(...validOdds) : 1.01;
+
+  const combos: BuildCombo[] = [];
+  const used = new Set<string>();
+  let rejectedOverlap = 0;
+  let evaluatedLeaves = 0;
+  let steps = 0;
+  let truncatedEval = false;
+  let truncatedTime = false;
+  const t0 = performance.now();
+
+  const indices: number[] = [];
+
+  async function maybeYield(): Promise<void> {
+    steps++;
+    if (yieldEvery > 0 && steps % yieldEvery === 0) {
+      await yieldToMain();
+    }
+  }
+
+  function hitTimeLimit(): boolean {
+    if (performance.now() - t0 > timeLimitMs) {
+      truncatedTime = true;
+      return true;
+    }
+    return false;
+  }
+
+  function partialProduct(idxs: number[]): number {
+    let p = 1;
+    for (const i of idxs) p *= legs[i]!.odds;
+    return p;
+  }
+
+  function prunePartial(curProduct: number, need: number): boolean {
+    if (need <= 0) return false;
+    if (curProduct > Math.max(targetOdds * 60, 8000)) return true;
+    const maxReach = curProduct * Math.pow(globalMaxO, need);
+    if (maxReach < targetOdds * 0.82) return true;
+    const minReach = curProduct * Math.pow(globalMinO, need);
+    if (minReach > Math.max(targetOdds * 45, 5000)) return true;
+    return false;
+  }
+
+  async function recurse(start: number, n: number): Promise<void> {
+    await maybeYield();
+    if (hitTimeLimit()) return;
+    if (evaluatedLeaves >= maxEvaluated) {
+      truncatedEval = true;
+      return;
+    }
+
+    const depth = indices.length;
+    if (depth === n) {
+      evaluatedLeaves++;
+      const selected = indices.map((i) => legs[i]!);
+      if (hasSameFamilyOverlap(selected)) {
+        rejectedOverlap++;
+        return;
+      }
+      const key = indices.slice().sort((a, b) => a - b).join(",");
+      if (!used.has(key)) {
+        used.add(key);
+        combos.push(buildComboFromSelectedLegs(selected, targetOdds));
+      }
+      return;
+    }
+
+    const cur = partialProduct(indices);
+    const need = n - depth;
+    if (prunePartial(cur, need)) return;
+
+    for (let i = start; i < legs.length; i++) {
+      if (hitTimeLimit() || evaluatedLeaves >= maxEvaluated) {
+        if (evaluatedLeaves >= maxEvaluated) truncatedEval = true;
+        return;
+      }
+      indices.push(i);
+      const nextCur = cur * legs[i]!.odds;
+      const nextNeed = n - depth - 1;
+      if (!prunePartial(nextCur, nextNeed)) {
+        await recurse(i + 1, n);
+      }
+      indices.pop();
+    }
+  }
+
+  for (let n = 2; n <= maxLegs; n++) {
+    indices.length = 0;
+    if (hitTimeLimit() || evaluatedLeaves >= maxEvaluated) break;
+    await recurse(0, n);
+  }
+
+  const ms = performance.now() - t0;
+  const distinct = combos.filter(isDistinctFixtureCombo);
+  const finalized = finalizeRankedCombos(distinct, maxCombos, minComboEV);
+
+  if (options.metrics) {
+    options.metrics.legsInputBeforeFinalCap = options.legsInputBeforeCap ?? legs.length;
+    options.metrics.legsAfterFinalCap = legs.length;
+    options.metrics.evaluatedLeaves = evaluatedLeaves;
+    options.metrics.returnedAfterDistinct = distinct.length;
+    options.metrics.returnedFinal = finalized.length;
+    options.metrics.ms = ms;
+    options.metrics.truncatedEval = truncatedEval;
+    options.metrics.truncatedTime = truncatedTime;
+    options.metrics.steps = steps;
+    options.metrics.rejectedSameFamilyOverlap = rejectedOverlap;
+  }
+
+  if (import.meta.env.DEV) {
+    console.log(
+      `[cross-match] combos: evaluated=${evaluatedLeaves}, returned=${finalized.length}, time=${ms.toFixed(0)}ms`,
+      { truncatedEval, truncatedTime, distinct: distinct.length, pool: legs.length }
+    );
+  }
+
+  return finalized;
 }
 
 export function buildStratifiedCrossMatchLegPool(
   rankedPlayers: CrossMatchPlayerSingle[],
   rankedTeams: CrossMatchTeamSingle[],
   marketMode: CrossMatchComboMarketMode
-): { legs: BuildLeg[]; stratifiedPlayerLegsBuilt: number; stratifiedTeamLegsBuilt: number } {
+): {
+  legs: BuildLeg[];
+  stratifiedPlayerLegsBuilt: number;
+  stratifiedTeamLegsBuilt: number;
+  legsBeforeFinalCap: number;
+} {
   const out: BuildLeg[] = [];
   let stratifiedPlayerLegsBuilt = 0;
   let stratifiedTeamLegsBuilt = 0;
@@ -128,8 +365,8 @@ export function buildStratifiedCrossMatchLegPool(
     const pSlice = stratifyPreRankedByFixture(
       rankedPlayers,
       (r) => r.fixtureId,
-      CROSS_MAX_PER_FIXTURE_PLAYER,
-      CROSS_MAX_PLAYER_LEGS
+      CROSS_STRATIFY_MAX_PER_FIXTURE,
+      CROSS_STRATIFY_MAX_PLAYER
     );
     for (const row of pSlice) {
       const legs = filterPlayerCandidates([valueBetRowToCandidate(row)], null);
@@ -145,8 +382,8 @@ export function buildStratifiedCrossMatchLegPool(
     const tSlice = stratifyPreRankedByFixture(
       rankedTeams,
       (t) => t.fixtureId,
-      CROSS_MAX_PER_FIXTURE_TEAM,
-      CROSS_MAX_TEAM_LEGS
+      CROSS_STRATIFY_MAX_PER_FIXTURE,
+      CROSS_STRATIFY_MAX_TEAM
     );
     for (const t of tSlice) {
       out.push(tagLegForCrossFixture(t.leg, t.fixtureId));
@@ -154,48 +391,52 @@ export function buildStratifiedCrossMatchLegPool(
     }
   }
 
-  out.sort((a, b) => b.score - a.score);
-  const legs = out.slice(0, CROSS_LEG_POOL_CAP);
-  return { legs, stratifiedPlayerLegsBuilt, stratifiedTeamLegsBuilt };
+  const legsBeforeFinalCap = out.length;
+  const legs = applyPerFixtureAndGlobalLegCap(out, CROSS_LEGS_PER_FIXTURE_MAX, CROSS_LEG_POOL_GLOBAL_MAX);
+  return { legs, stratifiedPlayerLegsBuilt, stratifiedTeamLegsBuilt, legsBeforeFinalCap };
 }
 
 /**
- * Build 2–3 leg combos near target odds from a merged, tagged leg pool.
- * Filters to genuine cross-match combos only (each leg from a different fixture).
+ * Async cross-match combo pipeline (distinct fixtures only). Does not call sync `generateCombos`.
  */
-export function buildCrossFixtureCombos(
+export async function buildCrossFixtureCombosAsync(
   legs: BuildLeg[],
   targetOdds: number,
   options: {
     maxCombos?: number;
     maxLegs?: number;
-    rawCandidateMultiplier?: number;
     metrics?: CrossFixtureComboPipelineMetrics;
-    /** Filled into `metrics` when present (from {@link buildStratifiedCrossMatchLegPool}). */
     stratifiedLegCounts?: { player: number; team: number };
+    legsBeforeFinalCap?: number;
+    maxEvaluated?: number;
+    timeLimitMs?: number;
   } = {}
-): BuildCombo[] {
+): Promise<BuildCombo[]> {
   if (!Number.isFinite(targetOdds) || targetOdds <= 1) return [];
-  const maxCombos = options.maxCombos ?? 36;
-  const maxLegs = options.maxLegs ?? 3;
-  const mult = options.rawCandidateMultiplier ?? CROSS_RAW_COMBO_MULTIPLIER;
+  const maxCombos = options.maxCombos ?? 20;
 
-  const genMetrics: GenerateCombosMetrics = {
-    preEvComboCount: 0,
-    postMinEvComboCount: 0,
-    afterPositiveNearFilterCount: 0,
-    returnedCount: 0,
+  const bounded: CrossMatchBoundedRunMetrics = {
+    legsInputBeforeFinalCap: options.legsBeforeFinalCap ?? legs.length,
+    legsAfterFinalCap: legs.length,
+    evaluatedLeaves: 0,
+    returnedAfterDistinct: 0,
+    returnedFinal: 0,
+    ms: 0,
+    truncatedEval: false,
+    truncatedTime: false,
+    steps: 0,
     rejectedSameFamilyOverlap: 0,
   };
 
-  const raw = generateCombos(legs, targetOdds, {
-    maxCombos: maxCombos * mult,
-    maxLegs,
+  const sliced = await generateCrossMatchCombosBoundedAsync(legs, targetOdds, {
+    maxCombos,
+    maxLegs: options.maxLegs ?? 3,
     minComboEV: 0,
-    metrics: genMetrics,
+    maxEvaluated: options.maxEvaluated,
+    timeLimitMs: options.timeLimitMs,
+    metrics: bounded,
+    legsInputBeforeCap: options.legsBeforeFinalCap,
   });
-  const distinct = raw.filter(isDistinctFixtureCombo);
-  const sliced = distinct.slice(0, maxCombos);
 
   if (options.metrics) {
     const poolFixtures = new Set<number>();
@@ -209,22 +450,17 @@ export function buildCrossFixtureCombos(
     }
     options.metrics.legPoolSize = legs.length;
     options.metrics.distinctFixturesInPool = poolFixtures.size;
-    options.metrics.generateCombos = genMetrics;
-    options.metrics.afterDistinctFixtureFilter = distinct.length;
+    options.metrics.afterDistinctFixtureFilter = bounded.returnedAfterDistinct;
     options.metrics.finalRenderedCap = sliced.length;
-  }
-
-  if (import.meta.env.DEV) {
-    console.log("[cross-match-combos] pipeline", {
-      legPoolSize: legs.length,
-      distinctFixturesInPool: options.metrics?.distinctFixturesInPool,
-      preEvCombos: genMetrics.preEvComboCount,
-      postMinEvCombos: genMetrics.postMinEvComboCount,
-      afterPositiveNearFilter: genMetrics.afterPositiveNearFilterCount,
-      generateCombosReturned: genMetrics.returnedCount,
-      afterDistinctFixture: distinct.length,
-      finalSlice: sliced.length,
-    });
+    options.metrics.bounded = bounded;
+    options.metrics.comboSearchTruncated = bounded.truncatedEval || bounded.truncatedTime;
+    options.metrics.generateCombos = {
+      preEvComboCount: bounded.evaluatedLeaves,
+      postMinEvComboCount: bounded.evaluatedLeaves,
+      afterPositiveNearFilterCount: bounded.returnedAfterDistinct,
+      returnedCount: sliced.length,
+      rejectedSameFamilyOverlap: bounded.rejectedSameFamilyOverlap,
+    };
   }
 
   return sliced;

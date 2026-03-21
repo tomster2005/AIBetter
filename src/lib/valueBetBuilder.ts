@@ -2452,9 +2452,50 @@ function buildComboExplanation(
 }
 
 /** Reject combos that contain more than one leg from the same market family (overlap). */
-function hasSameFamilyOverlap(legs: BuildLeg[]): boolean {
+export function hasSameFamilyOverlap(legs: BuildLeg[]): boolean {
   const families = new Set(legs.map((l) => l.marketFamily));
   return families.size < legs.length;
+}
+
+/** Build a single combo record from legs (shared by single-fixture and cross-match generators). */
+export function buildComboFromSelectedLegs(selected: BuildLeg[], targetOdds: number): BuildCombo {
+  const combinedOdds = selected.reduce((acc, leg) => acc * leg.odds, 1);
+  const distanceFromTarget = Math.abs(combinedOdds - targetOdds);
+  const comboScore = selected.reduce((s, leg) => s + leg.score, 0);
+  const comboEdge = selected.reduce((s, leg) => s + (Number.isFinite(leg.edge as number) ? (leg.edge as number) : 0), 0);
+  const combinedProbRaw = selected.reduce((acc, leg) => {
+    const fallbackProb = leg.odds > 0 ? 1 / leg.odds : 0;
+    const legProb = Number.isFinite(leg.probability as number) ? (leg.probability as number) : fallbackProb;
+    return acc * clamp01(legProb);
+  }, 1);
+  let correlationPenalty = 0;
+  for (let i = 0; i < selected.length; i++) {
+    for (let j = i + 1; j < selected.length; j++) {
+      correlationPenalty += getCorrelationPenalty(selected[i]!, selected[j]!);
+    }
+  }
+  const boundedPenalty = Math.max(0, Math.min(0.9, correlationPenalty));
+  const combinedProb = clamp01(combinedProbRaw * (1 - boundedPenalty));
+  const impliedProb = combinedOdds > 0 ? 1 / combinedOdds : 0;
+  const comboEV = combinedProb - impliedProb;
+  const comboEVPercent = combinedProb * combinedOdds - 1;
+  const kellyStakePct = computeKellyStakePct(combinedOdds, combinedProb);
+  const adjustedComboEdge = comboEdge * (1 - boundedPenalty);
+  const fingerprint = comboFingerprintFromLegs(selected);
+  return {
+    legs: selected,
+    fingerprint,
+    combinedOdds,
+    distanceFromTarget,
+    comboScore,
+    comboEdge,
+    adjustedComboEdge,
+    combinedProb,
+    impliedProb,
+    comboEV,
+    comboEVPercent,
+    kellyStakePct,
+  };
 }
 
 /** Strip cross-match `xf:{fixtureId}:` prefix so team-market correlation matches tagged legs. */
@@ -2541,46 +2582,10 @@ export function generateCombos(
           rejectedOverlap += 1;
           return;
         }
-        const combinedOdds = selected.reduce((acc, leg) => acc * leg.odds, 1);
-        const distanceFromTarget = Math.abs(combinedOdds - targetOdds);
-        const comboScore = selected.reduce((s, leg) => s + leg.score, 0);
-        const comboEdge = selected.reduce((s, leg) => s + (Number.isFinite(leg.edge as number) ? (leg.edge as number) : 0), 0);
-        const combinedProbRaw = selected.reduce((acc, leg) => {
-          const fallbackProb = leg.odds > 0 ? 1 / leg.odds : 0;
-          const legProb = Number.isFinite(leg.probability as number) ? (leg.probability as number) : fallbackProb;
-          return acc * clamp01(legProb);
-        }, 1);
-        let correlationPenalty = 0;
-        for (let i = 0; i < selected.length; i++) {
-          for (let j = i + 1; j < selected.length; j++) {
-            correlationPenalty += getCorrelationPenalty(selected[i]!, selected[j]!);
-          }
-        }
-        const boundedPenalty = Math.max(0, Math.min(0.9, correlationPenalty));
-        const combinedProb = clamp01(combinedProbRaw * (1 - boundedPenalty));
-        const impliedProb = combinedOdds > 0 ? 1 / combinedOdds : 0;
-        const comboEV = combinedProb - impliedProb;
-        const comboEVPercent = combinedProb * combinedOdds - 1;
-        const kellyStakePct = computeKellyStakePct(combinedOdds, combinedProb);
-        const adjustedComboEdge = comboEdge * (1 - boundedPenalty);
         const key = indices.slice().sort((a, b) => a - b).join(",");
         if (!used.has(key)) {
           used.add(key);
-          const fingerprint = comboFingerprintFromLegs(selected);
-          combos.push({
-            legs: selected,
-            fingerprint,
-            combinedOdds,
-            distanceFromTarget,
-            comboScore,
-            comboEdge,
-            adjustedComboEdge,
-            combinedProb,
-            impliedProb,
-            comboEV,
-            comboEVPercent,
-            kellyStakePct,
-          });
+          combos.push(buildComboFromSelectedLegs(selected, targetOdds));
         }
         return;
       }
