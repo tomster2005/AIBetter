@@ -52,6 +52,25 @@ function toNum(v: unknown): number {
   return 0;
 }
 
+/**
+ * Lineup detail values: never coerce missing/null to 0 — that produced false leg losses on Over lines
+ * when the stat was absent from the API payload.
+ */
+function toOptionalStatNumber(v: unknown): number | undefined {
+  if (v == null) return undefined;
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string") {
+    const t = v.trim();
+    if (t === "") return undefined;
+    const n = parseFloat(t.replace(",", "."));
+    return Number.isFinite(n) ? n : undefined;
+  }
+  if (v && typeof v === "object" && "total" in (v as object)) {
+    return toOptionalStatNumber((v as { total?: unknown }).total);
+  }
+  return undefined;
+}
+
 function unwrapArray(value: unknown): unknown[] {
   if (Array.isArray(value)) return value;
   if (value && typeof value === "object" && "data" in (value as object)) {
@@ -201,8 +220,9 @@ export function parseResolutionPlayerStats(details: unknown): ResolutionPlayerSt
     for (const d of allDetails) {
       const detail = d as { type?: { name?: string }; value?: unknown };
       const n = normalizeDetailName(detail?.type?.name ?? "");
-      const v = toNum(detail?.value);
       if (!n) continue;
+      const v = toOptionalStatNumber(detail?.value);
+      if (v === undefined) continue;
       if (n === "shots total" || n === "total shots" || n === "shots") stats.shots = v;
       else if (n === "shots on target" || n === "shots on goal" || n === "on target shots") stats.shotsOnTarget = v;
       else if (n.includes("foul") && (n.includes("commit") || n.includes("committed") || n === "fouls")) stats.foulsCommitted = v;

@@ -134,7 +134,8 @@ export function BetHistoryPage() {
       const resolvedThisPass = await resolveUnfinishedCombosFromFixtures();
       if (import.meta.env.DEV) {
         console.log("[bet-history] resolveUnfinishedCombosFromFixtures done", {
-          combosResolvedThisPass: resolvedThisPass,
+          storageWritesThisPass: resolvedThisPass,
+          note: "includes new settlements + corrected win/loss when logic or stats change",
         });
       }
       if (!cancelled) refresh();
