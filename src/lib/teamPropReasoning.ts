@@ -308,6 +308,7 @@ const H2H_STRONG_MIN_N = 3;
  * - 4/5 Como & 3/5 Pisa over 1.5
  * - H2H (5): ~2.8 avg, 4/5 over 1.5
  * - H2H (2): limited sample, 1/2 over 1.5
+ * (Never emit a bare `H2H (n)` with no stat.)
  */
 
 const STRUCTURED_TEAM_MARKETS = new Set([
@@ -436,7 +437,24 @@ function hitRateTotalsLine(
   return null;
 }
 
-/** One H2H line for total-goals markets; always shown when sampleSize > 0 (never hidden as redundant). */
+/** O/U hit rate from H2H aggregates when recent totals array is missing. */
+function h2hGoalsLineRatePart(
+  h2h: HeadToHeadFixtureContext,
+  lineVal: number,
+  outcome: string
+): string | null {
+  const rows = h2h.goalsLineCounts;
+  if (!Array.isArray(rows) || !Number.isFinite(lineVal)) return null;
+  const row = rows.find((x) => Math.abs(x.line - lineVal) < EPS);
+  if (!row || row.sampleSize <= 0) return null;
+  if (outcome === "Over") return `${row.over}/${row.sampleSize} over ${lineVal}`;
+  if (outcome === "Under") return `${row.under}/${row.sampleSize} under ${lineVal}`;
+  return `${row.over}/${row.sampleSize} over ${lineVal}`;
+}
+
+/**
+ * One H2H line for total-goals markets. Never returns a bare `H2H (n)` — needs avg and/or O-U rate from real data.
+ */
 function formatH2hTotalsLine(leg: TeamLegReasoningTarget, h2h: HeadToHeadFixtureContext): string | null {
   const n = h2h.sampleSize ?? 0;
   if (n <= 0) return null;
@@ -454,6 +472,12 @@ function formatH2hTotalsLine(leg: TeamLegReasoningTarget, h2h: HeadToHeadFixture
     else if (leg.outcome === "Under") ratePart = `${ou}/${r.length} under ${lineVal}`;
     else ratePart = `${oh}/${r.length} over ${lineVal}`;
   }
+  if (ratePart == null && hasLine) {
+    ratePart = h2hGoalsLineRatePart(h2h, lineVal, leg.outcome);
+  }
+
+  const hasStat = ag != null || ratePart != null;
+  if (!hasStat) return null;
 
   if (weak) {
     if (ag != null && ratePart) {
@@ -465,7 +489,7 @@ function formatH2hTotalsLine(leg: TeamLegReasoningTarget, h2h: HeadToHeadFixture
     if (ag != null) {
       return `H2H (${n}): ~${fmt1(ag)} avg goals, limited sample`;
     }
-    return `H2H (${n}): limited sample`;
+    return null;
   }
 
   if (ag != null && ratePart) {
@@ -477,7 +501,7 @@ function formatH2hTotalsLine(leg: TeamLegReasoningTarget, h2h: HeadToHeadFixture
   if (ag != null) {
     return `H2H (${n}): ~${fmt1(ag)} avg goals`;
   }
-  return `H2H (${n})`;
+  return null;
 }
 
 function venueSplitSupportLine(
@@ -518,11 +542,12 @@ function buildCompressedTotalGoalsLines(
   return mergeWithReservedH2h([primary, hit, venue], h2hLine);
 }
 
+/** Needs yes/count or BTTS rate — never a bare `H2H (n)`. */
 function formatH2hBttsLine(h2h: HeadToHeadFixtureContext): string | null {
   const n = h2h.sampleSize ?? 0;
   if (n <= 0) return null;
   const weak = n < H2H_STRONG_MIN_N;
-  const denom = h2h.bttsSampleSize ?? n;
+  const denom = h2h.bttsSampleSize ?? 0;
   const yes = h2h.bttsYesCount;
   if (yes != null && typeof yes === "number" && denom > 0) {
     if (weak) {
@@ -530,13 +555,13 @@ function formatH2hBttsLine(h2h: HeadToHeadFixtureContext): string | null {
     }
     return `H2H (${n}): ${yes}/${denom} BTTS`;
   }
-  if (h2h.bttsRate != null) {
+  if (h2h.bttsRate != null && Number.isFinite(h2h.bttsRate)) {
     if (weak) {
-      return `H2H (${n}): ${pct0(h2h.bttsRate)} BTTS rate, limited sample`;
+      return `H2H (${n}): limited sample, ${pct0(h2h.bttsRate)} BTTS rate`;
     }
-    return `H2H (${n}): ${pct0(h2h.bttsRate)} BTTS`;
+    return `H2H (${n}): ${pct0(h2h.bttsRate)} BTTS rate`;
   }
-  return weak ? `H2H (${n}): limited sample` : `H2H (${n})`;
+  return null;
 }
 
 function buildCompressedBttsLines(
@@ -609,15 +634,41 @@ function buildCompressedMatchResultLines(
   return mergeWithReservedH2h([l1, l2], h2hLine);
 }
 
+/** W/D/L counts or win/draw/loss rates — never `—` placeholders only, never bare `H2H (n)`. */
 function formatH2hResultsLine(h2h: HeadToHeadFixtureContext, hn: string, an: string): string | null {
   let n = h2h.resultSampleSize ?? 0;
   if (n <= 0) n = h2h.sampleSize ?? 0;
   if (n <= 0) return null;
   const weak = n < H2H_STRONG_MIN_N;
+
   const w1 = h2h.team1WinCount;
   const w2 = h2h.team2WinCount;
   const dr = h2h.drawCount;
-  const body = `${hn} ${w1 ?? "—"}, Draw ${dr ?? "—"}, ${an} ${w2 ?? "—"}`;
+  const haveAllCounts =
+    typeof w1 === "number" && typeof w2 === "number" && typeof dr === "number";
+
+  const r1 = h2h.team1WinRate;
+  const rd = h2h.drawRate;
+  const r2 = h2h.team2WinRate;
+  const rs = h2h.resultSampleSize ?? 0;
+  const haveRates =
+    r1 != null &&
+    rd != null &&
+    r2 != null &&
+    Number.isFinite(r1) &&
+    Number.isFinite(rd) &&
+    Number.isFinite(r2) &&
+    rs > 0;
+
+  let body: string | null = null;
+  if (haveAllCounts) {
+    body = `${hn} ${w1}, Draw ${dr}, ${an} ${w2}`;
+  } else if (haveRates) {
+    body = `${hn} ${pct0(r1)}, Draw ${pct0(rd)}, ${an} ${pct0(r2)} (${rs} with results)`;
+  }
+
+  if (body == null) return null;
+
   if (weak) {
     return `H2H (${n}): limited sample, ${body}`;
   }
