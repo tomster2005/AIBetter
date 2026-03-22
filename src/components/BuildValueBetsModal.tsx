@@ -18,6 +18,7 @@ import {
 } from "../lib/valueBetBuilder.js";
 import { formatBetLegDisplayLabel } from "../lib/betLegDisplayLabel.js";
 import { loadHeadToHeadContext } from "../services/headToHeadContextService.js";
+import { loadFixtureTeamFormContext } from "../services/teamRecentFormContextService.js";
 import { saveGeneratedCombosForFixture, getBetPerformanceSummary, resolveStoredCombosForFixture } from "../services/comboPerformanceService.js";
 import { fetchFixtureResolutionData } from "../services/comboResolutionDataService.js";
 import { addTrackedBetShared, getBookmakers, getBookmakerStats, getUnitSize, settleTrackedBetsForFixture, type TrackedBookmaker } from "../services/betTrackerService.js";
@@ -250,10 +251,15 @@ export function BuildValueBetsModal({
     setResult(null);
     setBuilding(true);
     try {
-      const [playerRows, bookmakers, h2h] = await Promise.all([
+      const [playerRows, bookmakers, h2h, teamFormRes] = await Promise.all([
         getCandidates(),
         fetchFixtureOddsBookmakers(fixture.id),
         loadHeadToHeadContext(fixture.homeTeam.id, fixture.awayTeam.id),
+        loadFixtureTeamFormContext(fixture.homeTeam.id, fixture.awayTeam.id, {
+          excludeFixtureId: fixture.id,
+          homeTeamName: fixture.homeTeam.name,
+          awayTeamName: fixture.awayTeam.name,
+        }),
       ]);
       const recentStatsByNormalizedName = await fetchRecentPlayerStats(playerRows, fixture.id);
       const fromRows = buildEvidenceContextFromRows(playerRows, fixture, recentStatsByNormalizedName);
@@ -263,6 +269,7 @@ export function BuildValueBetsModal({
         playerRecentStats: evidenceContextProp?.playerRecentStats ?? fromRows.playerRecentStats,
       };
       const headToHeadContext = h2h?.context ?? null;
+      const teamFormContext = teamFormRes?.context ?? null;
       if (import.meta.env.DEV) {
         console.log("[build-value-bets] headToHeadContext", {
           fixtureId: fixture.id,
@@ -274,6 +281,16 @@ export function BuildValueBetsModal({
           averageTotalCorners: headToHeadContext?.averageTotalCorners ?? null,
           bttsRate: headToHeadContext?.bttsRate ?? null,
           drawRate: headToHeadContext?.drawRate ?? null,
+        });
+      }
+      if (import.meta.env.DEV) {
+        console.log("[build-value-bets] teamFormContext", {
+          fixtureId: fixture.id,
+          fetchFailed: teamFormContext?.fetchFailed ?? true,
+          homeN: teamFormContext?.home.sampleSize ?? 0,
+          awayN: teamFormContext?.away.sampleSize ?? 0,
+          homeAvgTotal: teamFormContext?.home.avgMatchTotalGoals ?? null,
+          awayAvgTotal: teamFormContext?.away.avgMatchTotalGoals ?? null,
         });
       }
       if (import.meta.env.DEV) {
@@ -294,7 +311,14 @@ export function BuildValueBetsModal({
         playerRows as Parameters<typeof buildValueBetCombos>[0],
         bookmakers,
         target,
-        { maxCombos: 30, fixtureCornersContext, lineupContext, evidenceContext, headToHeadContext }
+        {
+          maxCombos: 30,
+          fixtureCornersContext,
+          lineupContext,
+          evidenceContext,
+          headToHeadContext,
+          teamFormContext,
+        }
       );
       const stored = saveGeneratedCombosForFixture(fixture.id, combos, Math.max(1, combos.length));
       if (import.meta.env.DEV) {

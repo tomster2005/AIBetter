@@ -25,6 +25,8 @@ const TTL = {
   PLAYER_ODDS: 45 * 1000,
   /** Head-to-head context: 30 minutes (stable, low urgency) */
   H2H_CONTEXT: 30 * 60 * 1000,
+  /** Per-team recent form (all opponents): 20 minutes */
+  TEAM_FORM_CONTEXT: 20 * 60 * 1000,
   /** Past fixtures: never expire (use a very large number for "indefinite") */
   INDEFINITE: Number.MAX_SAFE_INTEGER,
 } as const;
@@ -100,6 +102,22 @@ export function getHeadToHeadContextCacheKey(team1Id: number, team2Id: number): 
   const a = Math.min(team1Id, team2Id);
   const b = Math.max(team1Id, team2Id);
   return `h2h-context-${a}-${b}`;
+}
+
+export function getTeamRecentFormContextTtlMs(): number {
+  return TTL.TEAM_FORM_CONTEXT;
+}
+
+/** Order-independent key; include excludeFixtureId so current-fixture builds stay correct. */
+export function getTeamRecentFormContextCacheKey(
+  team1Id: number,
+  team2Id: number,
+  excludeFixtureId?: number
+): string {
+  const a = Math.min(team1Id, team2Id);
+  const b = Math.max(team1Id, team2Id);
+  const ex = excludeFixtureId != null && Number.isFinite(excludeFixtureId) ? excludeFixtureId : 0;
+  return `team-recent-form-${a}-${b}-${ex}`;
 }
 
 export function get<T>(key: string): T | null {

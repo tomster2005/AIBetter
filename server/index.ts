@@ -30,6 +30,7 @@ import { fileURLToPath } from "url";
 import type { StoredBacktestRow, BacktestDataset } from "../src/lib/backtestDataset.js";
 import { makeBacktestRowKey } from "../src/lib/backtestDataset.js";
 import { resolveRecentPlayerStats } from "./recentPlayerStats.js";
+import { fetchFixtureTeamFormContext } from "./teamRecentFormService.js";
 import { BetsStore, type SharedBetRecord } from "./betsStore.js";
 
 declare module "express-session" {
@@ -364,6 +365,67 @@ app.get("/api/head-to-head/:team1/:team2/context", async (req, res) => {
     }
     res.json({ data: { team1Id: team1, team2Id: team2, context: null } });
   }
+});
+
+/**
+ * Recent finished matches per team (all opponents) — Sportmonks fixtures/between.
+ * Cached; one context object per fixture build (reuse for all team legs on the client).
+ */
+app.get("/api/team-recent-form/:homeTeamId/:awayTeamId", async (req, res) => {
+  const homeTeamId = parseInt(req.params.homeTeamId, 10);
+  const awayTeamId = parseInt(req.params.awayTeamId, 10);
+  if (
+    Number.isNaN(homeTeamId) ||
+    homeTeamId <= 0 ||
+    Number.isNaN(awayTeamId) ||
+    awayTeamId <= 0
+  ) {
+    res.status(400).json({ error: "Invalid team IDs." });
+    return;
+  }
+  const excludeFixtureIdRaw = req.query.excludeFixtureId;
+  const excludeFixtureId =
+    excludeFixtureIdRaw != null && excludeFixtureIdRaw !== ""
+      ? parseInt(String(excludeFixtureIdRaw), 10)
+      : undefined;
+  const homeTeamName =
+    typeof req.query.homeTeamName === "string" && req.query.homeTeamName.trim() !== ""
+      ? req.query.homeTeamName.trim()
+      : undefined;
+  const awayTeamName =
+    typeof req.query.awayTeamName === "string" && req.query.awayTeamName.trim() !== ""
+      ? req.query.awayTeamName.trim()
+      : undefined;
+
+  const cacheKey = cache.getTeamRecentFormContextCacheKey(
+    homeTeamId,
+    awayTeamId,
+    Number.isFinite(excludeFixtureId) ? excludeFixtureId : undefined
+  );
+  const cached = cache.get<unknown>(cacheKey);
+  if (cached != null) {
+    if (process.env.NODE_ENV !== "production") {
+      console.log("[team-form] cache hit", { homeTeamId, awayTeamId, cacheKey });
+    }
+    return res.json({ data: cached });
+  }
+  const context = await fetchFixtureTeamFormContext(homeTeamId, awayTeamId, {
+    excludeFixtureId: Number.isFinite(excludeFixtureId) ? excludeFixtureId : undefined,
+    homeTeamName,
+    awayTeamName,
+  });
+  const payload = { homeTeamId, awayTeamId, context };
+  cache.set(cacheKey, payload, cache.getTeamRecentFormContextTtlMs());
+  if (process.env.NODE_ENV !== "production") {
+    console.log("[team-form] response", {
+      homeTeamId,
+      awayTeamId,
+      fetchFailed: context.fetchFailed,
+      homeN: context.home.sampleSize,
+      awayN: context.away.sampleSize,
+    });
+  }
+  res.json({ data: payload });
 });
 
 app.get("/api/fixtures/:id", async (req, res) => {
