@@ -109,6 +109,52 @@
   color: var(--text-primary);
 }
 
+.bet-history__badge--awaiting {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.bet-history__tab-hint {
+  margin: 0 0 0.25rem;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.bet-history__status-reason {
+  margin: 0 0 0.65rem;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--text-primary);
+  padding: 0.5rem 0.65rem;
+  background: #f9fafb;
+  border-radius: 8px;
+  border: 1px solid var(--border-light);
+}
+
+.bet-history__blocker-list {
+  margin: 0 0 0.75rem;
+  padding: 0 0 0 1rem;
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.bet-history__blocker-item {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.bet-history__blocker-label {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.bet-history__blocker-reason {
+  display: block;
+}
+
 .bet-history__card-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));

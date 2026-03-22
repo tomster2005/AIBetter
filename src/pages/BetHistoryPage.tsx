@@ -7,6 +7,8 @@ import {
   getUnfinishedStoredComboRecords,
   resolveUnfinishedCombosFromFixtures,
   forceReResolveStoredCombosForFixture,
+  devAuditBetHistoryCombos,
+  deriveBetHistoryDisplayStatus,
   type DisplayStoredComboRecord,
   type StoredComboLeg,
 } from "../services/comboPerformanceService.js";
@@ -40,13 +42,34 @@ function formatLeg(leg: StoredComboLeg): string {
 }
 
 function HistoryCard({ record, showResult }: { record: DisplayStoredComboRecord; showResult: boolean }) {
-  const statusClass =
-    record.result === "win"
-      ? "bet-history__badge bet-history__badge--win"
-      : record.result === "loss"
-        ? "bet-history__badge bet-history__badge--loss"
-        : "bet-history__badge bet-history__badge--pending";
-  const statusText = record.result === "win" ? "Win" : record.result === "loss" ? "Loss" : "Unfinished";
+  const displayStatus = deriveBetHistoryDisplayStatus(record);
+  let statusClass: string;
+  let statusText: string;
+  if (displayStatus === "settled_win") {
+    statusClass = "bet-history__badge bet-history__badge--win";
+    statusText = "Won";
+  } else if (displayStatus === "settled_loss") {
+    statusClass = "bet-history__badge bet-history__badge--loss";
+    statusText = "Lost";
+  } else if (displayStatus === "pending_resolution") {
+    statusClass = "bet-history__badge bet-history__badge--awaiting";
+    statusText = "Awaiting resolution";
+  } else {
+    statusClass = "bet-history__badge bet-history__badge--pending";
+    statusText = "Pending match";
+  }
+
+  const reasonLine =
+    displayStatus === "pending_resolution"
+      ? record.resolutionMeta?.pendingReasonSummary ??
+        "Full time reported, but one or more legs could not be settled from available data."
+      : displayStatus === "pending_fixture" && record.resolutionMeta?.lastResolutionAttemptAt
+        ? `Not full time yet (last check ${fmtDate(record.resolutionMeta.lastResolutionAttemptAt)}).`
+        : displayStatus === "pending_fixture"
+          ? "Match still live or not reported as finished — will retry automatically."
+          : null;
+
+  const blockers = record.resolutionMeta?.legBlockers;
 
   return (
     <article className="bet-history__card">
@@ -58,6 +81,18 @@ function HistoryCard({ record, showResult }: { record: DisplayStoredComboRecord;
         </div>
         <span className={statusClass}>{statusText}</span>
       </header>
+
+      {reasonLine ? <p className="bet-history__status-reason">{reasonLine}</p> : null}
+      {displayStatus === "pending_resolution" && blockers && blockers.length > 0 ? (
+        <ul className="bet-history__blocker-list">
+          {blockers.map((b, i) => (
+            <li key={`${record.id}-block-${i}`} className="bet-history__blocker-item">
+              <span className="bet-history__blocker-label">{b.label}</span>
+              <span className="bet-history__blocker-reason">{b.reason}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
 
       <div className="bet-history__card-grid">
         <p>
@@ -71,7 +106,7 @@ function HistoryCard({ record, showResult }: { record: DisplayStoredComboRecord;
         </p>
         {showResult && (
           <p>
-            <strong>Result:</strong> {statusText}
+            <strong>Result:</strong> {record.result === "win" ? "Win" : record.result === "loss" ? "Loss" : "—"}
           </p>
         )}
       </div>
@@ -118,11 +153,16 @@ export function BetHistoryPage() {
         refresh();
         return count;
       };
+      (window as any).auditBetHistory = async () => {
+        await devAuditBetHistoryCombos();
+        refresh();
+      };
     }
     return () => {
       window.removeEventListener("storage", onStorage);
-      if (import.meta.env.DEV && (window as any).forceReResolveComboFixture) {
+      if (import.meta.env.DEV) {
         delete (window as any).forceReResolveComboFixture;
+        delete (window as any).auditBetHistory;
       }
     };
   }, [refresh]);
@@ -201,6 +241,10 @@ export function BetHistoryPage() {
 
       {activeTab === "unfinished" && (
         <section className="bet-history__section" aria-label="Unfinished bets">
+          <p className="bet-history__tab-hint">
+            Unsettled bets: <strong>Pending match</strong> = not full time yet. <strong>Awaiting resolution</strong> = full
+            time, but a stat or market (e.g. corners) is still missing from the feed.
+          </p>
           {unfinishedRecords.length === 0 ? (
             <p className="bet-history__empty">No unfinished bets.</p>
           ) : (
@@ -223,8 +267,16 @@ export function BetHistoryPage() {
         <section className="bet-history__section" aria-label="Bet performance stats">
           <div className="bet-history__stats-grid">
             <div className="bet-history__stat-card"><span>Total bets</span><strong>{allRecords.length}</strong></div>
-            <div className="bet-history__stat-card"><span>Finished</span><strong>{stats.finishedBets}</strong></div>
-            <div className="bet-history__stat-card"><span>Unfinished</span><strong>{stats.unfinishedBets}</strong></div>
+            <div className="bet-history__stat-card"><span>Finished (settled)</span><strong>{stats.finishedBets}</strong></div>
+            <div className="bet-history__stat-card"><span>Unfinished total</span><strong>{stats.unfinishedBets}</strong></div>
+            <div className="bet-history__stat-card">
+              <span>FT, awaiting stats</span>
+              <strong>{stats.pendingResolutionCombos}</strong>
+            </div>
+            <div className="bet-history__stat-card">
+              <span>Match not FT</span>
+              <strong>{stats.pendingFixtureCombos}</strong>
+            </div>
             <div className="bet-history__stat-card"><span>Wins</span><strong>{stats.wins}</strong></div>
             <div className="bet-history__stat-card"><span>Losses</span><strong>{stats.losses}</strong></div>
             <div className="bet-history__stat-card"><span>Win %</span><strong>{(stats.winRate * 100).toFixed(1)}%</strong></div>

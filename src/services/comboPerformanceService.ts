@@ -21,6 +21,18 @@ export interface StoredComboLeg {
   outcome: BuildLeg["outcome"];
 }
 
+/** Last known reconciliation state (persisted). Distinguishes live matches vs FT awaiting stats. */
+export interface ResolutionAttemptMeta {
+  lastResolutionAttemptAt: string;
+  /** False = match not FT yet (or API says not finished). True = FT but combo not fully settled. */
+  fixtureFinished: boolean;
+  /** Short human summary when fixtureFinished && result still null. */
+  pendingReasonSummary?: string;
+  legBlockers?: Array<{ label: string; reason: string }>;
+}
+
+export type BetHistoryDisplayStatus = "settled_win" | "settled_loss" | "pending_fixture" | "pending_resolution";
+
 export interface StoredComboRecord {
   id: string;
   fixtureId: number;
@@ -33,6 +45,7 @@ export interface StoredComboRecord {
   result: ComboResult | null;
   resolvedAt: string | null;
   hasTotalScore?: boolean;
+  resolutionMeta?: ResolutionAttemptMeta;
 }
 
 export interface DisplayStoredComboRecord extends StoredComboRecord {
@@ -86,6 +99,10 @@ export interface OddsBandSummary {
 export interface BetHistoryStats extends BetPerformanceSummary {
   finishedBets: number;
   unfinishedBets: number;
+  /** Unsettled rows where API reports FT but legs still lack data (e.g. corners). */
+  pendingResolutionCombos: number;
+  /** Unsettled rows where match is not FT yet (or not reported as FT). */
+  pendingFixtureCombos: number;
   roi: number;
   avgOddsWin: number;
   avgOddsLoss: number;
@@ -270,7 +287,75 @@ function sanitizeRecord(value: unknown): StoredComboRecord | null {
     result,
     resolvedAt: typeof raw.resolvedAt === "string" && raw.resolvedAt !== "" ? raw.resolvedAt : null,
     hasTotalScore,
+    resolutionMeta: sanitizeResolutionMeta((raw as { resolutionMeta?: unknown }).resolutionMeta),
   };
+}
+
+function sanitizeResolutionMeta(raw: unknown): ResolutionAttemptMeta | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const o = raw as Record<string, unknown>;
+  const last =
+    typeof o.lastResolutionAttemptAt === "string" && o.lastResolutionAttemptAt !== ""
+      ? o.lastResolutionAttemptAt
+      : undefined;
+  if (!last) return undefined;
+  const fixtureFinished = o.fixtureFinished === true;
+  const summary =
+    typeof o.pendingReasonSummary === "string" && o.pendingReasonSummary.trim() !== ""
+      ? o.pendingReasonSummary.trim().slice(0, 400)
+      : undefined;
+  const legBlockers = Array.isArray(o.legBlockers)
+    ? (o.legBlockers as unknown[])
+        .map((x) => {
+          if (!x || typeof x !== "object") return null;
+          const b = x as { label?: unknown; reason?: unknown };
+          const reason = typeof b.reason === "string" ? b.reason.trim().slice(0, 400) : "";
+          if (!reason) return null;
+          const label = typeof b.label === "string" ? b.label.trim().slice(0, 200) : "";
+          return { label, reason };
+        })
+        .filter((x): x is { label: string; reason: string } => x != null)
+        .slice(0, 16)
+    : undefined;
+  return {
+    lastResolutionAttemptAt: last,
+    fixtureFinished,
+    pendingReasonSummary: summary,
+    legBlockers: legBlockers && legBlockers.length > 0 ? legBlockers : undefined,
+  };
+}
+
+export function deriveBetHistoryDisplayStatus(r: StoredComboRecord): BetHistoryDisplayStatus {
+  if (r.result === "win") return "settled_win";
+  if (r.result === "loss") return "settled_loss";
+  if (r.resolutionMeta?.fixtureFinished === true) return "pending_resolution";
+  return "pending_fixture";
+}
+
+function buildLegBlockers(record: StoredComboRecord, input: ComboResolutionInput): Array<{ label: string; reason: string }> {
+  const out: Array<{ label: string; reason: string }> = [];
+  for (const leg of record.legs) {
+    const hit = resolveLegHit(leg, input);
+    if (hit !== null) continue;
+    const d = describeSingleLegForDebug(leg, input);
+    out.push({
+      label: (leg.label || leg.marketName || "Leg").slice(0, 160),
+      reason: d.reason.slice(0, 400),
+    });
+  }
+  return out;
+}
+
+/** Heuristic: match-total goals O/U even if marketFamily was stored incorrectly (legacy rows). */
+function isMatchTotalGoalsOuTeamLeg(leg: StoredComboLeg): boolean {
+  if (leg.type !== "team") return false;
+  if (leg.outcome !== "Over" && leg.outcome !== "Under") return false;
+  const fam = (leg.marketFamily ?? "").toLowerCase();
+  if (fam === "team:match-goals" || fam === "team:alternative-total-goals") return true;
+  const lab = (leg.label ?? "").toLowerCase();
+  if (lab.includes("corner")) return false;
+  if (!lab.includes("goal")) return false;
+  return true;
 }
 
 function hasUsableTotalScore(record: StoredComboRecord): boolean {
@@ -399,11 +484,8 @@ function resolveTeamLegHit(leg: StoredComboLeg, input: ComboResolutionInput): bo
       if (leg.outcome === "Yes") return both;
       if (leg.outcome === "No") return !both;
     }
-    /** Match total goals O/U (markets 80 / 81) — required for Build Value Bets team goal legs. */
-    if (
-      (fam === "team:match-goals" || fam === "team:alternative-total-goals") &&
-      (leg.outcome === "Over" || leg.outcome === "Under")
-    ) {
+    /** Match total goals O/U (markets 80 / 81) + label fallback for legacy stored legs. */
+    if (isMatchTotalGoalsOuTeamLeg(leg)) {
       const total = hg + ag;
       if (leg.outcome === "Over") return total > leg.line - 1e-9;
       if (leg.outcome === "Under") return total < leg.line + 1e-9;
@@ -506,13 +588,7 @@ function describeSingleLegForDebug(leg: StoredComboLeg, input: ComboResolutionIn
   const totalGoals =
     typeof hg === "number" && Number.isFinite(hg) && typeof ag === "number" && Number.isFinite(ag) ? hg + ag : null;
   let actual: number | null = leg.type === "player" ? getPlayerStatForLeg(leg, input) : null;
-  const fam = (leg.marketFamily ?? "").toLowerCase();
-  if (
-    leg.type === "team" &&
-    (fam === "team:match-goals" || fam === "team:alternative-total-goals") &&
-    (leg.outcome === "Over" || leg.outcome === "Under") &&
-    totalGoals != null
-  ) {
+  if (leg.type === "team" && isMatchTotalGoalsOuTeamLeg(leg) && totalGoals != null) {
     actual = totalGoals;
   }
   let reason: string;
@@ -640,27 +716,62 @@ export function resolveStoredCombosForFixture(
   let resolved = 0;
   let unresolved = 0;
   let corrected = 0;
+
   const updated = records.map((r) => {
     if (r.fixtureId !== fixtureId) return r;
-    if (!input.isFinished) return r;
+
     const previous = r.result;
-    const result = resolveComboResult(r, input);
-    if (result == null) {
-      if (previous == null) unresolved += 1;
-      return r;
+
+    if (previous != null) {
+      if (!input.isFinished) return r;
+      const result = resolveComboResult(r, input);
+      if (result == null) return r;
+      if (result !== previous) {
+        corrected += 1;
+        comboResolutionDevLog("corrected", r, input, result, previous);
+        return { ...r, result, resolvedAt: now, resolutionMeta: undefined };
+      }
+      return { ...r, resolutionMeta: undefined };
     }
-    if (previous == null) {
+
+    if (!input.isFinished) {
+      return {
+        ...r,
+        result: null,
+        resolvedAt: null,
+        resolutionMeta: {
+          lastResolutionAttemptAt: now,
+          fixtureFinished: false,
+        },
+      };
+    }
+
+    const result = resolveComboResult(r, input);
+    if (result != null) {
       resolved += 1;
       comboResolutionDevLog("new", r, input, result, null);
-      return { ...r, result, resolvedAt: now };
+      return { ...r, result, resolvedAt: now, resolutionMeta: undefined };
     }
-    if (previous !== result) {
-      corrected += 1;
-      comboResolutionDevLog("corrected", r, input, result, previous);
-      return { ...r, result, resolvedAt: now };
-    }
-    return r;
+
+    const blockers = buildLegBlockers(r, input);
+    const summary =
+      blockers.length > 0
+        ? blockers.map((b) => b.reason).join(" · ").slice(0, 280)
+        : "Finished fixture — settlement incomplete (see leg details).";
+    unresolved += 1;
+    return {
+      ...r,
+      result: null,
+      resolvedAt: null,
+      resolutionMeta: {
+        lastResolutionAttemptAt: now,
+        fixtureFinished: true,
+        pendingReasonSummary: summary,
+        legBlockers: blockers.slice(0, 12),
+      },
+    };
   });
+
   writeRecords(updated);
   return { resolved, unresolved, corrected };
 }
@@ -673,6 +784,35 @@ export function resolveStoredCombosForFixture(
 const MAX_COMBO_FIXTURES_TO_RESOLVE_PER_RUN = 28;
 let comboResolveFixtureCursor = 0;
 
+/** Prioritize FT-but-unsettled combos, then unknown pending, then settled (correction). */
+function buildPrioritizedFixtureIds(records: StoredComboRecord[]): number[] {
+  const pending = records.filter((r) => r.result == null);
+  const settled = records.filter((r) => r.result != null);
+  const tier1 = new Map<number, number>();
+  const tier2 = new Map<number, number>();
+  const tier3 = new Map<number, number>();
+  const bump = (m: Map<number, number>, fixtureId: number, ts: number) => {
+    const p = m.get(fixtureId);
+    if (p === undefined || ts < p) m.set(fixtureId, ts);
+  };
+  for (const r of pending) {
+    const ts = Date.parse(r.createdAt);
+    const v = Number.isFinite(ts) ? ts : 0;
+    if (r.resolutionMeta?.fixtureFinished === true) bump(tier1, r.fixtureId, v);
+    else bump(tier2, r.fixtureId, v);
+  }
+  for (const r of settled) {
+    const ts = Date.parse(r.createdAt);
+    const v = Number.isFinite(ts) ? ts : 0;
+    bump(tier3, r.fixtureId, v);
+  }
+  const sortTier = (m: Map<number, number>) =>
+    [...m.entries()].sort((a, b) => a[1] - b[1]).map(([id]) => id);
+  const ordered = [...sortTier(tier1), ...sortTier(tier2), ...sortTier(tier3)];
+  const seen = new Set<number>();
+  return ordered.filter((id) => (seen.has(id) ? false : (seen.add(id), true)));
+}
+
 /**
  * Fetches fixture outcomes and persists win/loss via {@link resolveStoredCombosForFixture}.
  * Visits every fixture id that appears in history (unfinished + finished) on a rotating schedule so
@@ -684,16 +824,7 @@ export async function resolveUnfinishedCombosFromFixtures(): Promise<number> {
   if (records.length === 0) return 0;
 
   const pending = records.filter((r) => r.result == null);
-  const fixtureMinCreated = new Map<number, number>();
-  for (const r of records) {
-    const ts = Date.parse(r.createdAt);
-    const v = Number.isFinite(ts) ? ts : 0;
-    const prev = fixtureMinCreated.get(r.fixtureId);
-    if (prev === undefined || v < prev) fixtureMinCreated.set(r.fixtureId, v);
-  }
-  const allUniqueSorted = [...fixtureMinCreated.entries()]
-    .sort((a, b) => a[1] - b[1])
-    .map(([id]) => id);
+  const allUniqueSorted = buildPrioritizedFixtureIds(records);
   const nFixtures = allUniqueSorted.length;
   const take = Math.min(MAX_COMBO_FIXTURES_TO_RESOLVE_PER_RUN, nFixtures);
   const start = nFixtures > take ? comboResolveFixtureCursor % nFixtures : 0;
@@ -733,7 +864,6 @@ export async function resolveUnfinishedCombosFromFixtures(): Promise<number> {
         samplePlayerLabels: names,
       });
     }
-    if (!resolutionData.isFinished) continue;
 
     const input: ComboResolutionInput = {
       isFinished: resolutionData.isFinished,
@@ -767,6 +897,59 @@ export async function resolveUnfinishedCombosFromFixtures(): Promise<number> {
 }
 
 /**
+ * DEV: one console line per stored combo with computed vs stored classification (uses cached fetches per fixture).
+ */
+export async function devAuditBetHistoryCombos(): Promise<void> {
+  if (!import.meta.env.DEV || typeof window === "undefined") return;
+  const records = readRecords();
+  const cache = new Map<number, ComboResolutionInput>();
+  for (const r of records) {
+    if (!cache.has(r.fixtureId)) {
+      const d = await fetchFixtureResolutionData(r.fixtureId);
+      cache.set(r.fixtureId, {
+        isFinished: d.isFinished,
+        playerResults: d.playerResults,
+        playerStatsById: d.playerStatsById,
+        teamLegResultsByLabel: {},
+        homeGoals: d.homeGoals,
+        awayGoals: d.awayGoals,
+      });
+    }
+    const input = cache.get(r.fixtureId)!;
+    const computed = resolveComboResult(r, input);
+    let shouldBe: BetHistoryDisplayStatus;
+    if (!input.isFinished) shouldBe = "pending_fixture";
+    else if (computed === "win") shouldBe = "settled_win";
+    else if (computed === "loss") shouldBe = "settled_loss";
+    else shouldBe = "pending_resolution";
+
+    const legs = r.legs.map((leg) => {
+      const hit = resolveLegHit(leg, input);
+      const dbg = describeSingleLegForDebug(leg, input);
+      return {
+        label: leg.label,
+        marketFamily: leg.marketFamily,
+        hit,
+        legResult: hit === null ? "unresolved" : hit ? "won" : "lost",
+        unresolvedReason: hit === null ? dbg.reason : null,
+        actual: dbg.actual,
+      };
+    });
+
+    console.log("[bet-history audit]", {
+      fixtureId: r.fixtureId,
+      comboId: r.id,
+      fixtureFinished: input.isFinished,
+      storedResult: r.result,
+      computedResult: computed,
+      storedDisplayStatus: deriveBetHistoryDisplayStatus(r),
+      shouldBe,
+      legs,
+    });
+  }
+}
+
+/**
  * DEV-only: Force re-resolve stored combo records for a fixture, ignoring existing result/resolvedAt.
  * Clears result fields temporarily, fetches fresh resolution data, then re-runs resolution with fixed logic.
  * Use from browser console: window.forceReResolveComboFixture(19427186)
@@ -790,7 +973,7 @@ export async function forceReResolveStoredCombosForFixture(fixtureId: number): P
 
   const cleared = records.map((r) => {
     if (r.fixtureId === fixtureId && r.result != null) {
-      return { ...r, result: null, resolvedAt: null };
+      return { ...r, result: null, resolvedAt: null, resolutionMeta: undefined };
     }
     return r;
   });
@@ -841,7 +1024,12 @@ export function getFinishedStoredComboRecords(): DisplayStoredComboRecord[] {
 export function getUnfinishedStoredComboRecords(): DisplayStoredComboRecord[] {
   return hydrateDisplayScores(readRecords())
     .filter((r) => r.result == null)
-    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+    .sort((a, b) => {
+      const ap = a.resolutionMeta?.fixtureFinished === true ? 0 : 1;
+      const bp = b.resolutionMeta?.fixtureFinished === true ? 0 : 1;
+      if (ap !== bp) return ap - bp;
+      return Date.parse(b.createdAt) - Date.parse(a.createdAt);
+    });
 }
 
 export function getOddsBandBreakdown(stakePerBet = 1): OddsBandSummary[] {
@@ -904,12 +1092,17 @@ export function getBetHistoryStats(stakePerBet = 1): BetHistoryStats {
   const base = getBetPerformanceSummary(stakePerBet);
   const finishedBets = finished.length;
   const unfinishedBets = Math.max(0, all.length - finishedBets);
+  const unsettled = all.filter((r) => r.result == null);
+  const pendingResolutionCombos = unsettled.filter((r) => r.resolutionMeta?.fixtureFinished === true).length;
+  const pendingFixtureCombos = unsettled.filter((r) => r.resolutionMeta?.fixtureFinished !== true).length;
   const avgOddsWin = winsOnly.length > 0 ? winsOnly.reduce((s, r) => s + r.odds, 0) / winsOnly.length : 0;
   const avgOddsLoss = lossesOnly.length > 0 ? lossesOnly.reduce((s, r) => s + r.odds, 0) / lossesOnly.length : 0;
   return {
     ...base,
     finishedBets,
     unfinishedBets,
+    pendingResolutionCombos,
+    pendingFixtureCombos,
     roi: finishedBets > 0 ? base.profit / (finishedBets * stakePerBet) : 0,
     avgOddsWin,
     avgOddsLoss,
