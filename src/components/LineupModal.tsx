@@ -1444,7 +1444,10 @@ export function buildValueBetRows(
             };
             row.calibrationBucketValid = isBucketCalibrated(built.rawModelProbability);
             row.isStrongBet = isStrongBetCandidate(row);
-            if (lineupPlayerId != null) row.sportmonksPlayerId = lineupPlayerId;
+            const smPlayerId =
+              lineupPlayerId ??
+              (playerIdFromProps != null && startingPlayerIds.has(playerIdFromProps) ? playerIdFromProps : null);
+            if (smPlayerId != null) row.sportmonksPlayerId = smPlayerId;
             if (lineupInfoFinal?.teamId != null) row.sportmonksTeamId = lineupInfoFinal.teamId;
             if (
               import.meta.env.DEV &&

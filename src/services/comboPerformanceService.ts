@@ -13,6 +13,8 @@ export interface StoredComboLeg {
   marketFamily: string;
   label: string;
   playerName?: string;
+  /** Sportmonks player id when known at save time — preferred for post-match stat lookup. */
+  sportmonksPlayerId?: number;
   bookmakerName?: string;
   odds?: number;
   line: number;
@@ -122,6 +124,7 @@ function writeRecords(records: StoredComboRecord[]): void {
 }
 
 function toStoredLeg(leg: BuildLeg): StoredComboLeg {
+  const smPid = leg.sportmonksPlayerId;
   return {
     legId: leg.id,
     type: leg.type,
@@ -129,6 +132,8 @@ function toStoredLeg(leg: BuildLeg): StoredComboLeg {
     marketFamily: leg.marketFamily,
     label: leg.label,
     playerName: leg.playerName,
+    sportmonksPlayerId:
+      typeof smPid === "number" && Number.isFinite(smPid) && smPid > 0 ? smPid : undefined,
     bookmakerName: leg.bookmakerName,
     odds: leg.odds,
     line: leg.line,
@@ -155,6 +160,7 @@ function getLegSignature(leg: StoredComboLeg): string {
     normalizeText(leg.marketFamily),
     normalizeText(leg.marketName),
     normalizeText(leg.playerName ?? ""),
+    leg.sportmonksPlayerId != null && Number.isFinite(leg.sportmonksPlayerId) ? String(leg.sportmonksPlayerId) : "",
     normalizeNum(leg.line, 4),
     normalizeText(leg.outcome),
     normalizeText(leg.label),
@@ -212,6 +218,16 @@ function sanitizeLeg(value: unknown): StoredComboLeg | null {
     const n = parseFloat(lineRaw.replace(",", "."));
     if (Number.isFinite(n)) line = n;
   }
+  const rawSm = (raw as { sportmonksPlayerId?: unknown }).sportmonksPlayerId;
+  const sportmonksPlayerId =
+    typeof rawSm === "number" && Number.isFinite(rawSm) && rawSm > 0
+      ? rawSm
+      : typeof rawSm === "string"
+        ? (() => {
+            const n = parseInt(rawSm, 10);
+            return Number.isFinite(n) && n > 0 ? n : undefined;
+          })()
+        : undefined;
   return {
     legId: typeof raw.legId === "string" ? raw.legId : undefined,
     type,
@@ -219,6 +235,7 @@ function sanitizeLeg(value: unknown): StoredComboLeg | null {
     marketFamily,
     label,
     playerName: typeof raw.playerName === "string" && raw.playerName.trim() !== "" ? raw.playerName : undefined,
+    sportmonksPlayerId,
     bookmakerName: typeof raw.bookmakerName === "string" && raw.bookmakerName.trim() !== "" ? raw.bookmakerName : undefined,
     odds: typeof raw.odds === "number" && Number.isFinite(raw.odds) ? raw.odds : undefined,
     line,
@@ -311,6 +328,11 @@ function normalizeName(name: string): string {
 
 /** Match API lineup name to stored leg playerName (exact, then last-name / single-token match). */
 function findPlayerRowForLeg(leg: StoredComboLeg, input: ComboResolutionInput): ComboResolutionPlayerStat | null {
+  const smPid = leg.sportmonksPlayerId;
+  if (typeof smPid === "number" && Number.isFinite(smPid) && smPid > 0) {
+    const byId = input.playerResults.find((p) => p.playerId === smPid);
+    if (byId) return byId;
+  }
   if (!leg.playerName) return null;
   const want = normalizeName(leg.playerName);
   if (!want) return null;
@@ -331,7 +353,8 @@ function findPlayerRowForLeg(leg: StoredComboLeg, input: ComboResolutionInput): 
 }
 
 function getPlayerStatForLeg(leg: StoredComboLeg, input: ComboResolutionInput): number | null {
-  if (!leg.playerName) return null;
+  const hasSmId = typeof leg.sportmonksPlayerId === "number" && Number.isFinite(leg.sportmonksPlayerId) && leg.sportmonksPlayerId > 0;
+  if (!leg.playerName?.trim() && !hasSmId) return null;
   const player = findPlayerRowForLeg(leg, input);
   const playerById = (() => {
     if (!input.playerStatsById || !player?.playerId || !Number.isFinite(player.playerId)) return null;
@@ -375,6 +398,15 @@ function resolveTeamLegHit(leg: StoredComboLeg, input: ComboResolutionInput): bo
       const both = hg >= 1 && ag >= 1;
       if (leg.outcome === "Yes") return both;
       if (leg.outcome === "No") return !both;
+    }
+    /** Match total goals O/U (markets 80 / 81) — required for Build Value Bets team goal legs. */
+    if (
+      (fam === "team:match-goals" || fam === "team:alternative-total-goals") &&
+      (leg.outcome === "Over" || leg.outcome === "Under")
+    ) {
+      const total = hg + ag;
+      if (leg.outcome === "Over") return total > leg.line - 1e-9;
+      if (leg.outcome === "Under") return total < leg.line + 1e-9;
     }
     if (leg.outcome === "Home") return hg > ag;
     if (leg.outcome === "Away") return ag > hg;
@@ -479,10 +511,26 @@ function describeSingleLegForDebug(leg: StoredComboLeg, input: ComboResolutionIn
       if (hg == null || ag == null || !Number.isFinite(hg) || !Number.isFinite(ag)) {
         reason = "team: missing homeGoals/awayGoals (need fixture scores) or use teamLegResultsByLabel";
       } else {
-        reason = "team: market/outcome not handled by goal-based resolver";
+        const fam = (leg.marketFamily ?? "").toLowerCase();
+        if (fam === "team:alternative-corners") {
+          reason = "team: corners — total corner count not available from fixture resolution API";
+        } else {
+          reason = "team: market/outcome not handled by goal-based resolver";
+        }
       }
     } else if (actual == null) {
-      reason = "player: no stat row, name mismatch, or unsupported market for stat";
+      const sm = leg.sportmonksPlayerId;
+      if (
+        leg.type === "player" &&
+        typeof sm === "number" &&
+        Number.isFinite(sm) &&
+        sm > 0 &&
+        !input.playerResults.some((p) => p.playerId === sm)
+      ) {
+        reason = `player: sportmonksPlayerId ${sm} not found in post-match lineup stats`;
+      } else {
+        reason = "player: no stat row, name mismatch, or unsupported market for stat";
+      }
     } else {
       reason = `player: outcome "${leg.outcome}" has no numeric rule`;
     }
@@ -552,7 +600,13 @@ export function resolveStoredCombosForFixture(
   return { resolved, unresolved };
 }
 
-const MAX_COMBO_FIXTURES_TO_RESOLVE_PER_RUN = 8;
+/**
+ * Max fixture detail fetches per resolution pass. When there are more unique unfinished fixtures than this,
+ * we rotate a cursor so every fixture is visited over successive runs (avoids starving newer matches behind
+ * a long-lived block of not-yet-finished fixtures).
+ */
+const MAX_COMBO_FIXTURES_TO_RESOLVE_PER_RUN = 28;
+let comboResolveFixtureCursor = 0;
 
 /**
  * Fetches fixture outcomes for unfinished combo records and persists win/loss via {@link resolveStoredCombosForFixture}.
@@ -571,18 +625,30 @@ export async function resolveUnfinishedCombosFromFixtures(): Promise<number> {
     const prev = oldestByFixture.get(r.fixtureId);
     if (prev === undefined || v < prev) oldestByFixture.set(r.fixtureId, v);
   }
-  const fixtureIds = [...oldestByFixture.entries()]
+  const allUniqueSorted = [...oldestByFixture.entries()]
     .sort((a, b) => a[1] - b[1])
-    .map(([id]) => id)
-    .slice(0, MAX_COMBO_FIXTURES_TO_RESOLVE_PER_RUN);
+    .map(([id]) => id);
+  const nFixtures = allUniqueSorted.length;
+  const take = Math.min(MAX_COMBO_FIXTURES_TO_RESOLVE_PER_RUN, nFixtures);
+  const start = nFixtures > take ? comboResolveFixtureCursor % nFixtures : 0;
+  const fixtureIds: number[] = [];
+  for (let i = 0; i < take; i++) {
+    fixtureIds.push(allUniqueSorted[(start + i) % nFixtures]!);
+  }
+  if (nFixtures > take) {
+    comboResolveFixtureCursor = (comboResolveFixtureCursor + take) % nFixtures;
+  }
 
   if (import.meta.env.DEV && pending.length > 0) {
     const sample = pending[0];
-    console.log("[bet-history combo-resolve] sample unfinished", {
-      comboId: sample.id,
-      fixtureId: sample.fixtureId,
-      result: sample.result,
-      resolvedAt: sample.resolvedAt,
+    console.log("[bet-history combo-resolve] run", {
+      pendingCombos: pending.length,
+      uniqueUnfinishedFixtures: nFixtures,
+      fetchingThisPass: fixtureIds.length,
+      cursorStart: start,
+      nextCursor: nFixtures > take ? comboResolveFixtureCursor : "(n/a — all fixtures in one pass)",
+      sampleComboId: sample.id,
+      sampleFixtureId: sample.fixtureId,
       fixtureIdsToFetch: fixtureIds,
     });
   }
@@ -615,7 +681,7 @@ export async function resolveUnfinishedCombosFromFixtures(): Promise<number> {
 
     if (import.meta.env.DEV) {
       const pendingHere = records.filter((r) => r.fixtureId === fixtureId && r.result == null);
-      const debugTarget = fixtureId === 19427186 ? pendingHere.length : Math.min(3, pendingHere.length);
+      const debugTarget = Math.min(2, pendingHere.length);
       for (let i = 0; i < debugTarget; i++) {
         const rec = pendingHere[i];
         if (!rec) continue;

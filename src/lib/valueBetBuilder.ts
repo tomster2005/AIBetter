@@ -50,6 +50,8 @@ export interface BuildLeg {
   type: "player" | "team";
   /** Optional identifiers used for lightweight correlation penalties. */
   playerId?: string;
+  /** Sportmonks numeric player id when known — persisted to Bet History for settlement. */
+  sportmonksPlayerId?: number;
   teamId?: string;
   marketId?: number;
   legRole?: "core" | "supporting" | "filler";
@@ -257,6 +259,7 @@ function legFingerprintToken(leg: BuildLeg): string {
     line,
     odds,
     String(leg.playerId ?? ""),
+    String(leg.sportmonksPlayerId ?? ""),
     player,
     label,
     String(leg.bookmakerName ?? "").trim().toLowerCase(),
@@ -286,6 +289,8 @@ export interface PlayerCandidateInput {
   betQualityScore?: number;
   dataConfidenceScore?: number;
   isStrongBet?: boolean;
+  /** When present, stored on history legs for reliable player stat matching after FT. */
+  sportmonksPlayerId?: number;
 }
 
 /** Normalised odds bookmaker shape (from fixture odds API). */
@@ -1254,10 +1259,13 @@ export function filterPlayerCandidates(
     const id = `player-${legs.length}-${key.slice(0, 40)}`;
     const reason = buildLegReason(r, quality);
     const marketFamily = `player:${String(r.playerName).trim().toLowerCase()}|${cat}`;
+    const smPid = r.sportmonksPlayerId;
     legs.push({
       id,
       type: "player",
       playerId: String(r.playerName).trim().toLowerCase(),
+      sportmonksPlayerId:
+        typeof smPid === "number" && Number.isFinite(smPid) && smPid > 0 ? smPid : undefined,
       playerQuality: quality,
       marketFamily,
       label: `${r.playerName} ${r.marketName} ${r.line} ${r.outcome}`,

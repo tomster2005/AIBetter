@@ -312,6 +312,7 @@ export async function fetchFixtureResolutionData(fixtureId: number): Promise<Fix
         shotsOnTarget: p.shotsOnTarget,
         foulsCommitted: p.foulsCommitted,
         foulsWon: p.foulsWon,
+        tackles: p.tackles,
       };
     }
     const { homeGoals, awayGoals } = extractFixtureGoals(fixture);

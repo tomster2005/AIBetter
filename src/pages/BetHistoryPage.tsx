@@ -131,7 +131,12 @@ export function BetHistoryPage() {
   useEffect(() => {
     let cancelled = false;
     const pull = async () => {
-      await resolveUnfinishedCombosFromFixtures();
+      const resolvedThisPass = await resolveUnfinishedCombosFromFixtures();
+      if (import.meta.env.DEV) {
+        console.log("[bet-history] resolveUnfinishedCombosFromFixtures done", {
+          combosResolvedThisPass: resolvedThisPass,
+        });
+      }
       if (!cancelled) refresh();
     };
     void pull();
