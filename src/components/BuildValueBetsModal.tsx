@@ -16,6 +16,7 @@ import {
   type BuildEvidenceContext,
   type RecentStatsByNormalizedName,
 } from "../lib/valueBetBuilder.js";
+import { formatBetLegDisplayLabel } from "../lib/betLegDisplayLabel.js";
 import { loadHeadToHeadContext } from "../services/headToHeadContextService.js";
 import { saveGeneratedCombosForFixture, getBetPerformanceSummary, resolveStoredCombosForFixture } from "../services/comboPerformanceService.js";
 import { fetchFixtureResolutionData } from "../services/comboResolutionDataService.js";
@@ -645,7 +646,7 @@ export function BuildValueBetsModal({
                       <ul className="build-value-bets-modal__leg-list">
                         {combo.legs.map((leg) => (
                           <li key={leg.id} className="build-value-bets-modal__leg">
-                            <span className="build-value-bets-modal__leg-label">{leg.label}</span>
+                            <span className="build-value-bets-modal__leg-label">{formatBetLegDisplayLabel(leg)}</span>
                             <span className="build-value-bets-modal__leg-odds">{leg.odds.toFixed(2)}</span>
                             {leg.reason && (
                               <span className="build-value-bets-modal__leg-reason">{leg.reason}</span>

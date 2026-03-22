@@ -21,6 +21,7 @@ import {
 } from "../constants/marketIds.js";
 import { loadPlayerPropsForFixture } from "../services/playerPropsService.js";
 import { useAutoResolveCombos } from "../hooks/useAutoResolveCombos.js";
+import { formatMatchMarketSelectionDisplay, formatPlayerOddsSelectionDisplay } from "../lib/betLegDisplayLabel.js";
 import "./OddsPage.css";
 
 const LONDON = "Europe/London";
@@ -208,7 +209,7 @@ function collectBuildBetSelections(
           const marketId = m.marketId;
           out.push({
             id: `m-${marketId}-${label}-${b.bookmakerId}`,
-            description: `${m.marketName} ${label}`,
+            description: formatMatchMarketSelectionDisplay(marketId, m.marketName, label),
             odds,
             groupKey: `m-${marketId}-${label}`,
             legType: "match",
@@ -239,7 +240,7 @@ function collectBuildBetSelections(
           const marketId = market.marketId;
           out.push({
             id: `p-${marketId}-${player.playerId}-${lineStr}-${sel.bookmakerId}`,
-            description: `${player.playerName} ${market.marketName} Over ${lineStr}`,
+            description: formatPlayerOddsSelectionDisplay(player.playerName, market.marketName, line),
             odds,
             groupKey,
             legType: "player",

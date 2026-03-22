@@ -13,6 +13,7 @@ import {
   MARKET_ID_MATCH_RESULTS,
   TEAM_PROP_MARKET_IDS,
 } from "../constants/marketIds.js";
+import { formatMatchMarketSelectionDisplay } from "../lib/betLegDisplayLabel.js";
 import "./FixtureOddsPanel.css";
 
 /** Market IDs expanded by default (Match Results, BTTS). All others start collapsed. */
@@ -334,7 +335,9 @@ function MarketBlock({
                 <div className="fixture-odds-panel__selections">
                   {m.selections.map((sel, i) => (
                     <span key={i} className="fixture-odds-panel__row">
-                      <span className="fixture-odds-panel__label">{sel.label}:</span>
+                      <span className="fixture-odds-panel__label">
+                        {formatMatchMarketSelectionDisplay(market.marketId, market.marketName, sel.label)}:
+                      </span>
                       <span className="fixture-odds-panel__value">
                         {sel.odds != null ? String(sel.odds) : "—"}
                       </span>

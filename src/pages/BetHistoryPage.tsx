@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { formatBetLegDisplayLabel } from "../lib/betLegDisplayLabel.js";
 import {
   getAllStoredComboRecords,
   getBetHistoryStats,
@@ -12,7 +13,6 @@ import {
   forceRecheckHistorySettlements,
   deriveBetHistoryDisplayStatus,
   type DisplayStoredComboRecord,
-  type StoredComboLeg,
 } from "../services/comboPerformanceService.js";
 import "./BetHistoryPage.css";
 
@@ -31,16 +31,6 @@ function fmtOdds(value: number): string {
 
 function fmtScore(value: number): string {
   return Number.isFinite(value) ? value.toFixed(1) : "-";
-}
-
-function formatLeg(leg: StoredComboLeg): string {
-  if (leg.type === "player") {
-    const player = leg.playerName?.trim() || "Unknown player";
-    const line = Number.isFinite(leg.line) ? ` ${leg.line}` : "";
-    const outcome = leg.outcome ? ` ${leg.outcome}` : "";
-    return `${player} - ${leg.marketName}${line}${outcome}`;
-  }
-  return leg.label || `${leg.marketName} ${leg.outcome ?? ""}`.trim();
 }
 
 function HistoryCard({ record, showResult }: { record: DisplayStoredComboRecord; showResult: boolean }) {
@@ -87,12 +77,17 @@ function HistoryCard({ record, showResult }: { record: DisplayStoredComboRecord;
       {reasonLine ? <p className="bet-history__status-reason">{reasonLine}</p> : null}
       {displayStatus === "pending_resolution" && blockers && blockers.length > 0 ? (
         <ul className="bet-history__blocker-list">
-          {blockers.map((b, i) => (
-            <li key={`${record.id}-block-${i}`} className="bet-history__blocker-item">
-              <span className="bet-history__blocker-label">{b.label}</span>
-              <span className="bet-history__blocker-reason">{b.reason}</span>
-            </li>
-          ))}
+          {blockers.map((b, i) => {
+            const leg =
+              typeof b.legIndex === "number" && record.legs[b.legIndex] != null ? record.legs[b.legIndex] : null;
+            const blockerTitle = leg ? formatBetLegDisplayLabel(leg) : b.label;
+            return (
+              <li key={`${record.id}-block-${i}`} className="bet-history__blocker-item">
+                <span className="bet-history__blocker-label">{blockerTitle}</span>
+                <span className="bet-history__blocker-reason">{b.reason}</span>
+              </li>
+            );
+          })}
         </ul>
       ) : null}
 
@@ -120,7 +115,7 @@ function HistoryCard({ record, showResult }: { record: DisplayStoredComboRecord;
           <ul className="bet-history__leg-list">
             {record.legs.map((leg, idx) => (
               <li key={`${record.id}-leg-${idx}`} className="bet-history__leg-item">
-                <span className="bet-history__leg-main">{formatLeg(leg)}</span>
+                <span className="bet-history__leg-main">{formatBetLegDisplayLabel(leg)}</span>
                 <span className="bet-history__leg-meta">
                   {leg.marketFamily || "unknown"} | {leg.bookmakerName || "bookmaker n/a"} | leg odds {fmtOdds(leg.odds ?? 0)}
                 </span>

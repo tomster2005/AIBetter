@@ -40,7 +40,7 @@ export interface ResolutionAttemptMeta {
   fixtureFinished: boolean;
   /** Short human summary when fixtureFinished && result still null. */
   pendingReasonSummary?: string;
-  legBlockers?: Array<{ label: string; reason: string }>;
+  legBlockers?: Array<{ label: string; reason: string; legIndex?: number }>;
 }
 
 export type BetHistoryDisplayStatus = "settled_win" | "settled_loss" | "pending_fixture" | "pending_resolution";
@@ -336,13 +336,16 @@ function sanitizeResolutionMeta(raw: unknown): ResolutionAttemptMeta | undefined
     ? (o.legBlockers as unknown[])
         .map((x) => {
           if (!x || typeof x !== "object") return null;
-          const b = x as { label?: unknown; reason?: unknown };
+          const b = x as { label?: unknown; reason?: unknown; legIndex?: unknown };
           const reason = typeof b.reason === "string" ? b.reason.trim().slice(0, 400) : "";
           if (!reason) return null;
           const label = typeof b.label === "string" ? b.label.trim().slice(0, 200) : "";
-          return { label, reason };
+          const li = b.legIndex;
+          const legIndex =
+            typeof li === "number" && Number.isFinite(li) && li >= 0 && li < 256 ? Math.floor(li) : undefined;
+          return legIndex !== undefined ? { label, reason, legIndex } : { label, reason };
         })
-        .filter((x): x is { label: string; reason: string } => x != null)
+        .filter((x): x is { label: string; reason: string; legIndex?: number } => x != null)
         .slice(0, 16)
     : undefined;
   return {
@@ -360,17 +363,18 @@ export function deriveBetHistoryDisplayStatus(r: StoredComboRecord): BetHistoryD
   return "pending_fixture";
 }
 
-function buildLegBlockers(record: StoredComboRecord, input: ComboResolutionInput): Array<{ label: string; reason: string }> {
-  const out: Array<{ label: string; reason: string }> = [];
-  for (const leg of record.legs) {
+function buildLegBlockers(record: StoredComboRecord, input: ComboResolutionInput): Array<{ label: string; reason: string; legIndex: number }> {
+  const out: Array<{ label: string; reason: string; legIndex: number }> = [];
+  record.legs.forEach((leg, legIndex) => {
     const hit = resolveLegHit(leg, input);
-    if (hit !== null) continue;
+    if (hit !== null) return;
     const d = describeSingleLegForDebug(leg, input);
     out.push({
+      legIndex,
       label: (leg.label || leg.marketName || "Leg").slice(0, 160),
       reason: d.reason.slice(0, 400),
     });
-  }
+  });
   return out;
 }
 

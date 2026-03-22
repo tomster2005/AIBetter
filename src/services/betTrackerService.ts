@@ -40,6 +40,8 @@ export interface TrackedBetLeg {
   type: BuildLeg["type"];
   marketName: string;
   marketFamily: string;
+  /** Optional; improves display labels when present (newer tracker rows). */
+  marketId?: number;
   label: string;
   playerName?: string;
   matchLabel?: string;
@@ -219,11 +221,22 @@ function sanitizeTrackedLeg(value: unknown): TrackedBetLeg | null {
   const validOutcome =
     outcome === "Over" || outcome === "Under" || outcome === "Home" || outcome === "Draw" || outcome === "Away" || outcome === "Yes" || outcome === "No";
   if (!type || !validOutcome) return null;
+  const rawMid = (raw as { marketId?: unknown }).marketId;
+  const marketId =
+    typeof rawMid === "number" && Number.isFinite(rawMid) && rawMid > 0
+      ? rawMid
+      : typeof rawMid === "string"
+        ? (() => {
+            const n = parseInt(rawMid, 10);
+            return Number.isFinite(n) && n > 0 ? n : undefined;
+          })()
+        : undefined;
   return {
     legId: normalizeText(raw.legId) || undefined,
     type,
     marketName,
     marketFamily,
+    marketId,
     label,
     playerName: normalizeText(raw.playerName) || undefined,
     matchLabel: normalizeText(raw.matchLabel) || undefined,
@@ -908,11 +921,13 @@ export async function settlePendingTrackedBets(): Promise<number> {
 }
 
 function toTrackedLeg(leg: BuildLeg): TrackedBetLeg {
+  const mid = leg.marketId;
   return {
     legId: leg.id,
     type: leg.type,
     marketName: leg.marketName,
     marketFamily: leg.marketFamily,
+    marketId: typeof mid === "number" && Number.isFinite(mid) && mid > 0 ? mid : undefined,
     label: leg.label,
     playerName: leg.playerName,
     line: leg.line,

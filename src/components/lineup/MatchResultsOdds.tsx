@@ -6,6 +6,7 @@
 import { useState, useEffect } from "react";
 import { summariseNormalisedOdds, findBestOddsByOutcome } from "../../lib/valueBetEngine.js";
 import { generateModelProbabilities, explainModel } from "../../lib/modelProbabilities.js";
+import { formatMatchMarketSelectionDisplay } from "../../lib/betLegDisplayLabel.js";
 
 interface OddsSelection {
   label: string;
@@ -196,7 +197,9 @@ export function MatchResultsOdds({ fixtureId }: MatchResultsOddsProps) {
                     <div className="match-results-odds__selections">
                       {m.selections.map((sel, i) => (
                         <span key={i} className="match-results-odds__row">
-                          <span className="match-results-odds__label">{sel.label}:</span>
+                          <span className="match-results-odds__label">
+                            {formatMatchMarketSelectionDisplay(market.marketId, market.marketName, sel.label)}:
+                          </span>
                           <span className="match-results-odds__value">
                             {sel.odds != null ? String(sel.odds) : "—"}
                           </span>

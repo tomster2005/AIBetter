@@ -27,6 +27,7 @@ import {
   type TrackedBetRecord,
   type TrackedBetStatus,
 } from "../services/betTrackerService.js";
+import { formatBetLegDisplayLabel } from "../lib/betLegDisplayLabel.js";
 import { BankrollChart } from "../components/BankrollChart.js";
 import { evaluateValueBet, type ValueEvalMarket, type ValueEvalResult } from "../services/valueEvaluatorService.js";
 import "./BetTrackerPage.css";
@@ -1383,7 +1384,16 @@ export function BetTrackerPage() {
               const isExpanded = expandedBetIds.has(b.id);
               const previewLeg = b.legs[0];
               const previewLabel = previewLeg
-                ? `${previewLeg.marketName}: ${previewLeg.label}`
+                ? formatBetLegDisplayLabel({
+                    type: previewLeg.type,
+                    marketFamily: previewLeg.marketFamily,
+                    marketName: previewLeg.marketName,
+                    marketId: previewLeg.marketId,
+                    playerName: previewLeg.playerName,
+                    line: previewLeg.line,
+                    outcome: previewLeg.outcome,
+                    label: previewLeg.label,
+                  })
                 : "No selection details";
               const remainingLegCount = Math.max(0, b.legs.length - 1);
               const modelBadge =
@@ -1480,9 +1490,21 @@ export function BetTrackerPage() {
                           <ul className="bet-tracker-page__bet-selection-list">
                             {b.legs.map((l, i) => (
                               <li key={`${b.id}-leg-${i}`}>
-                                <span className="bet-tracker-page__leg-main">{l.matchLabel ?? b.matchLabel} - {l.marketName}: {l.label}</span>
+                                <span className="bet-tracker-page__leg-main">
+                                  {l.matchLabel ?? b.matchLabel} —{" "}
+                                  {formatBetLegDisplayLabel({
+                                    type: l.type,
+                                    marketFamily: l.marketFamily,
+                                    marketName: l.marketName,
+                                    marketId: l.marketId,
+                                    playerName: l.playerName,
+                                    line: l.line,
+                                    outcome: l.outcome,
+                                    label: l.label,
+                                  })}
+                                </span>
                                 <span className="bet-tracker-page__leg-sub">
-                                  {[l.leagueName, l.kickoffTime, l.playerName, l.outcome, Number.isFinite(l.line) && l.line !== 0 ? `Line ${l.line}` : null, l.odds != null ? `Odds ${l.odds.toFixed(2)}` : null, l.legNotes ? `Note: ${l.legNotes}` : null]
+                                  {[l.leagueName, l.kickoffTime, l.odds != null ? `Odds ${l.odds.toFixed(2)}` : null, l.legNotes ? `Note: ${l.legNotes}` : null]
                                     .filter(Boolean)
                                     .join(" | ") || "No extra details"}
                                 </span>
