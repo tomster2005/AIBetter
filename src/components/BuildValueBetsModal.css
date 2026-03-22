@@ -393,6 +393,11 @@
   padding: 0.1rem 0;
 }
 
+.build-value-bets-modal .why-leg-line--team-primary {
+  font-weight: 600;
+  color: #1f2937;
+}
+
 .build-value-bets-modal .why-leg-stats {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   letter-spacing: 0.5px;

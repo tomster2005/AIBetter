@@ -296,99 +296,309 @@ function isWeakOrPlaceholderReasonText(r: string): boolean {
   );
 }
 
+/** Max lines shown for team prop “Why this build” copy (display-only). */
+export const MAX_TEAM_PROP_EXPLANATION_LINES = 3;
+
+const STRUCTURED_TEAM_MARKETS = new Set([
+  "team:match-goals",
+  "team:alternative-total-goals",
+  "team:btts",
+  "team:match-results",
+]);
+
+function pct0(x: number | null | undefined): string {
+  if (x == null || !Number.isFinite(x)) return "—";
+  return `${Math.round(x * 100)}%`;
+}
+
+function capUniqueLines(parts: Array<string | null | undefined>, max: number): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of parts) {
+    const s = typeof raw === "string" ? raw.trim() : "";
+    if (!s || seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+/** Merge match-total average + venue-weighted expectation into one primary line. */
+function primaryTotalGoalsLine(
+  h: FixtureTeamFormContext["home"],
+  a: FixtureTeamFormContext["away"],
+  exp: number | null
+): string | null {
+  const combinedAvg =
+    h.avgMatchTotalGoals != null && a.avgMatchTotalGoals != null
+      ? (h.avgMatchTotalGoals + a.avgMatchTotalGoals) / 2
+      : null;
+  const n = `${h.sampleSize}+${a.sampleSize}`;
+  if (combinedAvg != null && exp != null) {
+    const d = Math.abs(combinedAvg - exp);
+    if (d < 0.2) {
+      return `Avg total goals ~${fmt1(combinedAvg)} (last ${n})`;
+    }
+    return `Avg total goals ~${fmt1(combinedAvg)} (last ${n}); venue-weighted ~${fmt1(exp)}`;
+  }
+  if (combinedAvg != null) {
+    return `Avg total goals ~${fmt1(combinedAvg)} (last ${n})`;
+  }
+  if (exp != null) {
+    return `Expected total goals ~${fmt1(exp)} (last ${n}, home/away-weighted)`;
+  }
+  return null;
+}
+
+function hitRateTotalsLine(
+  leg: TeamLegReasoningTarget,
+  h: FixtureTeamFormContext["home"],
+  a: FixtureTeamFormContext["away"],
+  hn: string,
+  an: string
+): string | null {
+  if (!Number.isFinite(leg.line)) return null;
+  const line = leg.line;
+  const hN = h.recentMatchTotals.length;
+  const aN = a.recentMatchTotals.length;
+  if (hN <= 0 || aN <= 0) return null;
+  if (leg.outcome === "Over") {
+    const hc = countOverUnder(h.recentMatchTotals, line, true);
+    const ac = countOverUnder(a.recentMatchTotals, line, true);
+    return `${hc}/${hN} ${hn} & ${ac}/${aN} ${an} over ${line}`;
+  }
+  if (leg.outcome === "Under") {
+    const hc = countOverUnder(h.recentMatchTotals, line, false);
+    const ac = countOverUnder(a.recentMatchTotals, line, false);
+    return `${hc}/${hN} ${hn} & ${ac}/${aN} ${an} under ${line}`;
+  }
+  return null;
+}
+
+function h2hTotalsOneLine(leg: TeamLegReasoningTarget, h2h: HeadToHeadFixtureContext): string | null {
+  if ((h2h.sampleSize ?? 0) < MIN_H2H_FOR_SOLO_SUPPORT || !Number.isFinite(leg.line)) return null;
+  const ag = h2h.averageTotalGoals;
+  const bits: string[] = [];
+  if (ag != null) bits.push(`~${fmt1(ag)} avg`);
+  const r = Array.isArray(h2h.recentTotalGoals) ? h2h.recentTotalGoals.slice(0, 5) : [];
+  if (r.length > 0) {
+    const line = leg.line;
+    const oh = r.filter((t) => t > line - EPS).length;
+    const ou = r.filter((t) => t < line - EPS).length;
+    if (leg.outcome === "Over") bits.push(`${oh}/${r.length} over ${line} in last H2H`);
+    else if (leg.outcome === "Under") bits.push(`${ou}/${r.length} under ${line} in last H2H`);
+    else bits.push(`${oh}/${r.length} over ${line} (last H2H)`);
+  }
+  if (bits.length === 0) return null;
+  return `H2H (${h2h.sampleSize}): ${bits.join("; ")}`;
+}
+
+function primaryNumberFromLine(line: string): number | null {
+  const m = line.match(/~([0-9]+(?:\.[0-9]+)?)/);
+  if (!m) return null;
+  const v = parseFloat(m[1]!);
+  return Number.isFinite(v) ? v : null;
+}
+
+function redundantH2hAvg(primaryLine: string | null, ag: number | null): boolean {
+  if (primaryLine == null || ag == null) return false;
+  const p = primaryNumberFromLine(primaryLine);
+  return p != null && Math.abs(p - ag) < 0.2;
+}
+
+function venueSplitSupportLine(
+  leg: TeamLegReasoningTarget,
+  h: FixtureTeamFormContext["home"],
+  a: FixtureTeamFormContext["away"]
+): string | null {
+  if (!Number.isFinite(leg.line)) return null;
+  const line = leg.line;
+  if (h.homeSplit.n < 2 || a.awaySplit.n < 2) return null;
+  const hf = h.homeSplit.avgGoalsFor;
+  const aa = a.awaySplit.avgGoalsAgainst;
+  if (hf == null || aa == null) return null;
+  const cross = hf + aa;
+  if (leg.outcome === "Over" && cross > line + 0.35) {
+    return "Home/away splits support a higher-total game.";
+  }
+  if (leg.outcome === "Under" && cross < line - 0.35) {
+    return "Home/away splits support a lower-total game.";
+  }
+  return null;
+}
+
+function tertiaryTotalsLine(
+  leg: TeamLegReasoningTarget,
+  form: FixtureTeamFormContext,
+  h2h: HeadToHeadFixtureContext | null | undefined,
+  primaryLine: string | null
+): string | null {
+  const h = form.home;
+  const a = form.away;
+  const h2hLine = h2h ? h2hTotalsOneLine(leg, h2h) : null;
+  const ag = h2h?.averageTotalGoals ?? null;
+  if (h2hLine && !redundantH2hAvg(primaryLine, ag)) {
+    return h2hLine;
+  }
+  return venueSplitSupportLine(leg, h, a);
+}
+
+function buildCompressedTotalGoalsLines(
+  leg: TeamLegReasoningTarget,
+  form: FixtureTeamFormContext,
+  h2h: HeadToHeadFixtureContext | null | undefined,
+  hn: string,
+  an: string
+): string[] {
+  const exp = blendedExpectedTotalGoals(form);
+  const h = form.home;
+  const a = form.away;
+  const primary = primaryTotalGoalsLine(h, a, exp);
+  const hit = hitRateTotalsLine(leg, h, a, hn, an);
+  const tertiary = tertiaryTotalsLine(leg, form, h2h, primary);
+  return capUniqueLines([primary, hit, tertiary], MAX_TEAM_PROP_EXPLANATION_LINES);
+}
+
+function buildCompressedBttsLines(
+  form: FixtureTeamFormContext,
+  h2h: HeadToHeadFixtureContext | null | undefined,
+  hn: string,
+  an: string
+): string[] {
+  const h = form.home;
+  const a = form.away;
+  const l1 = `BTTS hit ${h.bttsHits}/${h.sampleSize} (${hn}) & ${a.bttsHits}/${a.sampleSize} (${an})`;
+  const sr = h.scoredInRate;
+  const cr = h.concededInRate;
+  const srA = a.scoredInRate;
+  const crA = a.concededInRate;
+  let l2: string | null = null;
+  if (sr != null && cr != null && srA != null && crA != null) {
+    l2 = `Scored/conceded rates: ${hn} ${pct0(sr)}/${pct0(cr)} · ${an} ${pct0(srA)}/${pct0(crA)}`;
+  }
+  let l3: string | null = null;
+  if (h2h && (h2h.sampleSize ?? 0) >= MIN_H2H_FOR_SOLO_SUPPORT && h2h.bttsRate != null) {
+    const n = h2h.bttsSampleSize ?? h2h.sampleSize;
+    l3 = `H2H BTTS ${pct0(h2h.bttsRate)} (${n} games)`;
+  }
+  return capUniqueLines([l1, l2, l3], MAX_TEAM_PROP_EXPLANATION_LINES);
+}
+
+function buildCompressedMatchResultLines(
+  leg: TeamLegReasoningTarget,
+  form: FixtureTeamFormContext,
+  h2h: HeadToHeadFixtureContext | null | undefined,
+  hn: string,
+  an: string
+): string[] {
+  const h = form.home;
+  const a = form.away;
+  const hGF = h.avgGoalsFor;
+  const hGA = h.avgGoalsAgainst;
+  const aGF = a.avgGoalsFor;
+  const aGA = a.avgGoalsAgainst;
+  const l1 =
+    hGF != null && hGA != null && aGF != null && aGA != null
+      ? `Goals: ${hn} ${fmt1(hGF)}–${fmt1(hGA)}, ${an} ${fmt1(aGF)}–${fmt1(aGA)} (last ${h.sampleSize}+${a.sampleSize})`
+      : null;
+
+  const hN = h.sampleSize;
+  const aN = a.sampleSize;
+  const hw = h.recentMatchTotals.length
+    ? h.recentGoalsFor.filter((g, i) => g > (h.recentGoalsAgainst[i] ?? -1)).length
+    : 0;
+  const aw = a.recentMatchTotals.length
+    ? a.recentGoalsFor.filter((g, i) => g > (a.recentGoalsAgainst[i] ?? -1)).length
+    : 0;
+
+  let l2: string | null = null;
+  if (leg.outcome === "Home") {
+    const bits: string[] = [`${hn} won ${hw}/${hN} in sample`];
+    if (h.homeSplit.n >= 2 && h.homeSplit.avgGoalsFor != null) {
+      bits.push(`home ~${fmt1(h.homeSplit.avgGoalsFor)} for`);
+    }
+    l2 = bits.join("; ");
+  } else if (leg.outcome === "Away") {
+    const bits: string[] = [`${an} won ${aw}/${aN} in sample`];
+    if (a.awaySplit.n >= 2 && a.awaySplit.avgGoalsFor != null) {
+      bits.push(`away ~${fmt1(a.awaySplit.avgGoalsFor)} for`);
+    }
+    l2 = bits.join("; ");
+  } else if (leg.outcome === "Draw") {
+    l2 = "Draw: recent profiles balanced — result still volatile.";
+  }
+
+  let l3: string | null = null;
+  if (h2h && (h2h.sampleSize ?? 0) >= MIN_H2H_FOR_SOLO_SUPPORT) {
+    const n = h2h.resultSampleSize ?? h2h.sampleSize;
+    l3 = `H2H: ${hn} ${h2h.team1WinCount ?? "—"}/${n} · D ${h2h.drawCount ?? "—"} · ${an} ${h2h.team2WinCount ?? "—"}/${n}`;
+  }
+
+  return capUniqueLines([l1, l2, l3], MAX_TEAM_PROP_EXPLANATION_LINES);
+}
+
+function cautionLineFromLegReason(reason: string | null | undefined): string | null {
+  const r = reason?.trim() ?? "";
+  if (r.includes("Down-ranked")) {
+    return "Down-ranked: thin league form vs H2H-heavy read.";
+  }
+  return null;
+}
+
 export function buildTeamPropExplanationLines(
   leg: TeamLegReasoningTarget,
   form: FixtureTeamFormContext | null | undefined,
   h2h: HeadToHeadFixtureContext | null | undefined,
   names: { home: string; away: string }
 ): string[] {
-  const lines: string[] = [];
   const hn = names.home.trim() || "Home";
   const an = names.away.trim() || "Away";
 
-  const r = leg.reason?.trim();
-  if (r && r.length >= 12 && !isWeakOrPlaceholderReasonText(r)) {
-    lines.push(r);
+  if (!STRUCTURED_TEAM_MARKETS.has(leg.marketFamily)) {
+    const r = leg.reason?.trim();
+    const fromReason =
+      r && r.length >= 12 && !isWeakOrPlaceholderReasonText(r) ? [r] : ([] as string[]);
+    return capUniqueLines(fromReason, MAX_TEAM_PROP_EXPLANATION_LINES);
   }
 
   if (isFormContextStrong(form) && leg.marketFamily !== "team:alternative-corners") {
-    const h = form!.home;
-    const a = form!.away;
-    const exp = blendedExpectedTotalGoals(form!);
-
-    if (
-      (leg.marketFamily === "team:match-goals" || leg.marketFamily === "team:alternative-total-goals") &&
-      Number.isFinite(leg.line)
-    ) {
-      const line = leg.line;
-      const combinedAvg =
-        h.avgMatchTotalGoals != null && a.avgMatchTotalGoals != null
-          ? (h.avgMatchTotalGoals + a.avgMatchTotalGoals) / 2
-          : null;
-      if (combinedAvg != null) {
-        lines.push(`Combined recent match-total average ${fmt1(combinedAvg)} goals (last ${h.sampleSize} + ${a.sampleSize} games, all opponents).`);
-      }
-      if (exp != null) {
-        lines.push(`Venue-weighted expectation ~${fmt1(exp)} total goals (attack vs defence from home/away splits where available).`);
-      }
-      const hOver = countOverUnder(h.recentMatchTotals, line, true);
-      const aOver = countOverUnder(a.recentMatchTotals, line, true);
-      const hN = h.recentMatchTotals.length;
-      const aN = a.recentMatchTotals.length;
-      if (hN > 0 && aN > 0) {
-        lines.push(`${hOver}/${hN} ${hn} and ${aOver}/${aN} ${an} recent games went over ${line} total goals.`);
-      }
+    const ctx = form!;
+    if (leg.marketFamily === "team:match-goals" || leg.marketFamily === "team:alternative-total-goals") {
+      return buildCompressedTotalGoalsLines(leg, ctx, h2h, hn, an);
     }
-
     if (leg.marketFamily === "team:btts") {
-      lines.push(
-        `${hn}: BTTS in ${h.bttsHits}/${h.sampleSize} recent; scored in ${h.scoredInRate != null ? `${(h.scoredInRate * 100).toFixed(0)}%` : "n/a"}; conceded in ${h.concededInRate != null ? `${(h.concededInRate * 100).toFixed(0)}%` : "n/a"}.`
-      );
-      lines.push(
-        `${an}: BTTS in ${a.bttsHits}/${a.sampleSize} recent; scored in ${a.scoredInRate != null ? `${(a.scoredInRate * 100).toFixed(0)}%` : "n/a"}; conceded in ${a.concededInRate != null ? `${(a.concededInRate * 100).toFixed(0)}%` : "n/a"}.`
-      );
+      return buildCompressedBttsLines(ctx, h2h, hn, an);
     }
-
     if (leg.marketFamily === "team:match-results") {
-      if (h.avgGoalsFor != null && h.avgGoalsAgainst != null) {
-        lines.push(`${hn} (last ${h.sampleSize}): ${fmt1(h.avgGoalsFor)} scored / ${fmt1(h.avgGoalsAgainst)} conceded per game.`);
-      }
-      if (a.avgGoalsFor != null && a.avgGoalsAgainst != null) {
-        lines.push(`${an} (last ${a.sampleSize}): ${fmt1(a.avgGoalsFor)} scored / ${fmt1(a.avgGoalsAgainst)} conceded per game.`);
-      }
+      return buildCompressedMatchResultLines(leg, ctx, h2h, hn, an);
     }
-  } else if (!form?.fetchFailed && (form?.home.sampleSize ?? 0) + (form?.away.sampleSize ?? 0) > 0) {
-    lines.push(
-      `Recent-form sample is thin (${form?.home.sampleSize ?? 0} + ${form?.away.sampleSize ?? 0} usable matches) — treat team markets cautiously.`
-    );
-  } else if (form?.fetchFailed) {
-    lines.push("Recent league form could not be loaded; relying on other signals only.");
   }
 
+  const thin =
+    !form?.fetchFailed && (form?.home.sampleSize ?? 0) + (form?.away.sampleSize ?? 0) > 0
+      ? `Thin form (${form?.home.sampleSize ?? 0}+${form?.away.sampleSize ?? 0} games) — cautious on team markets.`
+      : null;
+  const fetchFail = form?.fetchFailed ? "Recent league form unavailable — other signals only." : null;
+  const caution = cautionLineFromLegReason(leg.reason);
+
+  const weakHead = capUniqueLines([thin, fetchFail, caution], 2);
+
+  const weakTail: string[] = [];
   if (h2h && (h2h.sampleSize ?? 0) >= MIN_H2H_FOR_SOLO_SUPPORT) {
     if (leg.marketFamily === "team:match-goals" || leg.marketFamily === "team:alternative-total-goals") {
-      const ag = h2h.averageTotalGoals;
-      if (ag != null && Number.isFinite(leg.line)) {
-        lines.push(`H2H secondary: average ${fmt1(ag)} total goals across ${h2h.sampleSize} meetings.`);
-      }
-      if (Array.isArray(h2h.recentTotalGoals) && h2h.recentTotalGoals.length > 0 && Number.isFinite(leg.line)) {
-        const r = h2h.recentTotalGoals.slice(0, 5);
-        const oh = r.filter((t) => t > leg.line - EPS).length;
-        lines.push(`H2H last totals (${r.length}): ${r.join(", ")} — ${oh}/${r.length} over ${leg.line}.`);
-      }
-    }
-    if (leg.marketFamily === "team:btts" && h2h.bttsRate != null) {
+      const one = h2hTotalsOneLine(leg, h2h);
+      if (one) weakTail.push(one);
+    } else if (leg.marketFamily === "team:btts" && h2h.bttsRate != null) {
       const n = h2h.bttsSampleSize ?? h2h.sampleSize;
-      lines.push(`H2H secondary: BTTS in ${h2h.bttsYesCount ?? "—"}/${n} (${(h2h.bttsRate * 100).toFixed(0)}%).`);
-    }
-    if (leg.marketFamily === "team:match-results") {
+      weakTail.push(`H2H BTTS ${pct0(h2h.bttsRate)} (${n} games)`);
+    } else if (leg.marketFamily === "team:match-results") {
       const n = h2h.resultSampleSize ?? h2h.sampleSize;
-      lines.push(
-        `H2H secondary: ${hn} ${h2h.team1WinCount ?? "—"}/${n} wins, draws ${h2h.drawCount ?? "—"}, ${an} ${h2h.team2WinCount ?? "—"}/${n}.`
+      weakTail.push(
+        `H2H: ${hn} ${h2h.team1WinCount ?? "—"}/${n} · D ${h2h.drawCount ?? "—"} · ${an} ${h2h.team2WinCount ?? "—"}/${n}`
       );
     }
   }
 
-  const dedup = [...new Set(lines.map((s) => s.trim()).filter(Boolean))];
-  return dedup;
+  return capUniqueLines([...weakHead, ...weakTail], MAX_TEAM_PROP_EXPLANATION_LINES);
 }

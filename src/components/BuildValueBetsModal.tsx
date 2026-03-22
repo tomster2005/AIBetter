@@ -126,6 +126,20 @@ function splitWhyLinesIntoLegBlocks(lines: readonly string[]): string[][] {
 }
 
 /** Classify body lines under a ✍️ header for presentation only (does not alter copy). */
+/** First line of compressed team-prop “Why” copy — slightly stronger typography (player/corner blocks unchanged). */
+function isCompressedTeamInsightPrimaryLine(line: string): boolean {
+  const t = line.trim();
+  return (
+    /^Avg total goals ~/.test(t) ||
+    /^Expected total goals ~/.test(t) ||
+    /^BTTS hit /.test(t) ||
+    /^Goals: /.test(t) ||
+    /^Thin form /.test(t) ||
+    /^Recent league form unavailable/.test(t) ||
+    /^Down-ranked: /.test(t)
+  );
+}
+
 function classifyWhyBodyLine(line: string): "stats" | "context" | "line" | "spacer" {
   if (line === "") return "spacer";
   const t = line.trim();
@@ -685,6 +699,7 @@ export function BuildValueBetsModal({
                             {splitWhyLinesIntoLegBlocks(combo.explanation.lines).map((block, bi) => {
                               const headerLine = block[0]?.startsWith("✍️") ? block[0] : null;
                               const bodyLines = headerLine != null ? block.slice(1) : block;
+                              const firstBodyIdx = bodyLines.findIndex((l) => l.trim() !== "");
                               return (
                                 <div key={bi} className="why-leg-block">
                                   {headerLine != null && (
@@ -693,6 +708,11 @@ export function BuildValueBetsModal({
                                   {bodyLines.map((line, li) => {
                                     const kind =
                                       headerLine != null ? classifyWhyBodyLine(line) : "line";
+                                    const teamPrimary =
+                                      kind === "line" &&
+                                      headerLine != null &&
+                                      firstBodyIdx === li &&
+                                      isCompressedTeamInsightPrimaryLine(line);
                                     const lineClass =
                                       kind === "stats"
                                         ? "why-leg-stats"
@@ -700,7 +720,9 @@ export function BuildValueBetsModal({
                                           ? "why-leg-context"
                                           : kind === "spacer"
                                             ? "why-leg-spacer"
-                                            : "why-leg-line";
+                                            : teamPrimary
+                                              ? "why-leg-line why-leg-line--team-primary"
+                                              : "why-leg-line";
                                     return (
                                       <div key={li} className={lineClass}>
                                         {line}

@@ -2377,7 +2377,17 @@ function buildComboExplanation(
         home: homeName,
         away: awayName,
       });
-      if (leg.reason && leg.reason.trim() && !isWeakGenericReason(leg.reason)) {
+      const structuredTeamWhy =
+        leg.marketFamily === "team:match-goals" ||
+        leg.marketFamily === "team:alternative-total-goals" ||
+        leg.marketFamily === "team:btts" ||
+        leg.marketFamily === "team:match-results";
+      if (
+        leg.reason &&
+        leg.reason.trim() &&
+        !isWeakGenericReason(leg.reason) &&
+        !(structuredTeamWhy && teamLines.length > 0)
+      ) {
         const rr = leg.reason.trim();
         if (!teamLines.some((x) => x.includes(rr.slice(0, Math.min(40, rr.length))))) {
           teamLines.push(rr);
