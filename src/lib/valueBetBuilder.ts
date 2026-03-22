@@ -12,6 +12,8 @@ import {
   MARKET_ID_BTTS,
   MARKET_ID_MATCH_GOALS,
   MARKET_ID_MATCH_RESULTS,
+  MARKET_ID_TEAM_TOTAL_GOALS,
+  MARKET_ID_TOTAL_CORNERS,
 } from "../constants/marketIds.js";
 import type { HeadToHeadFixtureContext } from "../types/headToHeadContext.js";
 import type { FixtureTeamFormContext } from "../types/teamRecentFormContext.js";
@@ -324,6 +326,39 @@ const BUILD_TEAM_MARKET_IDS = new Set<number>([
 
 /** Only one corner leg per combo; all Alternative Corners lines share this family. */
 const CORNERS_MARKET_FAMILY = "team:alternative-corners";
+
+/** Match-level goals O/U lines (excludes team total goals and corners). */
+const MATCH_TOTAL_GOALS_LINE_MIN = 0.5;
+const MATCH_TOTAL_GOALS_LINE_MAX = 6.5;
+
+function isSensibleMatchTotalGoalsLine(line: number): boolean {
+  return Number.isFinite(line) && line >= MATCH_TOTAL_GOALS_LINE_MIN && line <= MATCH_TOTAL_GOALS_LINE_MAX;
+}
+
+/**
+ * True for Sportmonks 80/81 or any other provider ID whose market name is match goals O/U (not team totals).
+ * Reasoning/scoring keys off `marketFamily === "team:match-goals"` for all of these.
+ */
+function isMatchTotalGoalsOuMarket(marketId: number, marketName: string): boolean {
+  if (marketId === MARKET_ID_TEAM_TOTAL_GOALS) return false;
+  if (marketId === MARKET_ID_ALTERNATIVE_CORNERS || marketId === MARKET_ID_TOTAL_CORNERS) return false;
+  if (marketId === MARKET_ID_MATCH_GOALS || marketId === MARKET_ID_ALTERNATIVE_TOTAL_GOALS) return true;
+
+  const n = (marketName || "").toLowerCase();
+  if (!n.includes("goal")) return false;
+  if (n.includes("corner")) return false;
+  if (/\bteam\s+total\b/.test(n) || /\bteam\s+goals\b/.test(n)) return false;
+  if (/\b(home|away)\b.*\b(total\s+)?goals?\b/.test(n)) return false;
+  if (/\bgoals?\b.*\b(home|away)\b/.test(n)) return false;
+  return true;
+}
+
+/** Match total goals team leg (main, alternative, or name-detected). Legacy legs may still use team:alternative-total-goals. */
+function isTeamMatchTotalGoalsLeg(leg: BuildLeg): boolean {
+  if (leg.type !== "team") return false;
+  if (leg.marketFamily === "team:match-goals" || leg.marketFamily === "team:alternative-total-goals") return true;
+  return isMatchTotalGoalsOuMarket(leg.marketId, leg.marketName);
+}
 
 /** Default fixture total corners when no team stats (league-typical). */
 const DEFAULT_FIXTURE_EXPECTED_CORNERS = 10.5;
@@ -1743,7 +1778,7 @@ function applyH2HAdjustmentsToTeamLeg(
   const awayWin = headToHeadContext.team2WinRate;
 
   // Goals lean (team totals markets only).
-  if ((leg.marketFamily === "team:match-goals" || leg.marketFamily === "team:alternative-total-goals") && avgGoals != null) {
+  if (isTeamMatchTotalGoalsLeg(leg) && avgGoals != null) {
     const high = avgGoals >= 3.0;
     const low = avgGoals <= 2.2;
     if (high) {
@@ -1826,9 +1861,11 @@ function scoreTeamLegNoModel(opts: {
   odds: number;
   line: number | null;
   outcomeLabel: string;
+  /** When marketId is not 80/81, used to detect match goals O/U for line scoring. */
+  marketName?: string;
 }): { score: number; reason: string } {
   // Conservative: these legs are "available alternatives" vs corners, not meant to dominate without a model.
-  const { marketId, odds, line, outcomeLabel } = opts;
+  const { marketId, odds, line, outcomeLabel, marketName } = opts;
   let score = 8;
   // Avoid generic filler; evidence-style explanations are added later (H2H counts, etc.).
   let reason = "";
@@ -1839,8 +1876,12 @@ function scoreTeamLegNoModel(opts: {
   if (odds > 8) score -= 8;
   if (odds > 12) score -= 14;
 
-  // Prefer common goal lines for O/U totals.
-  if ((marketId === MARKET_ID_MATCH_GOALS || marketId === MARKET_ID_ALTERNATIVE_TOTAL_GOALS) && line != null) {
+  // Prefer common goal lines for O/U totals (any match-goals market id / name).
+  const isGoalsOu =
+    marketId === MARKET_ID_MATCH_GOALS ||
+    marketId === MARKET_ID_ALTERNATIVE_TOTAL_GOALS ||
+    (typeof marketName === "string" && isMatchTotalGoalsOuMarket(marketId, marketName));
+  if (isGoalsOu && line != null) {
     if (line >= 0.5 && line <= 6.5) score += 4;
     const common = [0.5, 1.5, 2.5, 3.5, 4.5];
     const dist = Math.min(...common.map((x) => Math.abs(x - line)));
@@ -1883,7 +1924,7 @@ export function getTeamLegsFromOdds(
   for (const b of bookmakers) {
     for (const m of b.markets) {
       byMarketIdRaw.set(m.marketId, (byMarketIdRaw.get(m.marketId) ?? 0) + 1);
-      if (!BUILD_TEAM_MARKET_IDS.has(m.marketId)) continue;
+      if (!BUILD_TEAM_MARKET_IDS.has(m.marketId) && !isMatchTotalGoalsOuMarket(m.marketId, m.marketName)) continue;
       if (m.marketId === MARKET_ID_ALTERNATIVE_CORNERS) continue; // already handled above
 
       for (const sel of m.selections) {
@@ -1973,22 +2014,29 @@ export function getTeamLegsFromOdds(
           continue;
         }
 
-        if (m.marketId === MARKET_ID_MATCH_GOALS || m.marketId === MARKET_ID_ALTERNATIVE_TOTAL_GOALS) {
+        if (isMatchTotalGoalsOuMarket(m.marketId, m.marketName)) {
           const line = parseOverUnderLine(rawLabel);
           if (line == null) continue;
+          if (
+            m.marketId !== MARKET_ID_MATCH_GOALS &&
+            m.marketId !== MARKET_ID_ALTERNATIVE_TOTAL_GOALS &&
+            !isSensibleMatchTotalGoalsLine(line)
+          ) {
+            continue;
+          }
           const outcome: "Over" | "Under" = isOverLabel(rawLabel) ? "Over" : "Under";
           const base = scoreTeamLegNoModel({
             marketId: m.marketId,
             odds,
             line,
             outcomeLabel: `${outcome} ${line}`,
+            marketName: m.marketName,
           });
-          const family = m.marketId === MARKET_ID_MATCH_GOALS ? "team:match-goals" : "team:alternative-total-goals";
           const leg: BuildLeg = {
             id: `team-ou-${m.marketId}-${b.bookmakerId}-${outcome}-${line}-${odds}`,
             type: "team",
             marketId: m.marketId,
-            marketFamily: family,
+            marketFamily: "team:match-goals",
             label: `${m.marketName} ${line} ${outcome}`,
             marketName: m.marketName,
             line,
@@ -2378,8 +2426,7 @@ function buildComboExplanation(
         away: awayName,
       });
       const structuredTeamWhy =
-        leg.marketFamily === "team:match-goals" ||
-        leg.marketFamily === "team:alternative-total-goals" ||
+        isTeamMatchTotalGoalsLeg(leg) ||
         leg.marketFamily === "team:btts" ||
         leg.marketFamily === "team:match-results";
       if (
@@ -2444,16 +2491,14 @@ function getCorrelationPenalty(a: BuildLeg, b: BuildLeg): number {
   if (
     a.type === "team" &&
     b.type === "team" &&
-    ((a.teamId && b.teamId && a.teamId === b.teamId) ||
-      ((a.marketFamily === "team:match-goals" || a.marketFamily === "team:alternative-total-goals") &&
-        (b.marketFamily === "team:match-goals" || b.marketFamily === "team:alternative-total-goals")))
+    ((a.teamId && b.teamId && a.teamId === b.teamId) || (isTeamMatchTotalGoalsLeg(a) && isTeamMatchTotalGoalsLeg(b)))
   ) {
     return 0.08;
   }
 
   // GOALS + BTTS overlap
-  const aIsGoals = a.marketId === MARKET_ID_MATCH_GOALS || a.marketId === MARKET_ID_ALTERNATIVE_TOTAL_GOALS;
-  const bIsGoals = b.marketId === MARKET_ID_MATCH_GOALS || b.marketId === MARKET_ID_ALTERNATIVE_TOTAL_GOALS;
+  const aIsGoals = isTeamMatchTotalGoalsLeg(a);
+  const bIsGoals = isTeamMatchTotalGoalsLeg(b);
   const aIsBtts = a.marketId === MARKET_ID_BTTS;
   const bIsBtts = b.marketId === MARKET_ID_BTTS;
   if ((aIsGoals && bIsBtts) || (aIsBtts && bIsGoals)) return 0.1;
@@ -2726,7 +2771,7 @@ export function buildValueBetCombos(
 
     const formStrong = isFormContextStrong(teamFormContext);
     if (formStrong) {
-      if (leg.marketFamily === "team:match-goals" || leg.marketFamily === "team:alternative-total-goals") return true;
+      if (isTeamMatchTotalGoalsLeg(leg)) return true;
       if (leg.marketFamily === "team:btts") return true;
       if (leg.marketFamily === "team:match-results") return true;
     }
@@ -2748,7 +2793,7 @@ export function buildValueBetCombos(
           if (leg.outcome === "No") return (n - (headToHeadContext?.bttsYesCount ?? 0)) > 0;
         }
       }
-      if (leg.marketFamily === "team:match-goals" || leg.marketFamily === "team:alternative-total-goals") {
+      if (isTeamMatchTotalGoalsLeg(leg)) {
         const row = h2hGoalsLineCountsByRoundedLine.get(roundLine(leg.line));
         if (row && row.sampleSize >= MIN_H2H_SAMPLE_SIZE) {
           if (leg.outcome === "Over") return row.over > 0;
@@ -2798,7 +2843,7 @@ export function buildValueBetCombos(
   type TeamLegMarginalValue = "additive" | "weaklyAdditive" | "lowMarginalValue";
 
   function isBroadAlternativeGoalsLeg(leg: BuildLeg): boolean {
-    if (leg.marketFamily !== "team:alternative-total-goals") return false;
+    if (leg.marketId !== MARKET_ID_ALTERNATIVE_TOTAL_GOALS || !isTeamMatchTotalGoalsLeg(leg)) return false;
     if (leg.outcome === "Over") return leg.line <= 1.5;
     if (leg.outcome === "Under") return leg.line >= 4.5;
     return false;
@@ -2891,7 +2936,7 @@ export function buildValueBetCombos(
           if (rate >= 0.5) score += 2;
           if (rate >= 0.65) score += 1;
         }
-      } else if (leg.marketFamily === "team:match-goals" || leg.marketFamily === "team:alternative-total-goals") {
+      } else if (isTeamMatchTotalGoalsLeg(leg)) {
         const row = h2hGoalsLineCountsByRoundedLine.get(roundLine(leg.line));
         if (row && row.sampleSize >= MIN_H2H_SAMPLE_SIZE) {
           const rate = leg.outcome === "Over" ? row.over / row.sampleSize : row.under / row.sampleSize;
@@ -3049,7 +3094,9 @@ export function buildValueBetCombos(
     if (coreLegCount === 1 && fillerLegCount >= 2) fillerPenalty -= SCORING_CONFIG.combo.singleCoreTwoPlusFillerPenalty; // directly targets 1 core + 2 padding legs.
 
     // Specific filler padding hotspot: alternative goals totals used without evidence support.
-    const fillerAltGoalsCount = c.legs.filter((l) => l.type === "team" && l.marketFamily === "team:alternative-total-goals")
+    const fillerAltGoalsCount = c.legs.filter(
+      (l) => l.type === "team" && l.marketId === MARKET_ID_ALTERNATIVE_TOTAL_GOALS && isTeamMatchTotalGoalsLeg(l)
+    )
       .filter((l) => classifyTeamLegMarginalValue(c, l) === "lowMarginalValue").length;
     fillerAltGoalsPenalty -= fillerAltGoalsCount * SCORING_CONFIG.combo.fillerAltGoalsPenalty;
 
