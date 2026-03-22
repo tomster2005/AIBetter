@@ -8,6 +8,8 @@ import {
   resolveUnfinishedCombosFromFixtures,
   forceReResolveStoredCombosForFixture,
   devAuditBetHistoryCombos,
+  devAuditFinishedBetHistoryCombos,
+  forceRecheckHistorySettlements,
   deriveBetHistoryDisplayStatus,
   type DisplayStoredComboRecord,
   type StoredComboLeg,
@@ -154,8 +156,14 @@ export function BetHistoryPage() {
         return count;
       };
       (window as any).auditBetHistory = async () => {
+        await devAuditFinishedBetHistoryCombos();
         await devAuditBetHistoryCombos();
         refresh();
+      };
+      (window as any).forceRecheckHistorySettlements = async () => {
+        const summary = await forceRecheckHistorySettlements();
+        refresh();
+        return summary;
       };
     }
     return () => {
@@ -163,6 +171,7 @@ export function BetHistoryPage() {
       if (import.meta.env.DEV) {
         delete (window as any).forceReResolveComboFixture;
         delete (window as any).auditBetHistory;
+        delete (window as any).forceRecheckHistorySettlements;
       }
     };
   }, [refresh]);
