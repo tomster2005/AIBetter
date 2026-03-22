@@ -3,15 +3,15 @@
   padding: 1.5rem 1.75rem 2.5rem;
   max-width: 64rem;
   margin: 0 auto;
-  background: #f8fafc;
+  background: var(--bg-main, #f7f8fa);
   min-height: 100vh;
 }
 
 .odds-page__title {
   margin: 0 0 1.25rem;
-  font-size: 1.375rem;
+  font-size: clamp(1.625rem, 2.2vw, 1.875rem);
   font-weight: 600;
-  color: #0f172a;
+  color: var(--text-primary, #1f2937);
   letter-spacing: -0.02em;
 }
 
@@ -19,10 +19,15 @@
 .odds-page__picker {
   margin-bottom: 1.75rem;
   padding: 1.25rem 1.5rem;
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  background: var(--card-bg, #fff);
+  border: 1px solid var(--border-light, #e6e8ec);
+  border-radius: 12px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
+  transition: box-shadow 0.2s ease;
+}
+
+.odds-page__picker:hover {
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.05);
 }
 
 .odds-page__date-strip {
@@ -36,24 +41,23 @@
   padding: 0.5rem 1rem;
   font-size: 0.8125rem;
   font-weight: 500;
-  color: #64748b;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
+  color: var(--text-secondary, #6b7280);
+  background: #f3f4f6;
+  border: 1px solid transparent;
   border-radius: 8px;
   cursor: pointer;
   transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
 }
 
 .odds-page__date-btn:hover {
-  background: #f1f5f9;
-  color: #0f172a;
-  border-color: #cbd5e1;
+  background: #e8eaef;
+  color: var(--text-primary, #1f2937);
 }
 
 .odds-page__date-btn--active {
-  background: #0f172a;
+  background: var(--accent, #2563eb);
   color: #fff;
-  border-color: #0f172a;
+  border-color: transparent;
 }
 
 .odds-page__fixture-list {
@@ -70,23 +74,25 @@
   padding: 0.625rem 1rem;
   font-size: 0.875rem;
   text-align: left;
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
+  background: var(--card-bg, #fff);
+  border: 1px solid var(--border-light, #e6e8ec);
+  border-radius: 12px;
   cursor: pointer;
-  transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
+  transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, transform 0.18s ease;
 }
 
 .odds-page__fixture-btn:hover {
-  background: #f8fafc;
-  border-color: #cbd5e1;
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.06);
+  border-color: #d1d5db;
 }
 
 .odds-page__fixture-btn--active {
-  background: #f1f5f9;
-  border-color: #0f172a;
-  border-width: 2px;
-  box-shadow: 0 0 0 1px #0f172a;
+  background: rgba(37, 99, 235, 0.06);
+  border-color: rgba(37, 99, 235, 0.35);
+  border-left: 3px solid var(--accent, #2563eb);
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.12);
   font-weight: 500;
 }
 
@@ -129,10 +135,10 @@
 /* Section B: Selected fixture odds workspace */
 .odds-page__workspace {
   padding: 1.5rem 1.75rem;
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  background: var(--card-bg, #fff);
+  border: 1px solid var(--border-light, #e6e8ec);
+  border-radius: 12px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
 }
 
 .odds-page__workspace-title {
@@ -140,9 +146,9 @@
   padding-bottom: 1rem;
   font-size: 1.125rem;
   font-weight: 600;
-  color: #0f172a;
+  color: var(--text-primary, #1f2937);
   letter-spacing: -0.01em;
-  border-bottom: 2px solid #e2e8f0;
+  border-bottom: 1px solid var(--border-light, #e6e8ec);
 }
 
 .odds-page__section {
@@ -165,8 +171,9 @@
 .odds-page__table-wrap {
   margin-bottom: 1.5rem;
   overflow-x: auto;
-  border-radius: 8px;
-  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  border: 1px solid var(--border-light, #e6e8ec);
+  background: var(--card-bg, #fff);
 }
 
 .odds-page__table-wrap--grouped-ou {

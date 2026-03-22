@@ -1,8 +1,9 @@
 .bankroll-chart {
-  border: 1px solid #e5e7eb;
-  border-radius: 10px;
-  background: #fff;
-  padding: 0.55rem;
+  border: 1px solid var(--border-light, #e6e8ec);
+  border-radius: 12px;
+  background: var(--card-bg, #fff);
+  padding: 0.65rem 0.75rem 0.55rem;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
 }
 
 .bankroll-chart__svg {
@@ -21,26 +22,26 @@
 }
 
 .bankroll-chart__line.is-up {
-  stroke: #16a34a;
+  stroke: var(--positive, #16a34a);
 }
 
 .bankroll-chart__line.is-down {
-  stroke: #dc2626;
+  stroke: var(--negative, #dc2626);
 }
 
 .bankroll-chart__dot {
-  fill: #1f2937;
+  fill: var(--text-primary, #1f2937);
 }
 
 .bankroll-chart__meta {
   display: flex;
   justify-content: space-between;
   font-size: 0.78rem;
-  color: #6b7280;
-  margin-top: 0.2rem;
+  color: var(--text-secondary, #6b7280);
+  margin-top: 0.35rem;
 }
 
 .bankroll-chart__empty {
-  color: #6b7280;
+  color: var(--text-secondary, #6b7280);
   margin: 0.25rem 0;
 }

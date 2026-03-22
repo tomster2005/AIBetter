@@ -1036,7 +1036,15 @@ export function BetTrackerPage() {
             </select>
           </label>
         </div>
-        <BankrollChart points={timelinePoints} />
+        <div className="bet-tracker-page__bankroll-card">
+          <div className="bet-tracker-page__bankroll-card-head">
+            <h3 className="bet-tracker-page__bankroll-title">Bankroll</h3>
+            <p className="bet-tracker-page__bankroll-subtitle">Running balance after settled activity</p>
+          </div>
+          <div className="bet-tracker-page__bankroll-card-body">
+            <BankrollChart points={timelinePoints} />
+          </div>
+        </div>
 
         <div className="bet-tracker-page__model-performance">
           <h3>Model Performance</h3>

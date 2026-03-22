@@ -2,15 +2,15 @@
   max-width: 56rem;
   margin: 0 auto;
   padding: 1.5rem 1.25rem 2rem;
-  background: #f0f1f3;
-  min-height: 100vh;
+  background: transparent;
+  min-height: 100%;
 }
 
 .calendar-page__label {
   margin: 0 0 1rem;
   font-size: 0.8125rem;
   font-weight: 500;
-  color: #6b7280;
+  color: var(--text-secondary);
   letter-spacing: 0.02em;
 }
 
@@ -18,7 +18,7 @@
   display: flex;
   gap: 1.5rem;
   align-items: flex-start;
-  margin-top: 1.25rem;
+  margin-top: 1.5rem;
 }
 
 .calendar-page__content {
@@ -35,7 +35,7 @@
 .calendar-page__message {
   margin: 0;
   font-size: 0.875rem;
-  color: #6b7280;
+  color: var(--text-secondary);
 }
 
 .calendar-page__message--error {

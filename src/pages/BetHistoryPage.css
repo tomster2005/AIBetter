@@ -1,50 +1,71 @@
 .bet-history {
-  padding: 1.25rem;
+  padding: 1.5rem 1.25rem 2rem;
+  max-width: 1160px;
+  margin: 0 auto;
 }
 
 .bet-history__title {
-  margin: 0 0 1rem;
-  font-size: 1.25rem;
-  font-weight: 700;
+  margin: 0 0 1.25rem;
+  font-size: clamp(1.625rem, 2.4vw, 1.875rem);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
 }
 
 .bet-history__tabs {
   display: flex;
   gap: 0.5rem;
-  margin-bottom: 1rem;
+  margin-bottom: 1.25rem;
+  flex-wrap: wrap;
 }
 
 .bet-history__tab {
-  border: 1px solid #d1d5db;
-  background: #fff;
-  color: #374151;
+  border: 1px solid transparent;
+  background: #f3f4f6;
+  color: var(--text-secondary);
   border-radius: 8px;
-  padding: 0.5rem 0.75rem;
+  padding: 0.5rem 0.85rem;
+  font-weight: 500;
+  font-size: 0.875rem;
   cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.bet-history__tab:hover {
+  background: #e8eaef;
+  color: var(--text-primary);
 }
 
 .bet-history__tab--active {
-  border-color: #93c5fd;
-  background: #eff6ff;
-  color: #1d4ed8;
+  border-color: rgba(37, 99, 235, 0.25);
+  background: rgba(37, 99, 235, 0.08);
+  color: var(--accent);
+  font-weight: 600;
 }
 
 .bet-history__section {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 1rem;
 }
 
 .bet-history__empty,
 .bet-history__empty-inline {
-  color: #6b7280;
+  color: var(--text-secondary);
 }
 
 .bet-history__card {
-  border: 1px solid #e5e7eb;
-  border-radius: 10px;
-  background: #fff;
-  padding: 0.75rem;
+  border: 1px solid var(--border-light);
+  border-radius: 12px;
+  background: var(--card-bg);
+  padding: 1rem 1.15rem;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
+  transition: transform 0.18s ease, box-shadow 0.2s ease;
+}
+
+.bet-history__card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.06);
 }
 
 .bet-history__card-header {
@@ -52,7 +73,7 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 0.75rem;
-  margin-bottom: 0.5rem;
+  margin-bottom: 0.65rem;
 }
 
 .bet-history__card-meta {
@@ -63,7 +84,7 @@
 
 .bet-history__meta-item {
   font-size: 0.8rem;
-  color: #6b7280;
+  color: var(--text-secondary);
 }
 
 .bet-history__badge {
@@ -75,36 +96,37 @@
 
 .bet-history__badge--win {
   background: #dcfce7;
-  color: #166534;
+  color: var(--positive);
 }
 
 .bet-history__badge--loss {
   background: #fee2e2;
-  color: #991b1b;
+  color: var(--negative);
 }
 
 .bet-history__badge--pending {
   background: #f3f4f6;
-  color: #374151;
+  color: var(--text-primary);
 }
 
 .bet-history__card-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 0.35rem 0.75rem;
-  margin-bottom: 0.5rem;
+  gap: 0.5rem 0.85rem;
+  margin-bottom: 0.65rem;
 }
 
 .bet-history__card-grid p {
   margin: 0;
   font-size: 0.88rem;
+  color: var(--text-primary);
 }
 
 .bet-history__leg-list {
   margin: 0;
   padding-left: 1rem;
   display: grid;
-  gap: 0.25rem;
+  gap: 0.35rem;
 }
 
 .bet-history__leg-item {
@@ -113,63 +135,89 @@
 
 .bet-history__leg-main {
   display: block;
-  color: #111827;
+  color: var(--text-primary);
 }
 
 .bet-history__leg-meta {
   display: block;
-  color: #6b7280;
+  color: var(--text-secondary);
   font-size: 0.78rem;
 }
 
 .bet-history__stats-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 0.55rem;
+  gap: 0.65rem;
 }
 
 .bet-history__stat-card {
-  border: 1px solid #e5e7eb;
-  border-radius: 10px;
-  padding: 0.55rem 0.65rem;
-  background: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #f9fafb;
   display: flex;
   flex-direction: column;
-  gap: 0.2rem;
+  gap: 0.25rem;
 }
 
 .bet-history__stat-card span {
-  color: #6b7280;
+  color: var(--text-secondary);
   font-size: 0.78rem;
+  font-weight: 500;
 }
 
 .bet-history__stat-card strong {
   font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
 }
 
 .bet-history__table-wrap {
-  margin-top: 0.5rem;
+  margin-top: 0.65rem;
+  border: 1px solid var(--border-light);
+  border-radius: 12px;
+  overflow: auto;
+  background: var(--card-bg);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
 }
 
 .bet-history__subheading {
-  font-size: 1rem;
-  margin: 0.4rem 0;
+  font-size: 1.0625rem;
+  font-weight: 600;
+  margin: 0.5rem 0 0.65rem;
+  color: var(--text-primary);
 }
 
 .bet-history__table {
   width: 100%;
   border-collapse: collapse;
-  border: 1px solid #e5e7eb;
+  border: none;
+  min-width: 520px;
 }
 
 .bet-history__table th,
 .bet-history__table td {
-  border-bottom: 1px solid #e5e7eb;
-  padding: 0.45rem 0.5rem;
+  border-bottom: 1px solid var(--border-light);
+  padding: 0.55rem 0.75rem;
   text-align: left;
   font-size: 0.84rem;
 }
 
 .bet-history__table thead th {
   background: #f9fafb;
+  color: var(--text-secondary);
+  font-weight: 600;
+  font-size: 0.78rem;
+}
+
+.bet-history__table tbody tr:nth-child(even) td {
+  background: #fafafa;
+}
+
+.bet-history__table tbody tr:hover td {
+  background: #f9fafb;
+}
+
+.bet-history__table tbody tr:last-child td {
+  border-bottom: none;
 }

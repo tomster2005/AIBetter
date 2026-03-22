@@ -2452,72 +2452,22 @@ function buildComboExplanation(
 }
 
 /** Reject combos that contain more than one leg from the same market family (overlap). */
-export function hasSameFamilyOverlap(legs: BuildLeg[]): boolean {
+function hasSameFamilyOverlap(legs: BuildLeg[]): boolean {
   const families = new Set(legs.map((l) => l.marketFamily));
   return families.size < legs.length;
-}
-
-/** Build a single combo record from legs (shared by single-fixture and cross-match generators). */
-export function buildComboFromSelectedLegs(selected: BuildLeg[], targetOdds: number): BuildCombo {
-  const combinedOdds = selected.reduce((acc, leg) => acc * leg.odds, 1);
-  const distanceFromTarget = Math.abs(combinedOdds - targetOdds);
-  const comboScore = selected.reduce((s, leg) => s + leg.score, 0);
-  const comboEdge = selected.reduce((s, leg) => s + (Number.isFinite(leg.edge as number) ? (leg.edge as number) : 0), 0);
-  const combinedProbRaw = selected.reduce((acc, leg) => {
-    const fallbackProb = leg.odds > 0 ? 1 / leg.odds : 0;
-    const legProb = Number.isFinite(leg.probability as number) ? (leg.probability as number) : fallbackProb;
-    return acc * clamp01(legProb);
-  }, 1);
-  let correlationPenalty = 0;
-  for (let i = 0; i < selected.length; i++) {
-    for (let j = i + 1; j < selected.length; j++) {
-      correlationPenalty += getCorrelationPenalty(selected[i]!, selected[j]!);
-    }
-  }
-  const boundedPenalty = Math.max(0, Math.min(0.9, correlationPenalty));
-  const combinedProb = clamp01(combinedProbRaw * (1 - boundedPenalty));
-  const impliedProb = combinedOdds > 0 ? 1 / combinedOdds : 0;
-  const comboEV = combinedProb - impliedProb;
-  const comboEVPercent = combinedProb * combinedOdds - 1;
-  const kellyStakePct = computeKellyStakePct(combinedOdds, combinedProb);
-  const adjustedComboEdge = comboEdge * (1 - boundedPenalty);
-  const fingerprint = comboFingerprintFromLegs(selected);
-  return {
-    legs: selected,
-    fingerprint,
-    combinedOdds,
-    distanceFromTarget,
-    comboScore,
-    comboEdge,
-    adjustedComboEdge,
-    combinedProb,
-    impliedProb,
-    comboEV,
-    comboEVPercent,
-    kellyStakePct,
-  };
-}
-
-/** Strip cross-match `xf:{fixtureId}:` prefix so team-market correlation matches tagged legs. */
-function marketFamilyForCorrelation(mf: string): string {
-  const m = /^xf:\d+:(.+)$/.exec(mf);
-  return m ? m[1]! : mf;
 }
 
 function getCorrelationPenalty(a: BuildLeg, b: BuildLeg): number {
   // SAME PLAYER (strong correlation)
   if (a.playerId && b.playerId && a.playerId === b.playerId) return 0.15;
 
-  const aMf = marketFamilyForCorrelation(a.marketFamily);
-  const bMf = marketFamilyForCorrelation(b.marketFamily);
-
   // SAME TEAM + similar team-goals markets (medium correlation)
   if (
     a.type === "team" &&
     b.type === "team" &&
     ((a.teamId && b.teamId && a.teamId === b.teamId) ||
-      ((aMf === "team:match-goals" || aMf === "team:alternative-total-goals") &&
-        (bMf === "team:match-goals" || bMf === "team:alternative-total-goals")))
+      ((a.marketFamily === "team:match-goals" || a.marketFamily === "team:alternative-total-goals") &&
+        (b.marketFamily === "team:match-goals" || b.marketFamily === "team:alternative-total-goals")))
   ) {
     return 0.08;
   }
@@ -2547,28 +2497,13 @@ function computeKellyStakePct(combinedOdds: number, combinedProb: number): numbe
   return capped * KELLY_FRACTIONAL;
 }
 
-/** Optional counters filled by {@link generateCombos} for diagnostics (cross-match builder, dev logs). */
-export interface GenerateCombosMetrics {
-  preEvComboCount: number;
-  postMinEvComboCount: number;
-  afterPositiveNearFilterCount: number;
-  returnedCount: number;
-  rejectedSameFamilyOverlap: number;
-}
-
 /** Generate 2-leg and 3-leg combos, rank by distance, then EV, then combo score. Rejects same-family overlap. */
 export function generateCombos(
   legs: BuildLeg[],
   targetOdds: number,
-  options: {
-    maxCombos?: number;
-    maxLegs?: number;
-    /** Defaults to {@link MIN_COMBO_EV}. Cross-match uses 0 so combos are not dropped before distinct-fixture filtering. */
-    minComboEV?: number;
-    metrics?: GenerateCombosMetrics;
-  } = {}
+  options: { maxCombos?: number; maxLegs?: number } = {}
 ): BuildCombo[] {
-  const { maxCombos = 50, maxLegs = 3, minComboEV = MIN_COMBO_EV, metrics } = options;
+  const { maxCombos = 50, maxLegs = 3 } = options;
   const combos: BuildCombo[] = [];
   const used = new Set<string>();
   let rejectedOverlap = 0;
@@ -2582,10 +2517,46 @@ export function generateCombos(
           rejectedOverlap += 1;
           return;
         }
+        const combinedOdds = selected.reduce((acc, leg) => acc * leg.odds, 1);
+        const distanceFromTarget = Math.abs(combinedOdds - targetOdds);
+        const comboScore = selected.reduce((s, leg) => s + leg.score, 0);
+        const comboEdge = selected.reduce((s, leg) => s + (Number.isFinite(leg.edge as number) ? (leg.edge as number) : 0), 0);
+        const combinedProbRaw = selected.reduce((acc, leg) => {
+          const fallbackProb = leg.odds > 0 ? 1 / leg.odds : 0;
+          const legProb = Number.isFinite(leg.probability as number) ? (leg.probability as number) : fallbackProb;
+          return acc * clamp01(legProb);
+        }, 1);
+        let correlationPenalty = 0;
+        for (let i = 0; i < selected.length; i++) {
+          for (let j = i + 1; j < selected.length; j++) {
+            correlationPenalty += getCorrelationPenalty(selected[i]!, selected[j]!);
+          }
+        }
+        const boundedPenalty = Math.max(0, Math.min(0.9, correlationPenalty));
+        const combinedProb = clamp01(combinedProbRaw * (1 - boundedPenalty));
+        const impliedProb = combinedOdds > 0 ? 1 / combinedOdds : 0;
+        const comboEV = combinedProb - impliedProb;
+        const comboEVPercent = combinedProb * combinedOdds - 1;
+        const kellyStakePct = computeKellyStakePct(combinedOdds, combinedProb);
+        const adjustedComboEdge = comboEdge * (1 - boundedPenalty);
         const key = indices.slice().sort((a, b) => a - b).join(",");
         if (!used.has(key)) {
           used.add(key);
-          combos.push(buildComboFromSelectedLegs(selected, targetOdds));
+          const fingerprint = comboFingerprintFromLegs(selected);
+          combos.push({
+            legs: selected,
+            fingerprint,
+            combinedOdds,
+            distanceFromTarget,
+            comboScore,
+            comboEdge,
+            adjustedComboEdge,
+            combinedProb,
+            impliedProb,
+            comboEV,
+            comboEVPercent,
+            kellyStakePct,
+          });
         }
         return;
       }
@@ -2602,7 +2573,7 @@ export function generateCombos(
     console.log("[build-value-bets] combos rejected for same-family overlap", rejectedOverlap);
   }
 
-  const evFiltered = combos.filter((c) => c.comboEV >= minComboEV);
+  const evFiltered = combos.filter((c) => c.comboEV >= MIN_COMBO_EV);
   const baseCombos = evFiltered.length > 0 ? evFiltered : combos;
 
   // If a nearby positive-edge combo exists (within +/-0.1 distance), deprioritize negative-edge alternatives.
@@ -2626,15 +2597,7 @@ export function generateCombos(
     return (a.fingerprint ?? "").localeCompare(b.fingerprint ?? "");
   });
 
-  const result = rankedSource.slice(0, maxCombos);
-  if (metrics) {
-    metrics.preEvComboCount = combos.length;
-    metrics.postMinEvComboCount = evFiltered.length;
-    metrics.afterPositiveNearFilterCount = rankedSource.length;
-    metrics.returnedCount = result.length;
-    metrics.rejectedSameFamilyOverlap = rejectedOverlap;
-  }
-  return result;
+  return rankedSource.slice(0, maxCombos);
 }
 
 /** Full pipeline: filter player candidates, add model-based corner legs, apply matchup boost, generate and rank combos (no same-family overlap). */
