@@ -27,6 +27,109 @@ const CROSS_MAX_COMBOS_EVALUATED = 8000;
 const CROSS_COMBO_TIME_LIMIT_MS = 150;
 const CROSS_YIELD_EVERY_STEPS = 200;
 
+/** Max legs sharing the same {@link legDiversityFamily} inside one cross-match combo. */
+const CROSS_MAX_LEGS_PER_SAME_DIVERSITY = 2;
+/** Minimum model edge (fraction) for a leg that duplicates a diversity family already in the partial combo. */
+const MIN_EDGE_FOR_DUPLICATE_FAMILY = 0.035;
+/** Fallback when `edge` is missing: builder score must clear this to allow a second leg of the same diversity family. */
+const MIN_SCORE_FOR_DUPLICATE_FAMILY = 48;
+/** Subtracted from `comboScore` only in the final sort tie-break (does not change stored EV or combo fields). */
+const COMBO_DIVERSITY_REPEAT_SORT_PENALTY = 3;
+
+/** Aligns with builder team corner legs (`valueBetBuilder`). */
+const TEAM_CORNERS_DIVERSITY_FAMILY = "team:alternative-corners";
+
+/**
+ * Cross-match diversity bucket: strips fixture prefix and collapses player-specific families to `player:{category}`.
+ * Collapses main + alt O/U goals into one bucket so combos cannot stack multiple goal-total legs.
+ */
+export function legDiversityFamily(leg: BuildLeg): string {
+  const raw = leg.marketFamily.replace(/^xf:\d+:/, "");
+  const playerM = /^player:[^|]+\|(.+)$/.exec(raw);
+  if (playerM) return `player:${playerM[1]}`;
+  if (raw === "team:match-goals" || raw === "team:alternative-total-goals") return "team:total-goals";
+  if (raw === TEAM_CORNERS_DIVERSITY_FAMILY) return "team:corners";
+  return raw;
+}
+
+/**
+ * Same fixture + same market shape + line + outcome → redundant (cross-fixture duplicate lines still allowed).
+ */
+export function legRedundancyKey(leg: BuildLeg): string {
+  const xf = /^xf:(\d+):/.exec(leg.marketFamily);
+  const fid = xf ? xf[1]! : "0";
+  const raw = leg.marketFamily.replace(/^xf:\d+:/, "");
+  const mn = String(leg.marketName ?? "")
+    .trim()
+    .toLowerCase();
+  return `${fid}|${raw}|${mn}|${leg.line}|${leg.outcome}`;
+}
+
+export function passesDuplicateFamilyQualityGate(leg: BuildLeg): boolean {
+  const e = leg.edge;
+  if (typeof e === "number" && Number.isFinite(e) && e >= MIN_EDGE_FOR_DUPLICATE_FAMILY) return true;
+  if (leg.score >= MIN_SCORE_FOR_DUPLICATE_FAMILY) return true;
+  return false;
+}
+
+/**
+ * Used only for the "≥2 different legs" combo rule: allows two `player:shots` from different players,
+ * or two `team:total-goals` from different fixtures, while {@link legDiversityFamily} still caps repeats per market type.
+ */
+export function legComboBreadthKey(leg: BuildLeg): string {
+  const xf = /^xf:(\d+):/.exec(leg.marketFamily);
+  const fid = xf ? xf[1]! : "0";
+  if (leg.type === "player") {
+    const pid = String(leg.playerId ?? leg.playerName ?? "")
+      .trim()
+      .toLowerCase();
+    return `${legDiversityFamily(leg)}|p:${pid}`;
+  }
+  return `${legDiversityFamily(leg)}|f:${fid}`;
+}
+
+type CrossMatchDiversityRejectReason =
+  | "too_many_same_family"
+  | "redundant"
+  | "quality_second"
+  | "insufficient_family_mix";
+
+function tryAppendLegForCrossMatch(
+  currentIndices: readonly number[],
+  candIdx: number,
+  legs: BuildLeg[],
+  comboLegCount: number
+): { ok: true } | { ok: false; reason: CrossMatchDiversityRejectReason } {
+  const cand = legs[candIdx]!;
+  const div = legDiversityFamily(cand);
+  let sameFamilyBefore = 0;
+  for (const j of currentIndices) {
+    if (legDiversityFamily(legs[j]!) === div) sameFamilyBefore++;
+  }
+  if (sameFamilyBefore >= CROSS_MAX_LEGS_PER_SAME_DIVERSITY) {
+    return { ok: false, reason: "too_many_same_family" };
+  }
+  if (sameFamilyBefore >= 1 && !passesDuplicateFamilyQualityGate(cand)) {
+    return { ok: false, reason: "quality_second" };
+  }
+  const rk = legRedundancyKey(cand);
+  for (const j of currentIndices) {
+    if (legRedundancyKey(legs[j]!) === rk) {
+      return { ok: false, reason: "redundant" };
+    }
+  }
+  if (currentIndices.length + 1 === comboLegCount) {
+    const allLegs = [...currentIndices.map((j) => legs[j]!), cand];
+    const uniqBreadth = new Set(allLegs.map((l) => legComboBreadthKey(l))).size;
+    if (uniqBreadth < 2) {
+      return { ok: false, reason: "insufficient_family_mix" };
+    }
+  }
+  return { ok: true };
+}
+
+const CROSS_MAX_LEGS_PER_DIVERSITY_FAMILY = 7;
+
 function marketFamilyWithFixture(leg: BuildLeg, fixtureId: number): string {
   const prefix = `xf:${fixtureId}:`;
   if (leg.marketFamily.startsWith("xf:")) return leg.marketFamily;
@@ -142,6 +245,30 @@ export function applyPerFixtureAndGlobalLegCap(legs: BuildLeg[], maxPerFixture: 
   return out.sort(compareLegsForCrossMatchSearch);
 }
 
+/**
+ * Keep only the best legs per diversity family (deterministic sort), then caller applies fixture/global caps.
+ */
+export function capLegsPerDiversityFamily(legs: BuildLeg[], maxPerFamily: number): BuildLeg[] {
+  const byFam = new Map<string, BuildLeg[]>();
+  for (const leg of legs) {
+    const k = legDiversityFamily(leg);
+    let arr = byFam.get(k);
+    if (!arr) {
+      arr = [];
+      byFam.set(k, arr);
+    }
+    arr.push(leg);
+  }
+  const out: BuildLeg[] = [];
+  const famKeys = [...byFam.keys()].sort((a, b) => a.localeCompare(b));
+  for (const k of famKeys) {
+    const arr = byFam.get(k)!;
+    arr.sort(compareLegsForCrossMatchSearch);
+    out.push(...arr.slice(0, maxPerFamily));
+  }
+  return out.sort(compareLegsForCrossMatchSearch);
+}
+
 export interface CrossMatchBoundedRunMetrics {
   legsInputBeforeFinalCap: number;
   legsAfterFinalCap: number;
@@ -153,6 +280,12 @@ export interface CrossMatchBoundedRunMetrics {
   truncatedTime: boolean;
   steps: number;
   rejectedSameFamilyOverlap: number;
+  /** Sum of soft-diversity reject reasons below (legacy aggregate). */
+  rejectedDiversityConstraint: number;
+  rejectedTooManySameFamily: number;
+  rejectedRedundantLeg: number;
+  rejectedDuplicateQuality: number;
+  rejectedInsufficientFamilyMix: number;
 }
 
 export interface CrossFixtureComboPipelineMetrics {
@@ -167,7 +300,34 @@ export interface CrossFixtureComboPipelineMetrics {
   comboSearchTruncated: boolean;
 }
 
-function finalizeRankedCombos(combos: BuildCombo[], maxCombos: number, minComboEV: number): BuildCombo[] {
+function comboDiversityUniqueCount(combo: BuildCombo): number {
+  return new Set(combo.legs.map((l) => legDiversityFamily(l))).size;
+}
+
+function comboTypeBreadth(combo: BuildCombo): number {
+  return new Set(combo.legs.map((l) => l.type)).size;
+}
+
+/** Penalise repeated diversity families in sort only (stored `comboScore` / EV unchanged). */
+function comboDiversityRepeatSortPenalty(combo: BuildCombo): number {
+  const counts = new Map<string, number>();
+  for (const leg of combo.legs) {
+    const k = legDiversityFamily(leg);
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+  }
+  let extra = 0;
+  for (const c of counts.values()) {
+    if (c > 1) extra += c - 1;
+  }
+  return extra * COMBO_DIVERSITY_REPEAT_SORT_PENALTY;
+}
+
+function adjustedComboScoreForSort(combo: BuildCombo): number {
+  return combo.comboScore - comboDiversityRepeatSortPenalty(combo);
+}
+
+/** Cross-match final ranking: distance → EV → diversity → player/team mix → combo score (EV math unchanged). */
+function finalizeRankedCombosCrossMatch(combos: BuildCombo[], maxCombos: number, minComboEV: number): BuildCombo[] {
   const evFiltered = combos.filter((c) => c.comboEV >= minComboEV);
   const baseCombos = evFiltered.length > 0 ? evFiltered : combos;
   const DISTANCE_EDGE_WINDOW = 0.1;
@@ -185,7 +345,15 @@ function finalizeRankedCombos(combos: BuildCombo[], maxCombos: number, minComboE
   rankedSource.sort((a, b) => {
     if (a.distanceFromTarget !== b.distanceFromTarget) return a.distanceFromTarget - b.distanceFromTarget;
     if (a.comboEV !== b.comboEV) return b.comboEV - a.comboEV;
-    if (a.comboScore !== b.comboScore) return b.comboScore - a.comboScore;
+    const divA = comboDiversityUniqueCount(a);
+    const divB = comboDiversityUniqueCount(b);
+    if (divA !== divB) return divB - divA;
+    const brA = comboTypeBreadth(a);
+    const brB = comboTypeBreadth(b);
+    if (brA !== brB) return brB - brA;
+    const adjA = adjustedComboScoreForSort(a);
+    const adjB = adjustedComboScoreForSort(b);
+    if (adjA !== adjB) return adjB - adjA;
     return (a.fingerprint ?? "").localeCompare(b.fingerprint ?? "");
   });
   return rankedSource.slice(0, maxCombos);
@@ -232,6 +400,10 @@ export async function generateCrossMatchCombosBoundedAsync(
   const combos: BuildCombo[] = [];
   const used = new Set<string>();
   let rejectedOverlap = 0;
+  let rejectedTooManySameFamily = 0;
+  let rejectedRedundantLeg = 0;
+  let rejectedDuplicateQuality = 0;
+  let rejectedInsufficientFamilyMix = 0;
   let evaluatedLeaves = 0;
   let steps = 0;
   let truncatedEval = false;
@@ -271,6 +443,13 @@ export async function generateCrossMatchCombosBoundedAsync(
     return false;
   }
 
+  function bumpDiversityReject(reason: CrossMatchDiversityRejectReason): void {
+    if (reason === "too_many_same_family") rejectedTooManySameFamily += 1;
+    else if (reason === "redundant") rejectedRedundantLeg += 1;
+    else if (reason === "quality_second") rejectedDuplicateQuality += 1;
+    else if (reason === "insufficient_family_mix") rejectedInsufficientFamilyMix += 1;
+  }
+
   async function recurse(start: number, n: number): Promise<void> {
     await maybeYield();
     if (hitTimeLimit()) return;
@@ -304,6 +483,11 @@ export async function generateCrossMatchCombosBoundedAsync(
         if (evaluatedLeaves >= maxEvaluated) truncatedEval = true;
         return;
       }
+      const append = tryAppendLegForCrossMatch(indices, i, legs, n);
+      if (!append.ok) {
+        bumpDiversityReject(append.reason);
+        continue;
+      }
       indices.push(i);
       const nextCur = cur * legs[i]!.odds;
       const nextNeed = n - depth - 1;
@@ -322,7 +506,34 @@ export async function generateCrossMatchCombosBoundedAsync(
 
   const ms = performance.now() - t0;
   const distinct = combos.filter(isDistinctFixtureCombo);
-  const finalized = finalizeRankedCombos(distinct, maxCombos, minComboEV);
+  const finalized = finalizeRankedCombosCrossMatch(distinct, maxCombos, minComboEV);
+
+  const rejectedDiversityConstraint =
+    rejectedTooManySameFamily + rejectedRedundantLeg + rejectedDuplicateQuality + rejectedInsufficientFamilyMix;
+
+  if (import.meta.env.DEV) {
+    const combosWithDuplicates = distinct.filter((c) => {
+      const m = new Map<string, number>();
+      for (const l of c.legs) {
+        const k = legDiversityFamily(l);
+        m.set(k, (m.get(k) ?? 0) + 1);
+      }
+      return [...m.values()].some((v) => v > 1);
+    }).length;
+    const avgFamilies =
+      distinct.length > 0
+        ? distinct.reduce((s, c) => s + comboDiversityUniqueCount(c), 0) / distinct.length
+        : 0;
+    console.log("[cross-match] diversity debug", {
+      combosWithDuplicates,
+      rejectedForTooManySameType: rejectedTooManySameFamily,
+      rejectedRedundantLeg,
+      rejectedDuplicateQuality,
+      rejectedInsufficientFamilyMix,
+      avgFamiliesPerCombo: avgFamilies,
+      totalCombos: distinct.length,
+    });
+  }
 
   if (options.metrics) {
     options.metrics.legsInputBeforeFinalCap = options.legsInputBeforeCap ?? legs.length;
@@ -335,12 +546,23 @@ export async function generateCrossMatchCombosBoundedAsync(
     options.metrics.truncatedTime = truncatedTime;
     options.metrics.steps = steps;
     options.metrics.rejectedSameFamilyOverlap = rejectedOverlap;
+    options.metrics.rejectedDiversityConstraint = rejectedDiversityConstraint;
+    options.metrics.rejectedTooManySameFamily = rejectedTooManySameFamily;
+    options.metrics.rejectedRedundantLeg = rejectedRedundantLeg;
+    options.metrics.rejectedDuplicateQuality = rejectedDuplicateQuality;
+    options.metrics.rejectedInsufficientFamilyMix = rejectedInsufficientFamilyMix;
   }
 
   if (import.meta.env.DEV) {
     console.log(
       `[cross-match] combos: evaluated=${evaluatedLeaves}, returned=${finalized.length}, time=${ms.toFixed(0)}ms`,
-      { truncatedEval, truncatedTime, distinct: distinct.length, pool: legs.length }
+      {
+        truncatedEval,
+        truncatedTime,
+        distinct: distinct.length,
+        pool: legs.length,
+        rejectedDiversity: rejectedDiversityConstraint,
+      }
     );
   }
 
@@ -391,9 +613,11 @@ export function buildStratifiedCrossMatchLegPool(
     }
   }
 
-  const legsBeforeFinalCap = out.length;
-  const legs = applyPerFixtureAndGlobalLegCap(out, CROSS_LEGS_PER_FIXTURE_MAX, CROSS_LEG_POOL_GLOBAL_MAX);
-  return { legs, stratifiedPlayerLegsBuilt, stratifiedTeamLegsBuilt, legsBeforeFinalCap };
+  const afterStratify = out.length;
+  const diversityCapped = capLegsPerDiversityFamily(out, CROSS_MAX_LEGS_PER_DIVERSITY_FAMILY);
+  const legsBeforeFinalCap = diversityCapped.length;
+  const legs = applyPerFixtureAndGlobalLegCap(diversityCapped, CROSS_LEGS_PER_FIXTURE_MAX, CROSS_LEG_POOL_GLOBAL_MAX);
+  return { legs, stratifiedPlayerLegsBuilt, stratifiedTeamLegsBuilt, legsBeforeFinalCap: afterStratify };
 }
 
 /**
@@ -426,6 +650,11 @@ export async function buildCrossFixtureCombosAsync(
     truncatedTime: false,
     steps: 0,
     rejectedSameFamilyOverlap: 0,
+    rejectedDiversityConstraint: 0,
+    rejectedTooManySameFamily: 0,
+    rejectedRedundantLeg: 0,
+    rejectedDuplicateQuality: 0,
+    rejectedInsufficientFamilyMix: 0,
   };
 
   const sliced = await generateCrossMatchCombosBoundedAsync(legs, targetOdds, {

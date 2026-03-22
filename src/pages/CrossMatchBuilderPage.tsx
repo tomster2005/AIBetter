@@ -372,6 +372,11 @@ export function CrossMatchBuilderPage() {
             comboMs: b?.ms,
             truncated: metrics.comboSearchTruncated,
             rejectedSameFamilyOverlap: g.rejectedSameFamilyOverlap,
+            rejectedDiversityConstraint: b?.rejectedDiversityConstraint,
+            rejectedTooManySameFamily: b?.rejectedTooManySameFamily,
+            rejectedRedundantLeg: b?.rejectedRedundantLeg,
+            rejectedDuplicateQuality: b?.rejectedDuplicateQuality,
+            rejectedInsufficientFamilyMix: b?.rejectedInsufficientFamilyMix,
           });
         }
       } finally {
