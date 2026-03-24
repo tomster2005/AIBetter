@@ -1013,9 +1013,19 @@ function buildPrioritizedFixtureIds(records: StoredComboRecord[]): number[] {
  * mis-settled finished rows can be corrected when settlement logic or API data improves.
  */
 export async function resolveUnfinishedCombosFromFixtures(): Promise<number> {
-  if (typeof window === "undefined") return 0;
+  if (typeof window === "undefined") {
+    console.log("[settlement-skip] no window runtime");
+    return 0;
+  }
   const records = readRecords();
-  if (records.length === 0) return 0;
+  console.log("[settlement-start]", {
+    totalCombos: records.length,
+    timestamp: new Date().toISOString(),
+  });
+  if (records.length === 0) {
+    console.log("[settlement-skip] no combos");
+    return 0;
+  }
 
   const pending = records.filter((r) => r.result == null);
   const allUniqueSorted = buildPrioritizedFixtureIds(records);
@@ -1029,6 +1039,29 @@ export async function resolveUnfinishedCombosFromFixtures(): Promise<number> {
   if (nFixtures > take) {
     comboResolveFixtureCursor = (comboResolveFixtureCursor + take) % nFixtures;
   }
+
+  if (pending.length === 0) {
+    console.log("[settlement-skip] no unfinished combos", {
+      totalCombos: records.length,
+      fixtureIdsCandidateCount: nFixtures,
+    });
+    return 0;
+  }
+  if (fixtureIds.length === 0) {
+    console.log("[settlement-skip] no fixtureIds", {
+      unfinishedCount: pending.length,
+      uniqueFixturesInHistory: nFixtures,
+    });
+    return 0;
+  }
+
+  console.log("[settlement]", {
+    unfinishedCount: pending.length,
+    fixtureIds,
+  });
+  console.log("[settlement-loop-start]", {
+    fixturesToProcess: fixtureIds.length,
+  });
 
   if (import.meta.env.DEV) {
     console.log("[bet-history combo-resolve] run", {
@@ -1045,7 +1078,19 @@ export async function resolveUnfinishedCombosFromFixtures(): Promise<number> {
   let totalResolved = 0;
   let totalCorrected = 0;
   for (const fixtureId of fixtureIds) {
-    const resolutionData = await fetchFixtureResolutionData(fixtureId);
+    console.log("[settlement-processing-fixture]", { fixtureId });
+    console.log("[settlement-fetch-start]", { fixtureId });
+    let resolutionData: Awaited<ReturnType<typeof fetchFixtureResolutionData>>;
+    try {
+      resolutionData = await fetchFixtureResolutionData(fixtureId);
+      console.log("[settlement-fetch-success]", { fixtureId });
+    } catch (error) {
+      console.log("[settlement-fetch-error]", {
+        fixtureId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      continue;
+    }
     if (import.meta.env.DEV) {
       const names = resolutionData.playerResults.slice(0, 8).map((p) => p.playerName);
       console.log("[bet-history fixture-resolution-debug]", {
@@ -1087,6 +1132,11 @@ export async function resolveUnfinishedCombosFromFixtures(): Promise<number> {
       console.log("[bet-history combo-resolve] writeback", { fixtureId, newlyResolved: resolved, corrected });
     }
   }
+  console.log("[settlement-end]", {
+    processed: pending.length,
+    fixturesProcessed: fixtureIds.length,
+    resolvedWrites: totalResolved + totalCorrected,
+  });
   return totalResolved + totalCorrected;
 }
 

@@ -176,30 +176,19 @@ export function BetHistoryPage() {
     const ts = new Date().toISOString();
     const before = getUnfinishedStoredComboRecords();
     const pendingBefore = before.length;
-    if (pendingBefore <= 0) {
-      if (import.meta.env.DEV) {
-        console.log("[bet-history-refresh]", {
-          timestamp: ts,
-          skipped: true,
-          reason: "no unfinished bets",
-          betsFetched: getAllStoredComboRecords().length,
-          unfinishedCount: 0,
-        });
-      }
-      refresh();
-      return;
-    }
+    console.log("[bet-history] calling resolver", {
+      timestamp: ts,
+      unfinishedBefore: pendingBefore,
+    });
     const resolvedThisPass = await resolveUnfinishedCombosFromFixtures();
     const allNow = getAllStoredComboRecords();
     const unfinishedNow = getUnfinishedStoredComboRecords();
-    if (import.meta.env.DEV) {
-      console.log("[bet-history-refresh]", {
-        timestamp: ts,
-        betsFetched: allNow.length,
-        unfinishedCount: unfinishedNow.length,
-        resolvedThisPass,
-      });
-    }
+    console.log("[bet-history-refresh]", {
+      timestamp: ts,
+      betsFetched: allNow.length,
+      unfinishedCount: unfinishedNow.length,
+      resolvedThisPass,
+    });
     refresh();
   }, [refresh]);
 
