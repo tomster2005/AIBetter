@@ -154,28 +154,54 @@ function normalizeFixturePayload(root: unknown): Record<string, unknown> {
  */
 export function isFixtureFinishedFromDetails(details: unknown): boolean {
   const fixture = normalizeFixturePayload(details);
-  const rawState = fixture.state;
-  if (typeof rawState === "number" && Number.isFinite(rawState)) {
-    return rawState === 5 || rawState === 7;
+  const rootStateId = typeof fixture.state_id === "number" && Number.isFinite(fixture.state_id) ? fixture.state_id : null;
+  if (rootStateId != null) {
+    return rootStateId === 5;
   }
-  const state = unwrapEntity<Record<string, unknown>>(rawState);
-  const stateValues = [state?.name_short, state?.short_name, state?.developer_name, state?.code, state?.name]
-    .filter(Boolean)
-    .map((v) => String(v).toUpperCase().replace(/-/g, " "));
 
-  const textFinished = stateValues.some((v) => {
-    if (v === "FT" || v === "AOT") return true;
-    return ["FULL TIME", "FINISHED", "AFTER EXTRA TIME", "PENALTIES"].some((key) => v.includes(key));
-  });
+  const state = unwrapEntity<Record<string, unknown>>(fixture.state);
+  const stateId = typeof state?.id === "number" && Number.isFinite(state.id) ? state.id : null;
+  if (stateId != null) {
+    return stateId === 5;
+  }
 
-  const sid = typeof state?.id === "number" && Number.isFinite(state.id) ? state.id : null;
-  const rootSid = typeof fixture.state_id === "number" && Number.isFinite(fixture.state_id) ? fixture.state_id : null;
+  // Safety fallback when state_id is absent: treat as finished only if we have both goals and minute >= 90.
+  const minute = getFixtureMinute(fixture);
+  const g = extractFixtureGoals(fixture);
+  const haveGoals = g.homeGoals != null && g.awayGoals != null;
+  if (haveGoals && minute != null && minute >= 90) return true;
 
-  return (
-    textFinished ||
-    (sid != null && [5, 7].includes(sid)) ||
-    (rootSid != null && [5, 7].includes(rootSid))
-  );
+  return false;
+}
+
+function getFixtureMinute(fixture: Record<string, unknown>): number | null {
+  const readMinute = (v: unknown): number | null => {
+    if (typeof v === "number" && Number.isFinite(v)) return v;
+    if (typeof v === "string") {
+      const n = parseInt(v, 10);
+      return Number.isFinite(n) ? n : null;
+    }
+    return null;
+  };
+
+  const direct = readMinute(fixture.minute);
+  if (direct != null) return direct;
+
+  const time = unwrapEntity<Record<string, unknown>>(fixture.time);
+  if (time) {
+    const m1 = readMinute(time.minute);
+    if (m1 != null) return m1;
+    const m2 = readMinute(time.minutes);
+    if (m2 != null) return m2;
+    const status = unwrapEntity<Record<string, unknown>>(time.status);
+    if (status) {
+      const m3 = readMinute(status.minute);
+      if (m3 != null) return m3;
+      const m4 = readMinute(status.minutes);
+      if (m4 != null) return m4;
+    }
+  }
+  return null;
 }
 
 function buildParticipantIdToSide(details: unknown): Map<number, "home" | "away"> {
@@ -398,6 +424,9 @@ export async function fetchFixtureResolutionData(fixtureId: number): Promise<Fix
       }
     }
 
+    const stateObj = unwrapEntity<Record<string, unknown>>(fixture.state);
+    const rootStateId = typeof fixture.state_id === "number" && Number.isFinite(fixture.state_id) ? fixture.state_id : null;
+    const nestedStateId = typeof stateObj?.id === "number" && Number.isFinite(stateObj.id) ? stateObj.id : null;
     const isFinished = isFixtureFinishedFromDetails(fixture);
     const playerResults = parseResolutionPlayerStats(fixture);
     const playerStatsById: Record<number, Omit<ResolutionPlayerStats, "playerId" | "playerName">> = {};
@@ -411,6 +440,24 @@ export async function fetchFixtureResolutionData(fixtureId: number): Promise<Fix
       };
     }
     const { homeGoals, awayGoals } = extractFixtureGoals(fixture);
+    const minute = getFixtureMinute(fixture);
+    if (import.meta.env.DEV) {
+      const reason =
+        rootStateId != null || nestedStateId != null
+          ? `state_id check (${rootStateId ?? nestedStateId} === 5)`
+          : minute != null && homeGoals != null && awayGoals != null
+            ? "fallback: scores present and minute>=90"
+            : "not finished by state_id or fallback";
+      console.log("[fixture-status]", {
+        fixtureId,
+        state_id: rootStateId ?? nestedStateId,
+        minute,
+        homeGoals,
+        awayGoals,
+        isFinished,
+        reason,
+      });
+    }
 
     if (import.meta.env.DEV) {
       console.log("[fixture-resolution-final]", {
