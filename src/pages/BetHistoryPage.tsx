@@ -14,6 +14,7 @@ import {
   deriveBetHistoryDisplayStatus,
   type DisplayStoredComboRecord,
 } from "../services/comboPerformanceService.js";
+import { debugLog } from "../lib/debugLog.js";
 import "./BetHistoryPage.css";
 
 type HistoryTab = "unfinished" | "finished" | "stats";
@@ -176,14 +177,14 @@ export function BetHistoryPage() {
     const ts = new Date().toISOString();
     const before = getUnfinishedStoredComboRecords();
     const pendingBefore = before.length;
-    console.log("[bet-history] calling resolver", {
+    debugLog("betHistoryRefresh", "[bet-history] calling resolver", {
       timestamp: ts,
       unfinishedBefore: pendingBefore,
     });
     const resolvedThisPass = await resolveUnfinishedCombosFromFixtures();
     const allNow = getAllStoredComboRecords();
     const unfinishedNow = getUnfinishedStoredComboRecords();
-    console.log("[bet-history-refresh]", {
+    debugLog("betHistoryRefresh", "[bet-history-refresh]", {
       timestamp: ts,
       betsFetched: allNow.length,
       unfinishedCount: unfinishedNow.length,
@@ -215,7 +216,7 @@ export function BetHistoryPage() {
 
   useEffect(() => {
     if (import.meta.env.DEV) {
-      console.log("[bet-history] loaded", {
+      debugLog("betHistoryRefresh", "[bet-history] loaded", {
         total: allRecords.length,
         finished: finishedRecords.length,
         unfinished: unfinishedRecords.length,

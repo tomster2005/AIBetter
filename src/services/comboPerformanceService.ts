@@ -7,6 +7,7 @@ import {
   settleMatchResult,
   settleYesNoAgainstLine,
 } from "../lib/betSettlementHelpers.js";
+import { debugLog, debugWarn } from "../lib/debugLog.js";
 import { getCompressedNormalizedScore } from "../lib/modelScoreNormalization.js";
 import { fetchFixtureResolutionData } from "./comboResolutionDataService.js";
 
@@ -449,7 +450,8 @@ function hydrateDisplayScores(records: StoredComboRecord[]): DisplayStoredComboR
   if (import.meta.env.DEV) {
     const changed = out.filter((r) => Number.isFinite(r.normalizedScore) && Math.abs(r.displayNormalizedScore - r.normalizedScore) >= 15).slice(0, 5);
     if (changed.length > 0) {
-      console.log(
+      debugLog(
+        "betHistoryRefresh",
         "[bet-history score hydration]",
         changed.map((r) => ({
           fixtureId: r.fixtureId,
@@ -478,6 +480,25 @@ function nameTokens(n: string): string[] {
     .split(" ")
     .map((t) => t.trim())
     .filter((t) => t.length > 0);
+}
+
+function inferMarketIdFromMarketName(marketName: string): number | null {
+  const n = String(marketName ?? "").toLowerCase();
+  if (n.includes("shots on target")) return 334;
+  if (n.includes("shots") && !n.includes("on target")) return 336;
+  if (n.includes("fouls committed")) return 338;
+  if (n.includes("fouls won")) return 339;
+  if (n.includes("tackles")) return 340;
+  return null;
+}
+
+function resolveLegMarketId(leg: StoredComboLeg): number | null {
+  const raw = (leg as { market_id?: unknown }).market_id;
+  const candidates = [leg.marketId, typeof raw === "number" ? raw : typeof raw === "string" ? parseInt(raw, 10) : null];
+  for (const c of candidates) {
+    if (typeof c === "number" && Number.isFinite(c) && c > 0) return c;
+  }
+  return inferMarketIdFromMarketName(leg.marketName);
 }
 
 /** Match API lineup name to stored leg playerName (exact, then last-name / single-token match). */
@@ -519,36 +540,84 @@ function getPlayerStatForLeg(leg: StoredComboLeg, input: ComboResolutionInput): 
   if (leg.outcomeInvalid) return null;
   const hasSmId = typeof leg.sportmonksPlayerId === "number" && Number.isFinite(leg.sportmonksPlayerId) && leg.sportmonksPlayerId > 0;
   if (!leg.playerName?.trim() && !hasSmId) return null;
+  const resolvedMarketId = resolveLegMarketId(leg);
+  if (import.meta.env.DEV) {
+    debugLog("marketId", "[market-id-check]", {
+      original: leg.marketId ?? null,
+      resolved: resolvedMarketId,
+      marketName: leg.marketName,
+    });
+  }
+  if (!resolvedMarketId && import.meta.env.DEV) {
+    debugLog("marketId", "[CRITICAL-marketId-missing]", {
+      leg,
+      marketName: leg.marketName,
+    });
+  }
+  if (import.meta.env.DEV) {
+    debugLog("settlement", "[settlement-player-check]", {
+      requestedPlayerId: leg.sportmonksPlayerId ?? null,
+      requestedName: leg.playerName ?? null,
+      availablePlayerIds:
+        input.playerStatsById != null ? Object.keys(input.playerStatsById) : input.playerResults.map((p) => String(p.playerId)),
+    });
+  }
   const player = findPlayerRowForLeg(leg, input);
+  const lookupId = hasSmId ? String(leg.sportmonksPlayerId) : null;
+  const byLegIdStats =
+    lookupId != null && input.playerStatsById ? input.playerStatsById[lookupId as unknown as number] ?? null : null;
   const playerById = (() => {
     if (!input.playerStatsById || !player?.playerId || !Number.isFinite(player.playerId)) return null;
-    return input.playerStatsById[player.playerId] ?? null;
+    return input.playerStatsById[String(player.playerId) as unknown as number] ?? input.playerStatsById[player.playerId] ?? null;
   })();
-  if (!player) return null;
-  const cat = inferPlayerPropStatCategoryFromLegWithMarketId(leg.marketFamily, leg.marketName, leg.marketId);
+  const playerByNameFallback = (() => {
+    if (!input.playerResults.length || !leg.playerName?.trim()) return null;
+    const want = normalizeName(leg.playerName);
+    if (!want) return null;
+    const row = input.playerResults.find((p) => normalizeName(p.playerName) === want);
+    return row ?? null;
+  })();
+  if (!player && !byLegIdStats && !playerByNameFallback) return null;
+  if (import.meta.env.DEV) {
+    const availableIds =
+      input.playerStatsById != null ? Object.keys(input.playerStatsById) : input.playerResults.map((p) => String(p.playerId));
+    debugLog("settlement", "[settlement-match-check]", {
+      playerId: leg.sportmonksPlayerId ?? null,
+      normalizedName: leg.playerName ? normalizeName(leg.playerName) : null,
+      availablePlayerIds: availableIds.slice(0, 50),
+    });
+  }
+  const cat = inferPlayerPropStatCategoryFromLegWithMarketId(leg.marketFamily, leg.marketName, resolvedMarketId);
   if (cat == null) return null;
   const pick = (v: unknown): number | null =>
     typeof v === "number" && Number.isFinite(v) ? v : null;
   const statValue =
     cat === "shotsOnTarget"
-      ? pick(playerById?.shotsOnTarget ?? player.shotsOnTarget)
+      ? pick(byLegIdStats?.shotsOnTarget ?? playerById?.shotsOnTarget ?? playerByNameFallback?.shotsOnTarget ?? player.shotsOnTarget)
       : cat === "shots"
-        ? pick(playerById?.shots ?? player.shots)
+        ? pick(byLegIdStats?.shots ?? playerById?.shots ?? playerByNameFallback?.shots ?? player.shots)
         : cat === "foulsCommitted"
-          ? pick(playerById?.foulsCommitted ?? player.foulsCommitted)
+          ? pick(byLegIdStats?.foulsCommitted ?? playerById?.foulsCommitted ?? playerByNameFallback?.foulsCommitted ?? player.foulsCommitted)
           : cat === "foulsWon"
-            ? pick(playerById?.foulsWon ?? player.foulsWon)
+            ? pick(byLegIdStats?.foulsWon ?? playerById?.foulsWon ?? playerByNameFallback?.foulsWon ?? player.foulsWon)
             : cat === "tackles"
-              ? pick(playerById?.tackles ?? player.tackles)
+              ? pick(byLegIdStats?.tackles ?? playerById?.tackles ?? playerByNameFallback?.tackles ?? player.tackles)
               : null;
+  if (import.meta.env.DEV && statValue != null) {
+    debugLog("settlement", "[player-match-success]", {
+      playerName: leg.playerName ?? null,
+      matchedId: lookupId ?? (player?.playerId != null ? String(player.playerId) : null),
+      stats: byLegIdStats ?? playerById ?? playerByNameFallback ?? player,
+    });
+  }
   if (import.meta.env.DEV) {
-    console.log("[settlement]", {
+    debugLog("settlement", "[settlement]", {
       playerName: leg.playerName ?? null,
       normalizedName: leg.playerName ? normalizeName(leg.playerName) : null,
       matched: Boolean(player),
       matchedPlayerName: player?.playerName ?? null,
       matchedPlayerId: player?.playerId ?? null,
-      marketId: leg.marketId ?? null,
+      marketId: resolvedMarketId,
       marketName: leg.marketName,
       statCategory: cat,
       statValue,
@@ -556,19 +625,26 @@ function getPlayerStatForLeg(leg: StoredComboLeg, input: ComboResolutionInput): 
     });
   }
   if (cat === "shotsOnTarget" && statValue == null && import.meta.env.DEV) {
-    console.log("[settlement] missing stat", { marketId: leg.marketId ?? null, category: "shotsOnTarget" });
+    debugLog("settlement", "[settlement] missing stat", { marketId: resolvedMarketId, category: "shotsOnTarget" });
   }
   if (cat === "shots" && statValue == null && import.meta.env.DEV) {
-    console.log("[settlement] missing stat", { marketId: leg.marketId ?? null, category: "shots" });
+    debugLog("settlement", "[settlement] missing stat", { marketId: resolvedMarketId, category: "shots" });
   }
   if (cat === "foulsCommitted" && statValue == null && import.meta.env.DEV) {
-    console.log("[settlement] missing stat", { marketId: leg.marketId ?? null, category: "foulsCommitted" });
+    debugLog("settlement", "[settlement] missing stat", { marketId: resolvedMarketId, category: "foulsCommitted" });
   }
   if (cat === "foulsWon" && statValue == null && import.meta.env.DEV) {
-    console.log("[settlement] missing stat", { marketId: leg.marketId ?? null, category: "foulsWon" });
+    debugLog("settlement", "[settlement] missing stat", { marketId: resolvedMarketId, category: "foulsWon" });
   }
   if (cat === "tackles" && statValue == null && import.meta.env.DEV) {
-    console.log("[settlement] missing stat", { marketId: leg.marketId ?? null, category: "tackles" });
+    debugLog("settlement", "[settlement] missing stat", { marketId: resolvedMarketId, category: "tackles" });
+  }
+  if (import.meta.env.DEV) {
+    debugLog("settlement", "[final-player-match]", {
+      playerName: leg.playerName ?? null,
+      resolvedMarketId,
+      statValue,
+    });
   }
   return statValue;
 }
@@ -586,12 +662,13 @@ function logLegSettlement(leg: StoredComboLeg, hit: boolean | null, reason: stri
   if (!import.meta.env.DEV) return;
   const player = leg.type === "player" ? findPlayerRowForLeg(leg, input) : null;
   const statValue = leg.type === "player" ? getPlayerStatForLeg(leg, input) : null;
-  console.log("[settlement]", {
+  const resolvedMarketId = resolveLegMarketId(leg);
+  debugLog("settlement", "[settlement]", {
     playerName: leg.playerName ?? null,
     normalizedName: leg.playerName ? normalizeName(leg.playerName) : null,
     matched: player != null,
     statValue,
-    marketId: leg.marketId ?? null,
+    marketId: resolvedMarketId,
     result: getLegSettlementResultForDebug(leg, input, hit),
     reason,
   });
@@ -643,19 +720,47 @@ function resolveLegHit(leg: StoredComboLeg, input: ComboResolutionInput): boolea
   const actual = getPlayerStatForLeg(leg, input);
   if (actual == null) {
     logLegSettlement(leg, null, "player stat missing or unmatched; keeping pending", input);
+    if (import.meta.env.DEV) {
+      debugLog("settlement", "[settlement-final-check]", {
+        playerName: leg.playerName ?? null,
+        resolvedMarketId: resolveLegMarketId(leg),
+        statValue: null,
+      });
+    }
     return null;
   }
   if (leg.outcome === "Over" || leg.outcome === "Under") {
     const hit = settleCountOverUnder(actual, leg.line, leg.outcome);
     logLegSettlement(leg, hit, hit ? "player condition met" : "player condition missed", input);
+    if (import.meta.env.DEV) {
+      debugLog("settlement", "[settlement-final-check]", {
+        playerName: leg.playerName ?? null,
+        resolvedMarketId: resolveLegMarketId(leg),
+        statValue: actual,
+      });
+    }
     return hit;
   }
   if (leg.outcome === "Yes" || leg.outcome === "No") {
     const hit = settleYesNoAgainstLine(actual, leg.line, leg.outcome);
     logLegSettlement(leg, hit, hit ? "player condition met" : "player condition missed", input);
+    if (import.meta.env.DEV) {
+      debugLog("settlement", "[settlement-final-check]", {
+        playerName: leg.playerName ?? null,
+        resolvedMarketId: resolveLegMarketId(leg),
+        statValue: actual,
+      });
+    }
     return hit;
   }
   logLegSettlement(leg, null, "unsupported player outcome token", input);
+  if (import.meta.env.DEV) {
+    debugLog("settlement", "[settlement-final-check]", {
+      playerName: leg.playerName ?? null,
+      resolvedMarketId: resolveLegMarketId(leg),
+      statValue: actual,
+    });
+  }
   return null;
 }
 
@@ -701,7 +806,7 @@ export function saveGeneratedCombosForFixture(
   }
   writeRecords(records);
   if (import.meta.env.DEV) {
-    console.log("[bet-history save]", {
+    debugLog("betHistoryRefresh", "[bet-history save]", {
       attempted: attemptedRecords.length,
       inserted: inserted.length,
       skippedDuplicates,
@@ -785,7 +890,7 @@ function describeSingleLegForDebug(leg: StoredComboLeg, input: ComboResolutionIn
       }
     } else if (!Number.isFinite(leg.line) && (leg.outcome === "Over" || leg.outcome === "Under" || leg.outcome === "Yes" || leg.outcome === "No")) {
       reason = "player: non-finite line — cannot compare";
-    } else if (inferPlayerPropStatCategoryFromLegWithMarketId(leg.marketFamily, leg.marketName, leg.marketId) == null) {
+    } else if (inferPlayerPropStatCategoryFromLegWithMarketId(leg.marketFamily, leg.marketName, resolveLegMarketId(leg)) == null) {
       reason = "player: unsupported market category (marketFamily / marketName)";
     } else if (actual == null) {
       const sm = leg.sportmonksPlayerId;
@@ -890,7 +995,7 @@ function comboResolutionDevLog(
       reason: d.reason,
     };
   });
-  console.log("[bet-history resolve combo]", {
+  debugLog("betHistoryRefresh", "[bet-history resolve combo]", {
     kind,
     fixtureId: record.fixtureId,
     comboId: record.id,
@@ -1014,16 +1119,16 @@ function buildPrioritizedFixtureIds(records: StoredComboRecord[]): number[] {
  */
 export async function resolveUnfinishedCombosFromFixtures(): Promise<number> {
   if (typeof window === "undefined") {
-    console.log("[settlement-skip] no window runtime");
+    debugLog("settlement", "[settlement-skip] no window runtime");
     return 0;
   }
   const records = readRecords();
-  console.log("[settlement-start]", {
+  debugLog("settlement", "[settlement-start]", {
     totalCombos: records.length,
     timestamp: new Date().toISOString(),
   });
   if (records.length === 0) {
-    console.log("[settlement-skip] no combos");
+    debugLog("settlement", "[settlement-skip] no combos");
     return 0;
   }
 
@@ -1041,30 +1146,30 @@ export async function resolveUnfinishedCombosFromFixtures(): Promise<number> {
   }
 
   if (pending.length === 0) {
-    console.log("[settlement-skip] no unfinished combos", {
+    debugLog("settlement", "[settlement-skip] no unfinished combos", {
       totalCombos: records.length,
       fixtureIdsCandidateCount: nFixtures,
     });
     return 0;
   }
   if (fixtureIds.length === 0) {
-    console.log("[settlement-skip] no fixtureIds", {
+    debugLog("settlement", "[settlement-skip] no fixtureIds", {
       unfinishedCount: pending.length,
       uniqueFixturesInHistory: nFixtures,
     });
     return 0;
   }
 
-  console.log("[settlement]", {
+  debugLog("settlement", "[settlement]", {
     unfinishedCount: pending.length,
     fixtureIds,
   });
-  console.log("[settlement-loop-start]", {
+  debugLog("settlement", "[settlement-loop-start]", {
     fixturesToProcess: fixtureIds.length,
   });
 
   if (import.meta.env.DEV) {
-    console.log("[bet-history combo-resolve] run", {
+    debugLog("betHistoryRefresh", "[bet-history combo-resolve] run", {
       totalCombos: records.length,
       pendingCombos: pending.length,
       uniqueFixturesInHistory: nFixtures,
@@ -1078,14 +1183,14 @@ export async function resolveUnfinishedCombosFromFixtures(): Promise<number> {
   let totalResolved = 0;
   let totalCorrected = 0;
   for (const fixtureId of fixtureIds) {
-    console.log("[settlement-processing-fixture]", { fixtureId });
-    console.log("[settlement-fetch-start]", { fixtureId });
+    debugLog("settlement", "[settlement-processing-fixture]", { fixtureId });
+    debugLog("settlement", "[settlement-fetch-start]", { fixtureId });
     let resolutionData: Awaited<ReturnType<typeof fetchFixtureResolutionData>>;
     try {
       resolutionData = await fetchFixtureResolutionData(fixtureId);
-      console.log("[settlement-fetch-success]", { fixtureId });
+      debugLog("settlement", "[settlement-fetch-success]", { fixtureId });
     } catch (error) {
-      console.log("[settlement-fetch-error]", {
+      debugLog("settlement", "[settlement-fetch-error]", {
         fixtureId,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -1093,7 +1198,7 @@ export async function resolveUnfinishedCombosFromFixtures(): Promise<number> {
     }
     if (import.meta.env.DEV) {
       const names = resolutionData.playerResults.slice(0, 8).map((p) => p.playerName);
-      console.log("[bet-history fixture-resolution-debug]", {
+      debugLog("betHistoryRefresh", "[bet-history fixture-resolution-debug]", {
         fixtureId,
         isFinished: resolutionData.isFinished,
         playerResultsCount: resolutionData.playerResults.length,
@@ -1121,7 +1226,7 @@ export async function resolveUnfinishedCombosFromFixtures(): Promise<number> {
         if (!rec) continue;
         const trace = describeComboResolutionDebug(rec, input);
         const tag = trace.finalResult == null ? "[bet-history combo-null-debug]" : "[bet-history combo-debug]";
-        console.log(tag, trace);
+        debugLog("betHistoryRefresh", tag, trace);
       }
     }
 
@@ -1129,10 +1234,10 @@ export async function resolveUnfinishedCombosFromFixtures(): Promise<number> {
     totalResolved += resolved;
     totalCorrected += corrected;
     if (import.meta.env.DEV && (resolved > 0 || corrected > 0)) {
-      console.log("[bet-history combo-resolve] writeback", { fixtureId, newlyResolved: resolved, corrected });
+      debugLog("betHistoryRefresh", "[bet-history combo-resolve] writeback", { fixtureId, newlyResolved: resolved, corrected });
     }
   }
-  console.log("[settlement-end]", {
+  debugLog("settlement", "[settlement-end]", {
     processed: pending.length,
     fixturesProcessed: fixtureIds.length,
     resolvedWrites: totalResolved + totalCorrected,
@@ -1181,7 +1286,7 @@ export async function devAuditBetHistoryCombos(): Promise<void> {
       };
     });
 
-    console.log("[bet-history audit]", {
+    debugLog("betHistoryRefresh", "[bet-history audit]", {
       fixtureId: r.fixtureId,
       comboId: r.id,
       fixtureFinished: input.isFinished,
@@ -1202,7 +1307,7 @@ export function describeFinishedComboSettlementAudit(record: StoredComboRecord, 
     const dbg = describeSingleLegForDebug(leg, input);
     return {
       label: leg.label,
-      marketId: leg.marketId ?? null,
+      marketId: resolveLegMarketId(leg),
       marketFamily: leg.marketFamily,
       playerId: leg.sportmonksPlayerId ?? null,
       playerName: leg.playerName ?? null,
@@ -1244,7 +1349,7 @@ export async function devAuditFinishedBetHistoryCombos(): Promise<void> {
       });
     }
     const input = cache.get(r.fixtureId)!;
-    console.log("[bet-history finished audit]", describeFinishedComboSettlementAudit(r, input));
+    debugLog("betHistoryRefresh", "[bet-history finished audit]", describeFinishedComboSettlementAudit(r, input));
   }
 }
 
@@ -1257,7 +1362,7 @@ export async function forceRecheckHistorySettlements(): Promise<{
   corrected: number;
 }> {
   if (typeof window === "undefined" || !import.meta.env.DEV) {
-    console.warn("[bet-history force-recheck] DEV-only; open Bet History in dev and use from console");
+    debugWarn("betHistoryRefresh", "[bet-history force-recheck] DEV-only; open Bet History in dev and use from console");
     return { fixtureCount: 0, newlyResolved: 0, corrected: 0 };
   }
   const records = readRecords();
@@ -1279,7 +1384,7 @@ export async function forceRecheckHistorySettlements(): Promise<{
     corrected += c;
   }
   const summary = { fixtureCount: ids.length, newlyResolved, corrected };
-  console.log("[bet-history force-recheck] done", summary);
+  debugLog("betHistoryRefresh", "[bet-history force-recheck] done", summary);
   return summary;
 }
 
@@ -1290,18 +1395,18 @@ export async function forceRecheckHistorySettlements(): Promise<{
  */
 export async function forceReResolveStoredCombosForFixture(fixtureId: number): Promise<number> {
   if (typeof window === "undefined" || !import.meta.env.DEV) {
-    console.warn("[bet-history force-reresolve] DEV-only function; not available in production");
+    debugWarn("betHistoryRefresh", "[bet-history force-reresolve] DEV-only function; not available in production");
     return 0;
   }
   if (!Number.isFinite(fixtureId) || fixtureId <= 0) {
-    console.warn("[bet-history force-reresolve] invalid fixtureId", { fixtureId });
+    debugWarn("betHistoryRefresh", "[bet-history force-reresolve] invalid fixtureId", { fixtureId });
     return 0;
   }
 
   const records = readRecords();
   const forFixture = records.filter((r) => r.fixtureId === fixtureId);
   if (forFixture.length === 0) {
-    console.log("[bet-history force-reresolve] no combos found for fixture", { fixtureId });
+    debugLog("betHistoryRefresh", "[bet-history force-reresolve] no combos found for fixture", { fixtureId });
     return 0;
   }
 
@@ -1315,7 +1420,7 @@ export async function forceReResolveStoredCombosForFixture(fixtureId: number): P
 
   const resolutionData = await fetchFixtureResolutionData(fixtureId);
   if (!resolutionData.isFinished) {
-    console.log("[bet-history force-reresolve] fixture not finished", { fixtureId, isFinished: resolutionData.isFinished });
+    debugLog("betHistoryRefresh", "[bet-history force-reresolve] fixture not finished", { fixtureId, isFinished: resolutionData.isFinished });
     return 0;
   }
 
@@ -1329,7 +1434,7 @@ export async function forceReResolveStoredCombosForFixture(fixtureId: number): P
   };
 
   const { resolved } = resolveStoredCombosForFixture(fixtureId, input);
-  console.log("[bet-history force-reresolve]", {
+  debugLog("betHistoryRefresh", "[bet-history force-reresolve]", {
     fixtureId,
     combosFound: forFixture.length,
     combosReResolved: resolved,

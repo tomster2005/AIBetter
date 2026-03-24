@@ -1,3 +1,5 @@
+import { debugLog } from "../lib/debugLog.js";
+
 type ResolutionPlayerStats = {
   playerId: number;
   playerName: string;
@@ -266,17 +268,40 @@ export function parseResolutionPlayerStats(details: unknown): ResolutionPlayerSt
   const fixtureId =
     typeof fixtureObj.id === "number" && Number.isFinite(fixtureObj.id) ? fixtureObj.id : null;
   const statsRows = unwrapArray((details as { statistics?: unknown })?.statistics);
+  debugLog("playerStats", "[player-stats-shape]", {
+    fixtureId,
+    hasStatistics: Array.isArray(statsRows) && statsRows.length > 0,
+    statisticsLength: statsRows.length,
+    firstStatisticSample:
+      statsRows.length > 0
+        ? (() => {
+            const first = unwrapEntity<Record<string, unknown>>(statsRows[0]) ?? {};
+            const firstParticipant = unwrapEntity<Record<string, unknown>>(first.participant);
+            const firstPlayer = unwrapEntity<Record<string, unknown>>(first.player);
+            const detailsList = unwrapArray(first.details);
+            return {
+              player_id: first.player_id ?? null,
+              participant_id: first.participant_id ?? null,
+              participantId: firstParticipant?.id ?? null,
+              playerId: firstPlayer?.id ?? null,
+              detailsLength: detailsList.length,
+            };
+          })()
+        : null,
+  });
   type Acc = { playerId: number; playerName: string; stats: Omit<ResolutionPlayerStats, "playerId" | "playerName"> };
   const byId = new Map<number, Acc>();
 
   for (const rowRaw of statsRows) {
     const row = unwrapEntity<Record<string, unknown>>(rowRaw) ?? {};
+    const playerObj = unwrapEntity<Record<string, unknown>>(row.player);
     const participant = unwrapEntity<Record<string, unknown>>(row.participant);
     const playerIdRaw =
       row.player_id ??
       row.participant_id ??
+      playerObj?.id ??
       participant?.id ??
-      row.id;
+      null;
     const playerId = typeof playerIdRaw === "number" ? playerIdRaw : typeof playerIdRaw === "string" ? parseInt(playerIdRaw, 10) : 0;
     if (!Number.isFinite(playerId) || playerId <= 0) continue;
 
@@ -287,7 +312,11 @@ export function parseResolutionPlayerStats(details: unknown): ResolutionPlayerSt
         participant?.common_name ??
         ""
     ).trim();
-    const detailsList = unwrapArray(row.details);
+    const nestedStats = unwrapEntity<Record<string, unknown>>(row.statistics);
+    const detailsList = [
+      ...unwrapArray(row.details),
+      ...unwrapArray(nestedStats?.details),
+    ];
     const prev = byId.get(playerId);
     if (!prev) {
       byId.set(playerId, { playerId, playerName, stats: {} });
@@ -330,12 +359,27 @@ export function parseResolutionPlayerStats(details: unknown): ResolutionPlayerSt
       foulsWon: p.foulsWon ?? null,
       tackles: p.tackles ?? null,
     }));
-    console.log("[player-stats]", {
+    debugLog("playerStats", "[player-stats]", {
       fixtureId,
       playersFound: statsRows.length,
       statsExtracted: out.length,
       missingPlayers: Math.max(0, statsRows.length - out.length),
       sample,
+    });
+    const playerStatsMap: Record<number, Omit<ResolutionPlayerStats, "playerId" | "playerName">> = {};
+    for (const p of out) {
+      playerStatsMap[p.playerId] = {
+        shots: p.shots,
+        shotsOnTarget: p.shotsOnTarget,
+        foulsCommitted: p.foulsCommitted,
+        foulsWon: p.foulsWon,
+        tackles: p.tackles,
+      };
+    }
+    debugLog("playerStats", "[player-stats-map-keys]", {
+      fixtureId,
+      keys: Object.keys(playerStatsMap),
+      count: Object.keys(playerStatsMap).length,
     });
   }
 
@@ -419,9 +463,9 @@ export async function fetchFixtureResolutionData(fixtureId: number): Promise<Fix
 
     if (import.meta.env.DEV && fixtureId === 19427188) {
       try {
-        console.log("[fixture FULL RAW]", JSON.stringify(fixture, null, 2));
+        debugLog("playerStats", "[fixture FULL RAW]", JSON.stringify(fixture, null, 2));
       } catch {
-        console.log("[fixture FULL RAW]", "(could not stringify)", fixture);
+        debugLog("playerStats", "[fixture FULL RAW]", { note: "(could not stringify)", fixture });
       }
     }
 
@@ -449,7 +493,7 @@ export async function fetchFixtureResolutionData(fixtureId: number): Promise<Fix
           : minute != null && homeGoals != null && awayGoals != null
             ? "fallback: scores present and minute>=90"
             : "not finished by state_id or fallback";
-      console.log("[fixture-status]", {
+      debugLog("fixtureStatus", "[fixture-status]", {
         fixtureId,
         state_id: rootStateId ?? nestedStateId,
         minute,
@@ -461,7 +505,7 @@ export async function fetchFixtureResolutionData(fixtureId: number): Promise<Fix
     }
 
     if (import.meta.env.DEV) {
-      console.log("[fixture-resolution-final]", {
+      debugLog("fixtureStatus", "[fixture-resolution-final]", {
         fixtureId,
         isFinished,
         homeGoals,
