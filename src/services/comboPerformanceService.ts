@@ -1,7 +1,7 @@
 import type { BuildCombo, BuildLeg, ComboScoreBreakdown } from "../lib/valueBetBuilder.js";
 import {
   formatCountComparison,
-  inferPlayerPropStatCategoryFromLeg,
+  inferPlayerPropStatCategoryFromLegWithMarketId,
   settleBtts,
   settleCountOverUnder,
   settleMatchResult,
@@ -464,7 +464,20 @@ function hydrateDisplayScores(records: StoredComboRecord[]): DisplayStoredComboR
 }
 
 function normalizeName(name: string): string {
-  return String(name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+  return String(name ?? "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ");
+}
+
+function nameTokens(n: string): string[] {
+  return normalizeName(n)
+    .split(" ")
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0);
 }
 
 /** Match API lineup name to stored leg playerName (exact, then last-name / single-token match). */
@@ -481,12 +494,21 @@ function findPlayerRowForLeg(leg: StoredComboLeg, input: ComboResolutionInput): 
   const exact = list.find((p) => normalizeName(p.playerName) === want);
   if (exact) return exact;
   if (want.length < 3) return null;
+  const wantTokens = nameTokens(want);
+  const wantLast = wantTokens.length > 0 ? wantTokens[wantTokens.length - 1]! : "";
   return (
     list.find((p) => {
       const n = normalizeName(p.playerName);
       if (n === want) return true;
       if (!want.includes(" ")) {
         return n.endsWith(" " + want) || n.startsWith(want + " ") || n.split(" ").includes(want);
+      }
+      const nTokens = nameTokens(n);
+      const nLast = nTokens.length > 0 ? nTokens[nTokens.length - 1]! : "";
+      if (wantLast !== "" && wantLast === nLast) {
+        // Support mild variants: e.g. "calvert lewin" vs "dominic calvert lewin".
+        const overlap = wantTokens.filter((t) => nTokens.includes(t)).length;
+        if (overlap >= 2 || (overlap >= 1 && wantTokens.length <= 2)) return true;
       }
       return false;
     }) ?? null
@@ -503,16 +525,76 @@ function getPlayerStatForLeg(leg: StoredComboLeg, input: ComboResolutionInput): 
     return input.playerStatsById[player.playerId] ?? null;
   })();
   if (!player) return null;
-  const cat = inferPlayerPropStatCategoryFromLeg(leg.marketFamily, leg.marketName);
+  const cat = inferPlayerPropStatCategoryFromLegWithMarketId(leg.marketFamily, leg.marketName, leg.marketId);
   if (cat == null) return null;
   const pick = (v: unknown): number | null =>
     typeof v === "number" && Number.isFinite(v) ? v : null;
-  if (cat === "shotsOnTarget") return pick(playerById?.shotsOnTarget ?? player.shotsOnTarget);
-  if (cat === "shots") return pick(playerById?.shots ?? player.shots);
-  if (cat === "foulsCommitted") return pick(playerById?.foulsCommitted ?? player.foulsCommitted);
-  if (cat === "foulsWon") return pick(playerById?.foulsWon ?? player.foulsWon);
-  if (cat === "tackles") return pick(playerById?.tackles ?? player.tackles);
-  return null;
+  const statValue =
+    cat === "shotsOnTarget"
+      ? pick(playerById?.shotsOnTarget ?? player.shotsOnTarget)
+      : cat === "shots"
+        ? pick(playerById?.shots ?? player.shots)
+        : cat === "foulsCommitted"
+          ? pick(playerById?.foulsCommitted ?? player.foulsCommitted)
+          : cat === "foulsWon"
+            ? pick(playerById?.foulsWon ?? player.foulsWon)
+            : cat === "tackles"
+              ? pick(playerById?.tackles ?? player.tackles)
+              : null;
+  if (import.meta.env.DEV) {
+    console.log("[settlement]", {
+      playerName: leg.playerName ?? null,
+      normalizedName: leg.playerName ? normalizeName(leg.playerName) : null,
+      matched: Boolean(player),
+      matchedPlayerName: player?.playerName ?? null,
+      matchedPlayerId: player?.playerId ?? null,
+      marketId: leg.marketId ?? null,
+      marketName: leg.marketName,
+      statCategory: cat,
+      statValue,
+      reason: statValue == null ? "missing stat for mapped market category" : "stat resolved",
+    });
+  }
+  if (cat === "shotsOnTarget" && statValue == null && import.meta.env.DEV) {
+    console.log("[settlement] missing stat", { marketId: leg.marketId ?? null, category: "shotsOnTarget" });
+  }
+  if (cat === "shots" && statValue == null && import.meta.env.DEV) {
+    console.log("[settlement] missing stat", { marketId: leg.marketId ?? null, category: "shots" });
+  }
+  if (cat === "foulsCommitted" && statValue == null && import.meta.env.DEV) {
+    console.log("[settlement] missing stat", { marketId: leg.marketId ?? null, category: "foulsCommitted" });
+  }
+  if (cat === "foulsWon" && statValue == null && import.meta.env.DEV) {
+    console.log("[settlement] missing stat", { marketId: leg.marketId ?? null, category: "foulsWon" });
+  }
+  if (cat === "tackles" && statValue == null && import.meta.env.DEV) {
+    console.log("[settlement] missing stat", { marketId: leg.marketId ?? null, category: "tackles" });
+  }
+  return statValue;
+}
+
+function getLegSettlementResultForDebug(
+  leg: StoredComboLeg,
+  input: ComboResolutionInput,
+  hit: boolean | null
+): "WIN" | "LOSS" | "PENDING" {
+  if (hit == null) return "PENDING";
+  return hit ? "WIN" : "LOSS";
+}
+
+function logLegSettlement(leg: StoredComboLeg, hit: boolean | null, reason: string, input: ComboResolutionInput): void {
+  if (!import.meta.env.DEV) return;
+  const player = leg.type === "player" ? findPlayerRowForLeg(leg, input) : null;
+  const statValue = leg.type === "player" ? getPlayerStatForLeg(leg, input) : null;
+  console.log("[settlement]", {
+    playerName: leg.playerName ?? null,
+    normalizedName: leg.playerName ? normalizeName(leg.playerName) : null,
+    matched: player != null,
+    statValue,
+    marketId: leg.marketId ?? null,
+    result: getLegSettlementResultForDebug(leg, input, hit),
+    reason,
+  });
 }
 
 function resolveTeamLegHit(leg: StoredComboLeg, input: ComboResolutionInput): boolean | null {
@@ -546,19 +628,34 @@ function resolveTeamLegHit(leg: StoredComboLeg, input: ComboResolutionInput): bo
 function resolveLegHit(leg: StoredComboLeg, input: ComboResolutionInput): boolean | null {
   if (leg.outcomeInvalid) return null;
   if (leg.type === "team") {
-    return resolveTeamLegHit(leg, input);
+    const hit = resolveTeamLegHit(leg, input);
+    logLegSettlement(
+      leg,
+      hit,
+      hit == null ? "team leg unresolved (missing fixture/team data)" : hit ? "team condition met" : "team condition missed",
+      input
+    );
+    return hit;
   }
   if (leg.outcome === "Over" || leg.outcome === "Under" || leg.outcome === "Yes" || leg.outcome === "No") {
     if (!Number.isFinite(leg.line)) return null;
   }
   const actual = getPlayerStatForLeg(leg, input);
-  if (actual == null) return null;
+  if (actual == null) {
+    logLegSettlement(leg, null, "player stat missing or unmatched; keeping pending", input);
+    return null;
+  }
   if (leg.outcome === "Over" || leg.outcome === "Under") {
-    return settleCountOverUnder(actual, leg.line, leg.outcome);
+    const hit = settleCountOverUnder(actual, leg.line, leg.outcome);
+    logLegSettlement(leg, hit, hit ? "player condition met" : "player condition missed", input);
+    return hit;
   }
   if (leg.outcome === "Yes" || leg.outcome === "No") {
-    return settleYesNoAgainstLine(actual, leg.line, leg.outcome);
+    const hit = settleYesNoAgainstLine(actual, leg.line, leg.outcome);
+    logLegSettlement(leg, hit, hit ? "player condition met" : "player condition missed", input);
+    return hit;
   }
+  logLegSettlement(leg, null, "unsupported player outcome token", input);
   return null;
 }
 
@@ -688,7 +785,7 @@ function describeSingleLegForDebug(leg: StoredComboLeg, input: ComboResolutionIn
       }
     } else if (!Number.isFinite(leg.line) && (leg.outcome === "Over" || leg.outcome === "Under" || leg.outcome === "Yes" || leg.outcome === "No")) {
       reason = "player: non-finite line — cannot compare";
-    } else if (inferPlayerPropStatCategoryFromLeg(leg.marketFamily, leg.marketName) == null) {
+    } else if (inferPlayerPropStatCategoryFromLegWithMarketId(leg.marketFamily, leg.marketName, leg.marketId) == null) {
       reason = "player: unsupported market category (marketFamily / marketName)";
     } else if (actual == null) {
       const sm = leg.sportmonksPlayerId;

@@ -12,6 +12,12 @@ export type PlayerPropStatCategory =
   | "foulsWon"
   | "tackles";
 
+const MARKET_ID_PLAYER_SHOTS_ON_TARGET = 334;
+const MARKET_ID_PLAYER_SHOTS = 336;
+const MARKET_ID_PLAYER_FOULS_COMMITTED = 338;
+const MARKET_ID_PLAYER_FOULS_WON = 339;
+const MARKET_ID_PLAYER_TACKLES = 340;
+
 /** Over/Under on a numeric total (goals, shots, etc.). */
 export function settleCountOverUnder(actual: number, line: number, outcome: "Over" | "Under"): boolean {
   if (!Number.isFinite(actual) || !Number.isFinite(line)) return false;
@@ -49,6 +55,25 @@ export function settleMatchResult(
  * (`player:<normName>|<category>`), then fall back to marketName heuristics (aligned with valueBetBuilder).
  */
 export function inferPlayerPropStatCategoryFromLeg(marketFamily: string, marketName: string): PlayerPropStatCategory | null {
+  return inferPlayerPropStatCategoryFromLegWithMarketId(marketFamily, marketName, undefined);
+}
+
+/**
+ * Prefer explicit market id mapping; then fallback to marketFamily/marketName heuristics.
+ */
+export function inferPlayerPropStatCategoryFromLegWithMarketId(
+  marketFamily: string,
+  marketName: string,
+  marketId?: number | null
+): PlayerPropStatCategory | null {
+  if (typeof marketId === "number" && Number.isFinite(marketId)) {
+    if (marketId === MARKET_ID_PLAYER_SHOTS_ON_TARGET) return "shotsOnTarget";
+    if (marketId === MARKET_ID_PLAYER_SHOTS) return "shots";
+    if (marketId === MARKET_ID_PLAYER_FOULS_COMMITTED) return "foulsCommitted";
+    if (marketId === MARKET_ID_PLAYER_FOULS_WON) return "foulsWon";
+    if (marketId === MARKET_ID_PLAYER_TACKLES) return "tackles";
+  }
+
   const fam = (marketFamily ?? "").trim().toLowerCase();
   const pipe = fam.lastIndexOf("|");
   if (fam.startsWith("player:") && pipe > 0) {
