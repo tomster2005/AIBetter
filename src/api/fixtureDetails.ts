@@ -15,7 +15,7 @@ import type {
 const FIXTURE_BASE = "https://api.sportmonks.com/v3/football/fixtures";
 /** Safe includes for standard fixture lineups only. No expectedLineups, predicted lineups, or premium expected-lineups. */
 const LINEUP_INCLUDES =
-  "participants;state;league;scores;lineups;lineups.player;lineups.type;lineups.details.type;venue;coaches;metadata";
+  "participants;state;league;scores;lineups;lineups.player;lineups.type;lineups.details.type;statistics;statistics.details.type;venue;coaches;metadata";
 
 function getApiToken(): string {
   const token = process.env.SPORTMONKS_API_TOKEN ?? process.env.SPORTMONKS_TOKEN;

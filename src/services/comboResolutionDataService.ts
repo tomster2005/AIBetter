@@ -80,6 +80,48 @@ function unwrapArray(value: unknown): unknown[] {
   return [];
 }
 
+function normalizePlayerName(name: string): string {
+  return String(name ?? "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ");
+}
+
+function readStatTypeKeys(detail: Record<string, unknown>): { name: string; dev: string } {
+  const type = unwrapEntity<Record<string, unknown>>(detail.type) ?? {};
+  const name = normalizeDetailName(String(type.name ?? detail.type_name ?? ""));
+  const dev = normalizeDetailName(String(type.developer_name ?? type.developerName ?? detail.type_developer_name ?? ""));
+  return { name, dev };
+}
+
+function mapStatKey(
+  name: string,
+  dev: string
+): "shots" | "shotsOnTarget" | "foulsCommitted" | "foulsWon" | "tackles" | null {
+  const d = dev.toUpperCase();
+  if (d.includes("SHOTS_TOTAL")) return "shots";
+  if (d.includes("SHOTS_ON_TARGET")) return "shotsOnTarget";
+  if (d.includes("FOULS_COMMITTED")) return "foulsCommitted";
+  if (d.includes("FOULS_WON")) return "foulsWon";
+  if (d.includes("TACKLES")) return "tackles";
+
+  if (name === "shots total" || name === "total shots" || name === "shots") return "shots";
+  if (name === "shots on target" || name === "shots on goal" || name === "on target shots") return "shotsOnTarget";
+  if (name.includes("foul") && (name.includes("commit") || name.includes("committed") || name === "fouls")) return "foulsCommitted";
+  if (name.includes("foul") && (name.includes("won") || name.includes("drawn") || name.includes("suffered"))) return "foulsWon";
+  if (
+    name === "tackles" ||
+    name === "total tackles" ||
+    (name.includes("tackle") && !name.includes("dribbled") && !name.includes("interception"))
+  ) {
+    return "tackles";
+  }
+  return null;
+}
+
 /** Sportmonks often nests included entities as `{ data: { ... } }`. */
 function unwrapEntity<T extends Record<string, unknown>>(value: unknown): T | null {
   if (value == null || typeof value !== "object") return null;
@@ -189,54 +231,87 @@ function getSideFromScoreRow(row: Record<string, unknown>, idToSide: Map<number,
 }
 
 /**
- * Merge lineup rows that share the same player_id (Sportmonks can repeat a player) so stats from all detail rows apply.
+ * Parse player stats from fixture statistics[].details[] (post-match source of truth).
+ * No lineup-derived stat extraction here — lineups are not reliable for final stat settlement.
  */
 export function parseResolutionPlayerStats(details: unknown): ResolutionPlayerStats[] {
-  const lineups = unwrapArray((details as { lineups?: unknown })?.lineups);
-  type Acc = { playerId: number; playerName: string; details: unknown[] };
+  const fixtureObj = normalizeFixturePayload(details);
+  const fixtureId =
+    typeof fixtureObj.id === "number" && Number.isFinite(fixtureObj.id) ? fixtureObj.id : null;
+  const statsRows = unwrapArray((details as { statistics?: unknown })?.statistics);
+  type Acc = { playerId: number; playerName: string; stats: Omit<ResolutionPlayerStats, "playerId" | "playerName"> };
   const byId = new Map<number, Acc>();
-  for (const entry of lineups) {
-    const e = entry as {
-      player_id?: number;
-      player_name?: string;
-      player?: { id?: number; name?: string };
-      details?: unknown;
-    };
-    const playerId = e.player_id ?? e.player?.id ?? 0;
+
+  for (const rowRaw of statsRows) {
+    const row = unwrapEntity<Record<string, unknown>>(rowRaw) ?? {};
+    const participant = unwrapEntity<Record<string, unknown>>(row.participant);
+    const playerIdRaw =
+      row.player_id ??
+      row.participant_id ??
+      participant?.id ??
+      row.id;
+    const playerId = typeof playerIdRaw === "number" ? playerIdRaw : typeof playerIdRaw === "string" ? parseInt(playerIdRaw, 10) : 0;
     if (!Number.isFinite(playerId) || playerId <= 0) continue;
-    const playerName = String(e.player_name ?? e.player?.name ?? "").trim();
-    const detailsList = unwrapArray(e.details);
+
+    const playerName = String(
+      row.player_name ??
+        participant?.name ??
+        participant?.display_name ??
+        participant?.common_name ??
+        ""
+    ).trim();
+    const detailsList = unwrapArray(row.details);
     const prev = byId.get(playerId);
     if (!prev) {
-      byId.set(playerId, { playerId, playerName, details: [...detailsList] });
+      byId.set(playerId, { playerId, playerName, stats: {} });
     } else {
-      prev.details.push(...detailsList);
       if (playerName.length > prev.playerName.length) prev.playerName = playerName;
     }
-  }
-  const out: ResolutionPlayerStats[] = [];
-  for (const { playerId, playerName, details: allDetails } of byId.values()) {
-    const stats: ResolutionPlayerStats = { playerId, playerName };
-    for (const d of allDetails) {
-      const detail = d as { type?: { name?: string }; value?: unknown };
-      const n = normalizeDetailName(detail?.type?.name ?? "");
-      if (!n) continue;
-      const v = toOptionalStatNumber(detail?.value);
-      if (v === undefined) continue;
-      if (n === "shots total" || n === "total shots" || n === "shots") stats.shots = v;
-      else if (n === "shots on target" || n === "shots on goal" || n === "on target shots") stats.shotsOnTarget = v;
-      else if (n.includes("foul") && (n.includes("commit") || n.includes("committed") || n === "fouls")) stats.foulsCommitted = v;
-      else if (n.includes("foul") && (n.includes("won") || n.includes("drawn") || n.includes("suffered"))) stats.foulsWon = v;
-      else if (
-        n === "tackles" ||
-        n === "total tackles" ||
-        (n.includes("tackle") && !n.includes("dribbled") && !n.includes("interception"))
-      ) {
-        stats.tackles = v;
-      }
+    const acc = byId.get(playerId)!;
+
+    for (const d of detailsList) {
+      const detail = unwrapEntity<Record<string, unknown>>(d) ?? {};
+      const { name, dev } = readStatTypeKeys(detail);
+      const key = mapStatKey(name, dev);
+      if (key == null) continue;
+      const v = toOptionalStatNumber(detail.value);
+      if (v === undefined) continue; // missing -> null/pending downstream, never implicit 0
+      acc.stats[key] = v;
     }
-    out.push(stats);
   }
+
+  const out: ResolutionPlayerStats[] = [];
+  for (const { playerId, playerName, stats } of byId.values()) {
+    const hasAny =
+      stats.shots !== undefined ||
+      stats.shotsOnTarget !== undefined ||
+      stats.foulsCommitted !== undefined ||
+      stats.foulsWon !== undefined ||
+      stats.tackles !== undefined;
+    if (!hasAny) continue;
+    out.push({ playerId, playerName, ...stats });
+  }
+
+  if (import.meta.env.DEV) {
+    const sample = out.slice(0, 8).map((p) => ({
+      playerId: p.playerId,
+      name: p.playerName,
+      normalizedName: normalizePlayerName(p.playerName),
+      shots: p.shots ?? null,
+      shotsOnTarget: p.shotsOnTarget ?? null,
+      foulsCommitted: p.foulsCommitted ?? null,
+      foulsWon: p.foulsWon ?? null,
+      tackles: p.tackles ?? null,
+    }));
+    console.log("[player-stats]", {
+      fixtureId,
+      playersFound: statsRows.length,
+      statsExtracted: out.length,
+      missingPlayers: Math.max(0, statsRows.length - out.length),
+      sample,
+    });
+  }
+
   return out;
 }
 
