@@ -23,7 +23,8 @@ function getApiOrigin(): string {
 }
 
 function getFixtureDetailsApiUrl(fixtureId: number): string {
-  return `${getApiOrigin()}/api/fixtures/${fixtureId}`;
+  const ts = Date.now();
+  return `${getApiOrigin()}/api/fixtures/${fixtureId}?ts=${ts}`;
 }
 
 function normalizeDetailName(name: string): string {
@@ -410,7 +411,7 @@ export async function fetchFixtureResolutionData(fixtureId: number): Promise<Fix
     awayGoals: null,
   });
   try {
-    const res = await fetch(getFixtureDetailsApiUrl(fixtureId));
+    const res = await fetch(getFixtureDetailsApiUrl(fixtureId), { cache: "no-store" });
     if (!res.ok) return empty();
     const json = (await res.json()) as { data?: unknown };
     const root = json?.data ?? json;

@@ -172,17 +172,42 @@ export function BetHistoryPage() {
   }, [refresh]);
 
   /** Combo resolution only ran on Odds/Lineup via useAutoResolveCombos; Bet History must trigger the same pipeline. */
+  const runBetHistoryRefresh = useCallback(async () => {
+    const ts = new Date().toISOString();
+    const before = getUnfinishedStoredComboRecords();
+    const pendingBefore = before.length;
+    if (pendingBefore <= 0) {
+      if (import.meta.env.DEV) {
+        console.log("[bet-history-refresh]", {
+          timestamp: ts,
+          skipped: true,
+          reason: "no unfinished bets",
+          betsFetched: getAllStoredComboRecords().length,
+          unfinishedCount: 0,
+        });
+      }
+      refresh();
+      return;
+    }
+    const resolvedThisPass = await resolveUnfinishedCombosFromFixtures();
+    const allNow = getAllStoredComboRecords();
+    const unfinishedNow = getUnfinishedStoredComboRecords();
+    if (import.meta.env.DEV) {
+      console.log("[bet-history-refresh]", {
+        timestamp: ts,
+        betsFetched: allNow.length,
+        unfinishedCount: unfinishedNow.length,
+        resolvedThisPass,
+      });
+    }
+    refresh();
+  }, [refresh]);
+
   useEffect(() => {
     let cancelled = false;
     const pull = async () => {
-      const resolvedThisPass = await resolveUnfinishedCombosFromFixtures();
-      if (import.meta.env.DEV) {
-        console.log("[bet-history] resolveUnfinishedCombosFromFixtures done", {
-          storageWritesThisPass: resolvedThisPass,
-          note: "includes new settlements + corrected win/loss when logic or stats change",
-        });
-      }
-      if (!cancelled) refresh();
+      await runBetHistoryRefresh();
+      if (cancelled) return;
     };
     void pull();
     const intervalMs = 30000;
@@ -194,7 +219,7 @@ export function BetHistoryPage() {
       window.clearInterval(t);
       window.removeEventListener("focus", onFocus);
     };
-  }, [refresh]);
+  }, [runBetHistoryRefresh]);
 
   const stats = useMemo(() => getBetHistoryStats(), [allRecords, finishedRecords, unfinishedRecords]);
   const oddsBands = useMemo(() => getOddsBandBreakdown(), [allRecords, finishedRecords, unfinishedRecords]);
@@ -212,6 +237,15 @@ export function BetHistoryPage() {
   return (
     <div className="bet-history">
       <h1 className="bet-history__title">Bet History</h1>
+      <div>
+        <button
+          type="button"
+          className="bet-history__tab"
+          onClick={() => void runBetHistoryRefresh()}
+        >
+          Refresh Settlement
+        </button>
+      </div>
 
       <div className="bet-history__tabs" role="tablist" aria-label="Bet history views">
         <button
