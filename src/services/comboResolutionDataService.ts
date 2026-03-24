@@ -260,7 +260,8 @@ function getSideFromScoreRow(row: Record<string, unknown>, idToSide: Map<number,
 }
 
 /**
- * Parse player stats from fixture statistics[].details[] (post-match source of truth).
+ * Parse player stats from fixture statistics (post-match source of truth).
+ * Supports nested statistics[].details[] when present, or flat rows with statistics[].type + value (Sportmonks v3).
  * No lineup-derived stat extraction here — lineups are not reliable for final stat settlement.
  */
 export function parseResolutionPlayerStats(details: unknown): ResolutionPlayerStats[] {
@@ -279,12 +280,14 @@ export function parseResolutionPlayerStats(details: unknown): ResolutionPlayerSt
             const firstParticipant = unwrapEntity<Record<string, unknown>>(first.participant);
             const firstPlayer = unwrapEntity<Record<string, unknown>>(first.player);
             const detailsList = unwrapArray(first.details);
+            const typeObj = unwrapEntity<Record<string, unknown>>(first.type);
             return {
               player_id: first.player_id ?? null,
               participant_id: first.participant_id ?? null,
               participantId: firstParticipant?.id ?? null,
               playerId: firstPlayer?.id ?? null,
               detailsLength: detailsList.length,
+              hasTopLevelType: Boolean(typeObj && Object.keys(typeObj).length > 0),
             };
           })()
         : null,
@@ -313,10 +316,14 @@ export function parseResolutionPlayerStats(details: unknown): ResolutionPlayerSt
         ""
     ).trim();
     const nestedStats = unwrapEntity<Record<string, unknown>>(row.statistics);
-    const detailsList = [
+    let detailsList = [
       ...unwrapArray(row.details),
       ...unwrapArray(nestedStats?.details),
     ];
+    const typeOnRow = unwrapEntity<Record<string, unknown>>(row.type);
+    if (detailsList.length === 0 && (typeOnRow != null || row.value != null)) {
+      detailsList = [row];
+    }
     const prev = byId.get(playerId);
     if (!prev) {
       byId.set(playerId, { playerId, playerName, stats: {} });
