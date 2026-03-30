@@ -15,6 +15,7 @@ interface LeagueSectionCardProps {
   /** Collapsed by default; header click toggles */
   isExpanded?: boolean;
   onToggleExpand?: () => void;
+  fixtureSignalCounts?: Record<number, number>;
 }
 
 export function LeagueSectionCard({
@@ -28,8 +29,19 @@ export function LeagueSectionCard({
   onToggleFavourite,
   isExpanded = false,
   onToggleExpand,
+  fixtureSignalCounts,
 }: LeagueSectionCardProps) {
   const fixtureCount = fixtures.length;
+  const sortedFixtures = [...fixtures].sort((a, b) => {
+    const sa = fixtureSignalCounts?.[a.id] ?? 0;
+    const sb = fixtureSignalCounts?.[b.id] ?? 0;
+    if (sb !== sa) return sb - sa;
+    const tA = a.startingAt;
+    const tB = b.startingAt;
+    if (tA < tB) return -1;
+    if (tA > tB) return 1;
+    return a.id - b.id;
+  });
 
   return (
     <section className="league-card" aria-label={`${leagueName} fixtures`}>
@@ -88,12 +100,13 @@ export function LeagueSectionCard({
           <p className="league-card__empty">No fixtures available for this competition today.</p>
         ) : (
           <div className="league-card__grid">
-            {fixtures.map((f) => (
+            {sortedFixtures.map((f) => (
               <FixtureTile
                 key={f.id}
                 fixture={f}
                 formatTime={formatTime}
                 onFixtureClick={onFixtureClick}
+                signalCount={fixtureSignalCounts?.[f.id] ?? 0}
               />
             ))}
           </div>

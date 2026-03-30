@@ -253,6 +253,39 @@ app.get("/api/fixtures", async (req, res) => {
   }
 });
 
+app.get("/api/fixtures/signals", (_req, res) => {
+  const rawIds = typeof _req.query.ids === "string" ? _req.query.ids : "";
+  const ids = rawIds
+    .split(",")
+    .map((v) => parseInt(v.trim(), 10))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  if (ids.length === 0) {
+    return res.json({ signals: {} as Record<number, { hasSignal: boolean; signalCount: number }> });
+  }
+
+  const wanted = new Set(ids);
+  const counts = new Map<number, number>();
+  try {
+    const data = loadDataset();
+    for (const row of data.rows) {
+      const fixtureId = row.fixtureId;
+      if (!wanted.has(fixtureId)) continue;
+      // Value signal: positive modeled edge at snapshot time.
+      if (typeof row.edge !== "number" || !Number.isFinite(row.edge) || row.edge <= 0) continue;
+      counts.set(fixtureId, (counts.get(fixtureId) ?? 0) + 1);
+    }
+  } catch {
+    // Silent fallback: return empty signals.
+  }
+
+  const out: Record<number, { hasSignal: boolean; signalCount: number }> = {};
+  for (const id of ids) {
+    const signalCount = counts.get(id) ?? 0;
+    out[id] = { hasSignal: signalCount > 0, signalCount };
+  }
+  return res.json({ signals: out });
+});
+
 app.get("/api/fixtures/:id/odds", async (req, res) => {
   const idParam = req.params.id;
   const id = parseInt(idParam, 10);

@@ -5,6 +5,7 @@ interface FixtureTileProps {
   fixture: Fixture;
   formatTime: (startingAt: string) => string;
   onFixtureClick?: (fixture: Fixture) => void;
+  signalCount?: number;
 }
 
 function getCurrentScore(fixture: Fixture): string | null {
@@ -21,12 +22,13 @@ function isLive(state: Fixture["state"]): boolean {
   return true;
 }
 
-export function FixtureTile({ fixture, formatTime, onFixtureClick }: FixtureTileProps) {
+export function FixtureTile({ fixture, formatTime, onFixtureClick, signalCount = 0 }: FixtureTileProps) {
   const score = getCurrentScore(fixture);
   const showScore = score !== null;
   const live = isLive(fixture.state);
   const isClickable = Boolean(onFixtureClick);
   const hasSignalBadges = live || (!showScore && fixture.state?.nameShort && fixture.state.nameShort !== "NS");
+  const hasValueSignal = signalCount > 0;
 
   const content = (
     <>
@@ -72,15 +74,21 @@ export function FixtureTile({ fixture, formatTime, onFixtureClick }: FixtureTile
         ) : (
           <span className="fixture-tile__time">{formatTime(fixture.startingAt)}</span>
         )}
+        {hasValueSignal && (
+          <span className="fixture-tile__value-badge" title={`${signalCount} value bet${signalCount === 1 ? "" : "s"}`}>
+            🔥 {signalCount} value bet{signalCount === 1 ? "" : "s"}
+          </span>
+        )}
       </div>
     </>
   );
 
   if (isClickable && onFixtureClick) {
+    const className = `fixture-tile fixture-tile--clickable${hasValueSignal ? " fixture-tile--signal" : ""}`;
     return (
       <button
         type="button"
-        className="fixture-tile fixture-tile--clickable"
+        className={className}
         onClick={() => onFixtureClick(fixture)}
       >
         {content}

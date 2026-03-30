@@ -82,6 +82,7 @@ export function CalendarPage() {
     home?: { name?: string | null; image?: string | null };
     away?: { name?: string | null; image?: string | null };
   }>({});
+  const [fixtureSignalCounts, setFixtureSignalCounts] = useState<Record<number, number>>({});
 
   const { favouriteIds, toggleFavourite, isFavourite } = useLeagueFavourites();
   const { isExpanded, toggleExpanded } = useExpandedLeagueState();
@@ -119,6 +120,25 @@ export function CalendarPage() {
           console.log("[calendar] DEBUG dates containing target:", datesContainingTarget);
         }
         setByDate(byDateComputed);
+        const ids = fixtures.map((f) => f.id).filter((id) => Number.isFinite(id) && id > 0);
+        if (ids.length > 0) {
+          const qs = encodeURIComponent(ids.join(","));
+          fetch(`/api/fixtures/signals?ids=${qs}`)
+            .then((r) => (r.ok ? r.json() : { signals: {} }))
+            .then((payload: { signals?: Record<string, { signalCount?: number }> }) => {
+              const out: Record<number, number> = {};
+              const raw = payload?.signals ?? {};
+              for (const [k, v] of Object.entries(raw)) {
+                const id = parseInt(k, 10);
+                const c = Number(v?.signalCount ?? 0);
+                if (Number.isFinite(id) && id > 0 && Number.isFinite(c) && c > 0) out[id] = c;
+              }
+              setFixtureSignalCounts(out);
+            })
+            .catch(() => setFixtureSignalCounts({}));
+        } else {
+          setFixtureSignalCounts({});
+        }
       })
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load fixtures"))
       .finally(() => setLoading(false));
@@ -261,6 +281,7 @@ export function CalendarPage() {
                   onToggleFavourite={toggleFavourite}
                   isExpanded={isExpanded(selectedDate, group.leagueId)}
                   onToggleExpand={() => toggleExpanded(selectedDate, group.leagueId)}
+                  fixtureSignalCounts={fixtureSignalCounts}
                 />
               ))}
             </div>
