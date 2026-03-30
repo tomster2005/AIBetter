@@ -3,9 +3,22 @@ type DebugFlag =
   | "playerStats"
   | "fixtureStatus"
   | "marketId"
-  | "betHistoryRefresh";
+  | "betHistoryRefresh"
+  | "playerProps"
+  | "lineupAvailability";
 
 type DebugFlags = Record<DebugFlag, boolean>;
+
+function isNonProdBrowser(): boolean {
+  return (
+    typeof import.meta !== "undefined" &&
+    !!(import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV
+  );
+}
+
+function isNonProdNode(): boolean {
+  return typeof process !== "undefined" && process.env?.NODE_ENV !== "production";
+}
 
 const DEFAULT_DEBUG_FLAGS: DebugFlags = {
   settlement: false,
@@ -13,6 +26,8 @@ const DEFAULT_DEBUG_FLAGS: DebugFlags = {
   fixtureStatus: false,
   marketId: false,
   betHistoryRefresh: false,
+  playerProps: false,
+  lineupAvailability: false,
 };
 
 function getRuntimeFlags(): DebugFlags {
@@ -28,6 +43,14 @@ export function debugEnabled(flag: DebugFlag): boolean {
 }
 
 export function debugLog(flag: DebugFlag, label: string, payload?: unknown): void {
+  /** Always on in non-production (client DEV or Node non-prod); not gated by `playerProps` flag. */
+  if (flag === "playerProps" && label === "[player-props-final-rows]") {
+    if (isNonProdBrowser() || isNonProdNode()) {
+      if (payload === undefined) console.log(label);
+      else console.log(label, payload);
+    }
+    return;
+  }
   if (!debugEnabled(flag)) return;
   if (payload === undefined) console.log(label);
   else console.log(label, payload);

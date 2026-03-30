@@ -1373,8 +1373,7 @@ export function BetTrackerPage() {
         ) : bets.length === 0 ? (
           <div className="bet-tracker-page__empty-state">
             <div className="bet-tracker-page__empty-icon">○</div>
-            <p className="bet-tracker-page__empty">No tracked bets yet</p>
-            <p className="bet-tracker-page__empty-sub">Add from Build Value Bets or use Quick Add to start tracking.</p>
+            <p className="bet-tracker-page__empty">No bets yet — add your first bet to start tracking performance.</p>
           </div>
         ) : filteredAndSortedBets.length === 0 ? (
           <p className="bet-tracker-page__empty">No bets match current filters.</p>
@@ -1382,20 +1381,6 @@ export function BetTrackerPage() {
           <div className="bet-tracker-page__bet-cards">
             {filteredAndSortedBets.map(({ b, modelScore, normalizedScore, pl }) => {
               const isExpanded = expandedBetIds.has(b.id);
-              const previewLeg = b.legs[0];
-              const previewLabel = previewLeg
-                ? formatBetLegDisplayLabel({
-                    type: previewLeg.type,
-                    marketFamily: previewLeg.marketFamily,
-                    marketName: previewLeg.marketName,
-                    marketId: previewLeg.marketId,
-                    playerName: previewLeg.playerName,
-                    line: previewLeg.line,
-                    outcome: previewLeg.outcome,
-                    label: previewLeg.label,
-                  })
-                : "No selection details";
-              const remainingLegCount = Math.max(0, b.legs.length - 1);
               const modelBadge =
                 typeof modelScore === "number" || typeof normalizedScore === "number";
               const scoreClass =
@@ -1470,23 +1455,13 @@ export function BetTrackerPage() {
                           <div>{b.leagueName || "—"}</div>
                           <strong>{b.kickoffTime || "—"}</strong>
                         </div>
+                        <div className={`bet-tracker-page__chevron${isExpanded ? " is-expanded" : ""}`} aria-hidden="true">
+                          ▾
+                        </div>
                       </header>
 
-                      <section className={`bet-tracker-page__bet-selections ${isExpanded ? "is-expanded" : "is-collapsed"}`}>
-                        <p className="bet-tracker-page__bet-selection-preview">{previewLabel}</p>
-                        {remainingLegCount > 0 && (
-                          <button
-                            type="button"
-                            className="bet-tracker-page__expand-btn"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              toggleBetExpanded(b.id);
-                            }}
-                          >
-                            {isExpanded ? "Show less" : `+${remainingLegCount} more`}
-                          </button>
-                        )}
-                        {isExpanded && (
+                      {isExpanded && (
+                        <section className="bet-tracker-page__bet-selections is-expanded">
                           <ul className="bet-tracker-page__bet-selection-list">
                             {b.legs.map((l, i) => (
                               <li key={`${b.id}-leg-${i}`}>
@@ -1511,13 +1486,12 @@ export function BetTrackerPage() {
                               </li>
                             ))}
                           </ul>
-                        )}
-                      </section>
+                        </section>
+                      )}
 
                       <section className="bet-tracker-page__bet-metrics">
                         <div><span>Odds</span><strong>{b.oddsTaken.toFixed(2)}</strong></div>
                         <div><span>Stake</span><strong>£{fmtMoney(b.stake)}</strong><small>{displayStakeUnits != null ? `${displayStakeUnits.toFixed(2)}u` : "—"}</small></div>
-                        <div><span>Return</span><strong>£{fmtMoney(b.returnAmount)}</strong><small>{displayReturnUnits != null ? `${displayReturnUnits.toFixed(2)}u` : "—"}</small></div>
                         <div>
                           <span>P/L</span>
                           <strong className={pl > 0 ? "bet-tracker-page__pl is-profit" : pl < 0 ? "bet-tracker-page__pl is-loss" : "bet-tracker-page__pl is-pending"}>
@@ -1527,17 +1501,18 @@ export function BetTrackerPage() {
                             {displayProfitUnits != null ? `${displayProfitUnits > 0 ? "+" : ""}${displayProfitUnits.toFixed(2)}u` : "—"}
                           </small>
                         </div>
+                        {isExpanded && (
+                          <div><span>Return</span><strong>£{fmtMoney(b.returnAmount)}</strong><small>{displayReturnUnits != null ? `${displayReturnUnits.toFixed(2)}u` : "—"}</small></div>
+                        )}
                       </section>
 
                       <footer className="bet-tracker-page__bet-card-bottom">
-                        <div className="bet-tracker-page__bet-badges">
-                          {modelBadge && (
-                            <span className="bet-tracker-page__bet-badge">
-                              Model {typeof modelScore === "number" ? Math.round(modelScore) : "—"} | Score{" "}
-                              <span className={scoreClass}>{typeof normalizedScore === "number" ? Math.round(normalizedScore) : "—"}</span>
-                            </span>
-                          )}
-                        </div>
+                        <div className="bet-tracker-page__bet-badges">{isExpanded && modelBadge && (
+                          <span className="bet-tracker-page__bet-badge">
+                            Model {typeof modelScore === "number" ? Math.round(modelScore) : "—"} | Score{" "}
+                            <span className={scoreClass}>{typeof normalizedScore === "number" ? Math.round(normalizedScore) : "—"}</span>
+                          </span>
+                        )}</div>
                         <div className="bet-tracker-page__bet-controls">
                           <button
                             type="button"
@@ -1551,26 +1526,30 @@ export function BetTrackerPage() {
                           >
                             {b.status}
                           </button>
-                          <select
-                            className={`bet-tracker-page__status-select status-${b.status}`}
-                            value={b.status}
-                            onClick={(e) => e.stopPropagation()}
-                            onChange={(e) => onStatusChange(b.id, e.target.value as TrackedBetStatus)}
-                          >
-                            <option value="pending">pending</option>
-                            <option value="win">win</option>
-                            <option value="loss">loss</option>
-                          </select>
-                          <button
-                            type="button"
-                            className="bet-tracker-page__delete-btn"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              void onDeleteBet(b.id);
-                            }}
-                          >
-                            Delete
-                          </button>
+                          {isExpanded && (
+                            <>
+                              <select
+                                className={`bet-tracker-page__status-select status-${b.status}`}
+                                value={b.status}
+                                onClick={(e) => e.stopPropagation()}
+                                onChange={(e) => onStatusChange(b.id, e.target.value as TrackedBetStatus)}
+                              >
+                                <option value="pending">pending</option>
+                                <option value="win">win</option>
+                                <option value="loss">loss</option>
+                              </select>
+                              <button
+                                type="button"
+                                className="bet-tracker-page__delete-btn"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void onDeleteBet(b.id);
+                                }}
+                              >
+                                Delete
+                              </button>
+                            </>
+                          )}
                         </div>
                       </footer>
                     </article>

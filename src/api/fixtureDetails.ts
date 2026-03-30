@@ -9,8 +9,9 @@ import type {
   RawLineupEntry,
   RawFormationEntry,
   FixtureLineup,
-  ReleasedLineup,
 } from "./fixture-details-types.js";
+import { debugLog } from "../lib/debugLog.js";
+import { getLineupEntryTypeId, unwrapLineupPlayer } from "../lib/lineupEntryHelpers.js";
 
 const FIXTURE_BASE = "https://api.sportmonks.com/v3/football/fixtures";
 /** Safe includes for standard fixture lineups only. No expectedLineups, predicted lineups, or premium expected-lineups. */
@@ -140,29 +141,139 @@ export async function getFixtureDetails(fixtureId: number): Promise<RawFixtureDe
   return data;
 }
 
-/**
- * Returns lineup from fixture lineups when present, else null.
- * lineupConfirmed is set from metadata when available so the UI can distinguish official vs predictive.
- */
-function unwrapLineupsArray(lineups: unknown): RawLineupEntry[] | null {
-  if (Array.isArray(lineups) && lineups.length > 0) return lineups as RawLineupEntry[];
-  if (lineups && typeof lineups === "object" && "data" in lineups) {
-    const d = (lineups as { data: unknown }).data;
-    if (Array.isArray(d) && d.length > 0) return d as RawLineupEntry[];
+/** Unwrap `{ data: fixture }` when the client or a proxy returns the full Sportmonks envelope. */
+function normalizeFixtureDetailsPayload(root: unknown): RawFixtureDetails | null {
+  if (root == null || typeof root !== "object") return null;
+  const d = root as Record<string, unknown>;
+  const inner = d.data;
+  if (
+    inner &&
+    typeof inner === "object" &&
+    !Array.isArray(inner) &&
+    ("lineups" in inner || "id" in inner || "state" in inner || "participants" in inner || "starting_at" in inner)
+  ) {
+    return inner as RawFixtureDetails;
   }
   return null;
 }
 
-export function getLineupForFixture(details: RawFixtureDetails): FixtureLineup {
-  const entries = unwrapLineupsArray(details.lineups);
-  if (!entries) {
-    return null;
+/** Normalize fixture JSON from `/api/fixtures/:id` before reading lineups, formations, coaches. */
+export function normalizeFixtureDetailsForClient(root: unknown): RawFixtureDetails {
+  const inner = normalizeFixtureDetailsPayload(root);
+  if (inner) return inner;
+  if (root && typeof root === "object" && ("id" in root || "lineups" in root)) return root as RawFixtureDetails;
+  return root as RawFixtureDetails;
+}
+
+function lineupRowFromUnknown(item: unknown): RawLineupEntry | null {
+  if (item == null || typeof item !== "object") return null;
+  const o = item as Record<string, unknown>;
+  const inner = o.data;
+  if (inner && typeof inner === "object" && !Array.isArray(inner)) {
+    const row = inner as Record<string, unknown>;
+    if (
+      typeof row.player_id === "number" ||
+      row.player != null ||
+      typeof row.team_id === "number" ||
+      typeof row.fixture_id === "number"
+    ) {
+      return inner as RawLineupEntry;
+    }
   }
-  const lineupConfirmed = extractLineupConfirmed(details);
+  return o as RawLineupEntry;
+}
+
+/**
+ * Returns usable lineup rows from `fixture.lineups` (array or `{ data: [...] }`), unwrapping nested `{ data: row }` items when present.
+ */
+function unwrapLineupsArray(lineups: unknown): RawLineupEntry[] | null {
+  let rawList: unknown[] | null = null;
+  if (Array.isArray(lineups) && lineups.length > 0) rawList = lineups;
+  else if (lineups && typeof lineups === "object" && "data" in lineups) {
+    const d = (lineups as { data: unknown }).data;
+    if (Array.isArray(d) && d.length > 0) rawList = d;
+  }
+  if (!rawList) return null;
+  const rows: RawLineupEntry[] = [];
+  for (const item of rawList) {
+    const row = lineupRowFromUnknown(item);
+    if (row == null) continue;
+    const { id, name } = unwrapLineupPlayer(row);
+    if ((typeof id === "number" && id > 0) || (typeof name === "string" && name.trim() !== "")) {
+      rows.push(row);
+    }
+  }
+  return rows.length > 0 ? rows : null;
+}
+
+export function getLineupForFixture(details: unknown): FixtureLineup {
+  const root = normalizeFixtureDetailsForClient(details);
+  const rawLineups = root.lineups;
+  let totalLineupRows = 0;
+  if (Array.isArray(rawLineups)) totalLineupRows = rawLineups.length;
+  else if (rawLineups && typeof rawLineups === "object" && "data" in rawLineups) {
+    const d = (rawLineups as { data: unknown }).data;
+    if (Array.isArray(d)) totalLineupRows = d.length;
+  }
+
+  const entries = unwrapLineupsArray(rawLineups);
+  const fixtureId = typeof root.id === "number" ? root.id : 0;
+  const kickoffAt =
+    typeof (root as { starting_at?: string }).starting_at === "string"
+      ? (root as { starting_at: string }).starting_at
+      : null;
+
+  const lineupConfirmedFlag = extractLineupConfirmed(root);
+
+  let hasStartingLineups = false;
+  let hasPredictedLineups = false;
+  if (entries && entries.length > 0) {
+    for (const e of entries) {
+      const tid = getLineupEntryTypeId(e);
+      if (tid === 11) hasStartingLineups = true;
+      if (tid === 1 || (e as { predicted?: boolean }).predicted === true) hasPredictedLineups = true;
+    }
+  }
+
+  const hasLineups = entries != null && entries.length > 0;
+
+  const first = entries && entries.length > 0 ? entries[0]! : null;
+  const firstLineupSample = first
+    ? {
+        type_id: getLineupEntryTypeId(first) ?? null,
+        team_id: first.team_id ?? null,
+        player_id: unwrapLineupPlayer(first).id ?? null,
+        predicted: !!(first as { predicted?: boolean }).predicted,
+      }
+    : null;
+
+  debugLog("lineupAvailability", "[lineup-availability]", {
+    fixtureId,
+    kickoffAt,
+    totalLineupRows,
+    hasLineups,
+    hasStartingLineups,
+    hasPredictedLineups,
+    lineupConfirmedFlag,
+    firstLineupSample,
+  });
+
+  if (!entries || entries.length === 0) return null;
+
+  const lineupConfirmed =
+    lineupConfirmedFlag === true ? true : lineupConfirmedFlag === false ? false : undefined;
+
+  let lineupProvisionalNotice = false;
+  if (lineupConfirmed === false) lineupProvisionalNotice = true;
+  else if (lineupConfirmed == null && hasPredictedLineups && !hasStartingLineups) {
+    lineupProvisionalNotice = true;
+  }
+
   return {
     type: "released",
     data: entries,
-    lineupConfirmed: lineupConfirmed === true ? true : lineupConfirmed === false ? false : undefined,
+    lineupConfirmed,
+    lineupProvisionalNotice,
   };
 }
 

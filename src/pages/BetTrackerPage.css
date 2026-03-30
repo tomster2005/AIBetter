@@ -747,6 +747,18 @@ h3.bet-tracker-page__bankroll-title {
   gap: 1.2rem;
 }
 
+.bet-tracker-page__chevron {
+  margin-left: auto;
+  color: #64748b;
+  font-size: 1rem;
+  line-height: 1;
+  transition: transform 0.2s ease;
+}
+
+.bet-tracker-page__chevron.is-expanded {
+  transform: rotate(180deg);
+}
+
 .bet-tracker-page__bet-match {
   margin: 0;
   font-size: 1.14rem;

@@ -60,6 +60,8 @@ import {
   MARKET_ID_PLAYER_FOULS_WON,
   MARKET_ID_PLAYER_TACKLES,
 } from "../constants/marketIds.js";
+import { debugLog } from "../lib/debugLog.js";
+import { getLineupEntryTypeId, unwrapLineupPlayer } from "../lib/lineupEntryHelpers.js";
 import "./LineupModal.css";
 
 /** One row for the Value Bet Analysis table. Model outputs are estimates, not guaranteed truth. */
@@ -153,12 +155,14 @@ function splitStartersAndSubs(
 
   for (const e of entries) {
     const tid = e.team_id ?? 0;
-    const isStarter = e.type_id === TYPE_ID_STARTER || e.type_id == null;
+    const typeId = getLineupEntryTypeId(e);
+    const isStarter = typeId === TYPE_ID_STARTER || typeId == null;
+    const { id: luPid, name: luName } = unwrapLineupPlayer(e);
     const base = {
-      player_name: e.player_name,
+      player_name: luName ?? e.player_name,
       jersey_number: e.jersey_number,
       image_url: getPlayerImage(e),
-      player_id: e.player_id,
+      player_id: luPid ?? e.player_id,
     };
     const pitchPlayer: PitchPlayer = {
       ...base,
@@ -204,10 +208,12 @@ function buildLineupContextForBuild(
   const homeStarters: LineupContext["homeStarters"] = [];
   const awayStarters: LineupContext["awayStarters"] = [];
   for (const e of entries) {
-    const isStarter = e.type_id === TYPE_ID_STARTER || e.type_id == null;
+    const typeId = getLineupEntryTypeId(e);
+    const isStarter = typeId === TYPE_ID_STARTER || typeId == null;
     if (!isStarter) continue;
     const tid = e.team_id ?? 0;
-    const info = { playerName: e.player_name ?? "", positionId: e.position_id };
+    const { name: ctxName } = unwrapLineupPlayer(e);
+    const info = { playerName: ctxName ?? e.player_name ?? "", positionId: e.position_id };
     if (tid === homeId) homeStarters.push(info);
     else if (tid === awayId) awayStarters.push(info);
   }
@@ -364,6 +370,11 @@ function LineupContent({
 
   return (
     <div className="lineup-content lineup-content--spaced">
+      {lineup?.lineupProvisionalNotice === true && (
+        <p className="lineup-modal__message" role="status">
+          Official lineups not released yet — showing predicted lineups.
+        </p>
+      )}
       <div className="lineup-content__find-value-section">
         <h3 className="lineup-content__starting-title">Starting Lineups</h3>
         <div className="lineup-content__value-bet-buttons">
@@ -652,7 +663,7 @@ function LineupContent({
  * Resolve player id from a lineup entry.
  */
 function getPlayerIdFromEntry(e: RawLineupEntry): number | undefined {
-  const id = e.player_id ?? (e.player as { id?: number } | undefined)?.id;
+  const { id } = unwrapLineupPlayer(e);
   return typeof id === "number" && id > 0 ? id : undefined;
 }
 
@@ -665,7 +676,7 @@ function getPlayerIdFromEntry(e: RawLineupEntry): number | undefined {
 export function getStartingPlayerIds(entries: RawLineupEntry[]): Set<number> {
   if (!entries || entries.length === 0) return new Set<number>();
 
-  const confirmed = entries.filter((e) => e.type_id === 11);
+  const confirmed = entries.filter((e) => getLineupEntryTypeId(e) === 11);
   if (confirmed.length > 0) {
     const ids = new Set<number>();
     for (const e of confirmed) {
@@ -676,7 +687,7 @@ export function getStartingPlayerIds(entries: RawLineupEntry[]): Set<number> {
   }
 
   const predicted = entries.filter(
-    (e) => e.type_id === 1 || (e as { predicted?: boolean }).predicted === true
+    (e) => getLineupEntryTypeId(e) === 1 || (e as { predicted?: boolean }).predicted === true
   );
   if (predicted.length > 0) {
     const ids = new Set<number>();
@@ -713,7 +724,7 @@ function normalizePlayerName(name: string): string {
 export function getStartingPlayerNames(entries: RawLineupEntry[]): Set<string> {
   const names = new Set<string>();
   for (const e of entries) {
-    const n = e.player_name ?? (e.player as { name?: string })?.name;
+    const { name: n } = unwrapLineupPlayer(e);
     if (typeof n === "string" && n.trim()) names.add(normalizePlayerName(n));
   }
   return names;
@@ -724,7 +735,7 @@ export function getNameToPlayerIdMap(entries: RawLineupEntry[]): Map<string, num
   const map = new Map<string, number>();
   for (const e of entries) {
     const id = getPlayerIdFromEntry(e);
-    const n = e.player_name ?? (e.player as { name?: string })?.name;
+    const { name: n } = unwrapLineupPlayer(e);
     if (id != null && typeof n === "string" && n.trim()) map.set(normalizePlayerName(n), id);
   }
   return map;
@@ -732,10 +743,10 @@ export function getNameToPlayerIdMap(entries: RawLineupEntry[]): Map<string, num
 
 /** Starter lineup entries (same logic as getStartingPlayerIds). */
 function getStarterEntries(entries: RawLineupEntry[]): RawLineupEntry[] {
-  const confirmed = entries.filter((e) => e.type_id === 11);
+  const confirmed = entries.filter((e) => getLineupEntryTypeId(e) === 11);
   if (confirmed.length > 0) return confirmed;
   const predicted = entries.filter(
-    (e) => e.type_id === 1 || (e as { predicted?: boolean }).predicted === true
+    (e) => getLineupEntryTypeId(e) === 1 || (e as { predicted?: boolean }).predicted === true
   );
   if (predicted.length > 0) return predicted;
   return entries;
@@ -756,9 +767,9 @@ function buildStarterLineupMaps(
   const byNormalizedName = new Map<string, StarterLineupInfo & { playerId: number }>();
   for (const e of starterEntries) {
     const playerId = getPlayerIdFromEntry(e);
-    const name = e.player_name ?? (e.player as { name?: string })?.name;
+    const { name } = unwrapLineupPlayer(e);
     const teamId = e.team_id ?? 0;
-    const confirmedStarter = e.type_id === 11;
+    const confirmedStarter = getLineupEntryTypeId(e) === 11;
     const info: StarterLineupInfo = {
       positionId: e.position_id,
       teamId,
@@ -787,10 +798,18 @@ function resolvePlayerIdForStats(
   playerIdFromProps: number | undefined,
   normalizedName: string,
   startingPlayerIds: Set<number>,
-  nameToPlayerId: Map<string, number>
+  nameToPlayerId: Map<string, number>,
+  entries: RawLineupEntry[]
 ): number | undefined {
   if (playerIdFromProps != null && startingPlayerIds.has(playerIdFromProps)) return playerIdFromProps;
-  return nameToPlayerId.get(normalizedName);
+  const mapped = nameToPlayerId.get(normalizedName);
+  if (mapped != null) return mapped;
+  for (const e of getStarterEntries(entries)) {
+    const { id, name } = unwrapLineupPlayer(e);
+    if (id == null || id <= 0 || typeof name !== "string" || !name.trim()) continue;
+    if (normalizePlayerName(name) === normalizedName) return id;
+  }
+  return undefined;
 }
 
 /** Supported player-prop markets for the model (Shots, SOT, Fouls Committed, Fouls Won). */
@@ -991,6 +1010,17 @@ export function buildValueBetRows(
   nameToPlayerId: Map<string, number>
 ): { rows: ValueBetRow[]; foulStatsAvailable: boolean; foulMarketsSeen: number } {
   const rows: ValueBetRow[] = [];
+  const fixtureId = typeof data.fixtureId === "number" && Number.isFinite(data.fixtureId) ? data.fixtureId : 0;
+  const dropSummary = {
+    droppedMissingMarketId: 0,
+    droppedMissingPlayer: 0,
+    droppedMissingOdds: 0,
+    droppedMissingLine: 0,
+    droppedUnsupportedMarket: 0,
+    droppedNonStarter: 0,
+  };
+  let propsPlayersCount = 0;
+  let passedStarterFilter = 0;
   const marketIdFromMarket = (m: { marketId?: number; market_id?: number; id?: number }): number => {
     const id = (m as { marketId?: number }).marketId ?? (m as { market_id?: number }).market_id ?? (m as { id?: number }).id;
     return typeof id === "number" && Number.isFinite(id) ? id : 0;
@@ -1189,7 +1219,12 @@ export function buildValueBetRows(
 
     if (import.meta.env.DEV && isPhysicalPropMarketForDev) foulMarketsSeen += 1;
 
+    if (marketId === 0) {
+      dropSummary.droppedMissingMarketId += 1;
+      continue;
+    }
     if (!SUPPORTED_VALUE_BET_MARKET_IDS.has(marketId)) {
+      dropSummary.droppedUnsupportedMarket += 1;
       if (import.meta.env.DEV && isPhysicalPropMarketForDev) {
         foulRowsSkipped += 1;
         skipReasonsBreakdown.marketNotSupported += 1;
@@ -1201,6 +1236,7 @@ export function buildValueBetRows(
     const marketName = (market as { marketName?: string }).marketName ?? (market as { market_name?: string }).market_name ?? "Market";
 
     for (const player of players) {
+      propsPlayersCount += 1;
       const playerIdFromProps = getPlayerId(player as Parameters<typeof getPlayerId>[0]);
       const playerName = (player as { playerName?: string }).playerName ?? (player as { player_name?: string }).player_name ?? "Unknown";
       const normalizedName = normalizePlayerName(playerName);
@@ -1211,6 +1247,7 @@ export function buildValueBetRows(
       if (import.meta.env.DEV && isPhysicalPropMarketForDev) foulPlayersSeen += 1;
 
       if (!inLineupById && !inLineupByName) {
+        dropSummary.droppedNonStarter += 1;
         if (import.meta.env.DEV && isPhysicalPropMarketForDev) {
           foulRowsSkipped += 1;
           skipReasonsBreakdown.playerNotInLineup += 1;
@@ -1218,7 +1255,14 @@ export function buildValueBetRows(
         continue;
       }
 
-      const lineupPlayerId = resolvePlayerIdForStats(playerIdFromProps, normalizedName, startingPlayerIds, nameToPlayerId);
+      passedStarterFilter += 1;
+      const lineupPlayerId = resolvePlayerIdForStats(
+        playerIdFromProps,
+        normalizedName,
+        startingPlayerIds,
+        nameToPlayerId,
+        entries
+      );
       const stats = lineupPlayerId != null ? statsByPlayerId.get(lineupPlayerId) : undefined;
       if (stats && (stats.foulsCommitted != null || stats.foulsWon != null)) {
         foulStatsAvailable = true;
@@ -1231,9 +1275,13 @@ export function buildValueBetRows(
       }
 
       const selections = (player as { selections?: Array<{ line?: number; overOdds?: number | null; underOdds?: number | null; bookmakerName?: string }> }).selections ?? [];
-      if (import.meta.env.DEV && isPhysicalPropMarketForDev && selections.length === 0) {
-        foulRowsSkipped += 1;
-        skipReasonsBreakdown.noSelections += 1;
+      if (selections.length === 0) {
+        dropSummary.droppedMissingPlayer += 1;
+        if (import.meta.env.DEV && isPhysicalPropMarketForDev) {
+          foulRowsSkipped += 1;
+          skipReasonsBreakdown.noSelections += 1;
+        }
+        continue;
       }
       for (const sel of selections) {
         const line = sel.line ?? 0;
@@ -1245,6 +1293,7 @@ export function buildValueBetRows(
         const addRow = (outcome: "Over" | "Under", odds: number) => {
           const oddsNum = Number(odds);
           if (typeof oddsNum !== "number" || !Number.isFinite(oddsNum) || oddsNum <= 1.01) {
+            dropSummary.droppedMissingOdds += 1;
             skipReasons.invalidOdds += 1;
             if (import.meta.env.DEV && isPhysicalPropMarketForDev) {
               foulRowsSkipped += 1;
@@ -1254,6 +1303,7 @@ export function buildValueBetRows(
           }
           const bookmakerProbability = 1 / oddsNum;
           if (!Number.isFinite(bookmakerProbability)) {
+            dropSummary.droppedMissingOdds += 1;
             skipReasons.invalidOdds += 1;
             if (import.meta.env.DEV && isPhysicalPropMarketForDev) {
               foulRowsSkipped += 1;
@@ -1270,6 +1320,7 @@ export function buildValueBetRows(
             return;
           }
           if (!Number.isFinite(line)) {
+            dropSummary.droppedMissingLine += 1;
             skipReasons.invalidLine += 1;
             if (import.meta.env.DEV && isPhysicalPropMarketForDev) {
               foulRowsSkipped += 1;
@@ -1300,6 +1351,7 @@ export function buildValueBetRows(
               onFoulsReject
             );
             if (!built) {
+              dropSummary.droppedMissingPlayer += 1;
               skipReasons.modelReturnedNull += 1;
               return;
             }
@@ -1309,7 +1361,10 @@ export function buildValueBetRows(
             const edgeValid = typeof modelEdgeVal === "number" && Number.isFinite(modelEdgeVal);
             if (!probValid) skipReasons.probabilityInvalid += 1;
             if (!edgeValid) skipReasons.edgeInvalid += 1;
-            if (!probValid || !edgeValid) return;
+            if (!probValid || !edgeValid) {
+              dropSummary.droppedMissingPlayer += 1;
+              return;
+            }
             const dataConfidence = built.dataConfidence;
             const dataConfidenceScore = built.dataConfidenceScore;
             const betQualityScore = computeBetQualityScore({
@@ -1324,6 +1379,7 @@ export function buildValueBetRows(
             const modelEdge = modelEdgeVal;
             const bookmakerProb = built.bookmakerProbability;
             if (bookmakerProb < 0 || bookmakerProb > 1 || modelProb < 0 || modelProb > 1 || modelEdge < -1 || modelEdge > 1) {
+              dropSummary.droppedMissingPlayer += 1;
               if (import.meta.env.DEV && isPhysicalPropMarketForDev) {
                 foulRowsSkipped += 1;
                 skipReasonsBreakdown.probabilityOrEdgeOutOfRange += 1;
@@ -1639,6 +1695,7 @@ export function buildValueBetRows(
             }
           } else {
             if (!Number.isFinite(line)) {
+              dropSummary.droppedMissingLine += 1;
               skipReasons.invalidLine += 1;
               if (import.meta.env.DEV && isPhysicalPropMarketForDev) {
                 foulRowsSkipped += 1;
@@ -1646,6 +1703,7 @@ export function buildValueBetRows(
               }
               return;
             }
+            dropSummary.droppedMissingPlayer += 1;
             skipReasons.statsMissing += 1;
             if (import.meta.env.DEV && isPhysicalPropMarketForDev) {
               foulRowsSkipped += 1;
@@ -1814,6 +1872,15 @@ export function buildValueBetRows(
       foulSkipReasonsBreakdown: skipReasonsBreakdown,
     });
   }
+  debugLog("playerProps", "[player-props-starter-filter]", {
+    fixtureId,
+    totalPlayersSeen: entries.length,
+    startersCount: startingPlayerIds.size,
+    propsPlayersCount,
+    remainingAfterStarterFilter: passedStarterFilter,
+  });
+  debugLog("playerProps", "[player-props-drop-summary]", { fixtureId, ...dropSummary });
+  debugLog("playerProps", "[player-props-final-rows]", { fixtureId, rowCount: rows.length });
   return { rows, foulStatsAvailable, foulMarketsSeen };
 }
 
@@ -1879,34 +1946,52 @@ export function LineupModal({
     if (fixture == null || lineup == null) return { rows: [], foulStatsAvailable: false, foulMarketsSeen: 0 };
     const entries = lineup.data as RawLineupEntry[];
     if (!Array.isArray(entries) || entries.length === 0) return { rows: [], foulStatsAvailable: false, foulMarketsSeen: 0 };
+    const fixtureId = fixture.id;
+    debugLog("playerProps", "[player-props-start]", { fixtureId });
     const [data, leagueSeason] = await Promise.all([
-      loadPlayerPropsForFixture(fixture.id),
+      loadPlayerPropsForFixture(fixtureId),
       fixture.league?.name ? fetchLeagueCurrentSeason(fixture.league.name).catch(() => null) : Promise.resolve(null),
     ]);
-    if (import.meta.env.DEV) {
-      const allMarketsList = data.markets ?? [];
-      const getMid = (m: { marketId?: number; market_id?: number; id?: number }) => (m as { marketId?: number }).marketId ?? (m as { market_id?: number }).market_id ?? (m as { id?: number }).id;
-      const m334 = allMarketsList.find((m) => getMid(m as { marketId?: number; market_id?: number; id?: number }) === 334);
-      const m336 = allMarketsList.find((m) => getMid(m as { marketId?: number; market_id?: number; id?: number }) === 336);
-      const m338 = allMarketsList.find((m) => getMid(m as { marketId?: number; market_id?: number; id?: number }) === 338);
-      const m339 = allMarketsList.find((m) => getMid(m as { marketId?: number; market_id?: number; id?: number }) === 339);
-      const m340 = allMarketsList.find((m) => getMid(m as { marketId?: number; market_id?: number; id?: number }) === 340);
-      const players = (mar: { players?: unknown[] } | undefined) => mar?.players?.length ?? 0;
-      const selections = (mar: { players?: Array<{ selections?: unknown[] }> } | undefined) =>
-        mar?.players?.reduce((sum, p) => sum + (p.selections?.length ?? 0), 0) ?? 0;
-      console.log("[player-props frontend] supported market summary", {
-        market334Players: players(m334),
-        market336Players: players(m336),
-        market338Players: players(m338),
-        market339Players: players(m339),
-        market340Players: players(m340),
-        market334Selections: selections(m334),
-        market336Selections: selections(m336),
-        market338Selections: selections(m338),
-        market339Selections: selections(m339),
-        market340Selections: selections(m340),
-      });
+    const allMarketsList = data.markets ?? [];
+    const getMid = (m: { marketId?: number; market_id?: number; id?: number }) =>
+      (m as { marketId?: number }).marketId ?? (m as { market_id?: number }).market_id ?? (m as { id?: number }).id;
+    const firstM = allMarketsList[0] as
+      | { marketId?: number; market_id?: number; id?: number; players?: unknown[] }
+      | undefined;
+    debugLog("playerProps", "[player-props-response-shape]", {
+      fixtureId,
+      hasData: allMarketsList.length > 0,
+      marketsLength: allMarketsList.length,
+      firstMarketSample: firstM
+        ? {
+            marketId: getMid(firstM),
+            playersLength: Array.isArray(firstM.players) ? firstM.players.length : 0,
+          }
+        : null,
+    });
+    const playersIn = (mid: number) =>
+      allMarketsList.find((m) => getMid(m as { marketId?: number; market_id?: number; id?: number }) === mid)?.players
+        ?.length ?? 0;
+    const propPlayerKeys = new Set<string>();
+    for (const m of allMarketsList) {
+      const mid = getMid(m as { marketId?: number; market_id?: number; id?: number });
+      if (mid !== 334 && mid !== 336 && mid !== 338 && mid !== 339 && mid !== 340) continue;
+      for (const pl of (m as { players?: Array<{ playerId?: number; playerName?: string }> }).players ?? []) {
+        const pid = pl?.playerId;
+        const pn = pl?.playerName;
+        propPlayerKeys.add(typeof pid === "number" && pid > 0 ? `id:${pid}` : String(pn ?? ""));
+      }
     }
+    debugLog("playerProps", "[player-props-supported-summary]", {
+      fixtureId,
+      totalMarkets: allMarketsList.length,
+      market334Count: playersIn(334),
+      market336Count: playersIn(336),
+      market338Count: playersIn(338),
+      market339Count: playersIn(339),
+      market340Count: playersIn(340),
+      playersDetected: propPlayerKeys.size,
+    });
     const startingPlayerIds = getStartingPlayerIds(entries);
     const startingPlayerNames = getStartingPlayerNames(entries);
     const nameToPlayerId = getNameToPlayerIdMap(entries);
@@ -1934,16 +2019,6 @@ export function LineupModal({
       statsByPlayerId,
       nameToPlayerId
     );
-    if (import.meta.env.DEV) {
-      const candidateSelections = (data.markets ?? []).reduce(
-        (sum, m) => sum + ((m as { players?: Array<{ selections?: unknown[] }> }).players ?? []).reduce((s, p) => s + (p.selections?.length ?? 0), 0),
-        0
-      );
-      console.log("[player-props frontend] value bet row counts", {
-        candidateSelections,
-        finalValueBetRows: result.rows.length,
-      });
-    }
     return { rows: result.rows, foulStatsAvailable: result.foulStatsAvailable, foulMarketsSeen: result.foulMarketsSeen };
   }, [fixture, lineup]);
 

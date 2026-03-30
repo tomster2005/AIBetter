@@ -9,7 +9,12 @@ import { LineupModal } from "../components/LineupModal.js";
 import { useLeagueFavourites } from "../hooks/useLeagueFavourites.js";
 import { useExpandedLeagueState } from "../hooks/useExpandedLeagueState.js";
 import { sortLeagueGroupsByFavourite } from "../utils/sortLeagueGroupsByFavourite.js";
-import { getLineupForFixture, getFormationsFromDetails, getCoachesFromDetails } from "../api/index.js";
+import {
+  getLineupForFixture,
+  getFormationsFromDetails,
+  getCoachesFromDetails,
+  normalizeFixtureDetailsForClient,
+} from "../api/index.js";
 import type { FixtureLineup } from "../api/fixture-details-types.js";
 import type { RawFixtureDetails } from "../api/fixture-details-types.js";
 import "./CalendarPage.css";
@@ -191,7 +196,8 @@ export function CalendarPage() {
         }
         return body as RawFixtureDetails;
       })
-      .then((details) => {
+      .then((body) => {
+        const details = normalizeFixtureDetailsForClient(body);
         setLineup(getLineupForFixture(details));
         setLineupFormations(getFormationsFromDetails(details));
         setLineupCoaches(

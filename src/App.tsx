@@ -1,12 +1,11 @@
 import { useState, useEffect, type FormEvent } from "react";
 import { CalendarPage } from "./pages/CalendarPage.js";
-import { BetHistoryPage } from "./pages/BetHistoryPage.js";
 import { BetTrackerPage } from "./pages/BetTrackerPage.js";
 import { setCalibrationTable } from "./lib/valueBetCalibration.js";
 import type { CalibrationBucket } from "./lib/valueBetCalibration.js";
 import "./App.css";
 
-type AppTab = "calendar" | "betTracker" | "betHistory";
+type AppTab = "calendar" | "betTracker";
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<AppTab>("calendar");
@@ -116,13 +115,6 @@ export default function App() {
         >
           Bet Tracker
         </button>
-        <button
-          type="button"
-          className={`app-nav__tab ${activeTab === "betHistory" ? "app-nav__tab--active" : ""}`}
-          onClick={() => setActiveTab("betHistory")}
-        >
-          Bet History
-        </button>
         <button type="button" className="app-nav__tab app-nav__logout" onClick={handleLogout}>
           Log out
         </button>
@@ -130,7 +122,6 @@ export default function App() {
       <main className="app-main">
         {activeTab === "calendar" && <CalendarPage />}
         {activeTab === "betTracker" && <BetTrackerPage />}
-        {activeTab === "betHistory" && <BetHistoryPage />}
       </main>
     </div>
   );

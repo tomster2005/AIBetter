@@ -6,6 +6,7 @@
 
 import { getFixtureDetails, extractLineupConfirmed } from "./fixtureDetails.js";
 import type { RawFixtureDetails, RawLineupEntry } from "./fixture-details-types.js";
+import { getLineupEntryTypeId, unwrapLineupPlayer } from "../lib/lineupEntryHelpers.js";
 
 export type LineupSource = "confirmed" | "predicted" | "none";
 
@@ -58,15 +59,16 @@ function getStarterPlayerAllowList(details: RawFixtureDetails): {
   }
   const lineupConfirmed = extractLineupConfirmed(details);
   const lineupSource: LineupSource = lineupConfirmed === true ? "confirmed" : "predicted";
-  const starters = entries.filter(
-    (e) => e.type_id === TYPE_ID_STARTER || e.type_id == null
-  );
+  const starters = entries.filter((e) => {
+    const tid = getLineupEntryTypeId(e);
+    return tid === TYPE_ID_STARTER || tid == null;
+  });
   const toUse = starters.length > 0 ? starters : entries;
   for (const e of toUse) {
-    const id = e.player_id ?? (e.player as { id?: number } | undefined)?.id;
+    const { id, name: unName } = unwrapLineupPlayer(e);
     if (typeof id === "number" && id > 0) {
       playerIds.add(id);
-      const name = String(e.player_name ?? (e.player as { name?: string } | undefined)?.name ?? "Player").trim() || "Player";
+      const name = String(unName ?? "Player").trim() || "Player";
       playerInfo.set(id, { playerName: name, teamId: e.team_id ?? 0 });
     }
   }
@@ -456,6 +458,8 @@ export async function getPlayerOddsForFixture(
     const hasValue = row.value != null;
     if (!hasName || !hasLabel || !hasValue) continue;
     const playerName = String(row.name).trim();
+    // Regression fix: keep legacy name-hash grouping so odds players match lineup players reliably
+    // even if Sportmonks uses different ID fields for participant vs player.
     const playerKey = normalizePlayerKey(String(row.name));
     if (!playerKey) continue;
     const line = getLineFromRow(row, marketId);

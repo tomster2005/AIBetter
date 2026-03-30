@@ -4,6 +4,7 @@ export {
   getLineupForFixture,
   getFormationsFromDetails,
   getCoachesFromDetails,
+  normalizeFixtureDetailsForClient,
 } from "./fixtureDetails.js";
 export type { ExtractedCoach } from "./fixtureDetails.js";
 export type {

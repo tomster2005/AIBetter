@@ -38,6 +38,8 @@ export interface ReleasedLineup {
   data: RawLineupEntry[];
   /** true = Sportmonks metadata lineup_confirmed; false = predicted only; undefined = unknown */
   lineupConfirmed?: boolean;
+  /** When true, show a short “provisional / predicted” notice above the lineup (rows are still from the API). */
+  lineupProvisionalNotice?: boolean;
 }
 
 export type FixtureLineup = ReleasedLineup | null;
