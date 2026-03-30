@@ -1436,10 +1436,19 @@ export function BetTrackerPage() {
                           {isExpanded && b.sourceType === "manualMulti" && <span className="bet-tracker-page__source-tag">Custom Multi</span>}
                         </div>
                         <div className="bet-tracker-page__bet-inline-metrics">
-                          <span className="bet-tracker-page__inline-value">{b.oddsTaken.toFixed(2)}</span>
-                          <span className="bet-tracker-page__inline-value">£{fmtMoney(b.stake)}</span>
-                          <span className={`bet-tracker-page__inline-value ${pl > 0 ? "bet-tracker-page__pl is-profit" : pl < 0 ? "bet-tracker-page__pl is-loss" : "bet-tracker-page__pl is-pending"}`}>
-                            {fmtSignedMoney(pl)}
+                          <span className="bet-tracker-page__metric-stack" title="Decimal odds">
+                            <span className="bet-tracker-page__metric-label">ODDS</span>
+                            <span className="bet-tracker-page__inline-value">{b.oddsTaken.toFixed(2)}</span>
+                          </span>
+                          <span className="bet-tracker-page__metric-stack">
+                            <span className="bet-tracker-page__metric-label">STAKE</span>
+                            <span className="bet-tracker-page__inline-value">£{fmtMoney(b.stake)}</span>
+                          </span>
+                          <span className="bet-tracker-page__metric-stack" title="Profit / Loss">
+                            <span className="bet-tracker-page__metric-label">P/L</span>
+                            <span className={`bet-tracker-page__inline-value bet-tracker-page__inline-value--pl ${pl > 0 ? "bet-tracker-page__pl is-profit" : pl < 0 ? "bet-tracker-page__pl is-loss" : "bet-tracker-page__pl is-pending"}`}>
+                              {fmtSignedMoney(pl)}
+                            </span>
                           </span>
                           <button
                             type="button"
