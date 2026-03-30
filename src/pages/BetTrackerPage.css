@@ -705,21 +705,31 @@ h3.bet-tracker-page__bankroll-title {
 
 .bet-tracker-page__bet-card {
   border: 1px solid var(--border-light);
-  border-left: 2px solid var(--border-light);
+  border-left: 1.5px solid var(--border-light);
   border-radius: 8px;
   background: var(--card-bg);
   padding: 0.52rem 0.68rem;
   box-shadow: none;
-  transition: background 0.15s ease, border-color 0.16s ease;
+  transition: background 0.12s ease, border-color 0.12s ease, transform 0.12s ease;
   cursor: pointer;
 }
 
 .bet-tracker-page__bet-card:hover {
-  background: #fcfdff;
+  background: #f8fafc;
+  transform: scale(1.005);
+}
+
+.bet-tracker-page__bet-card:hover .bet-tracker-page__bet-match {
+  color: #0f172a;
+}
+
+.bet-tracker-page__bet-card:hover .bet-tracker-page__inline-value--pl {
+  filter: saturate(1.08);
 }
 
 .bet-tracker-page__bet-card:active {
-  transform: translateY(0) scale(0.99);
+  transform: scale(0.998);
+  box-shadow: inset 0 0 0 9999px rgba(15, 23, 42, 0.03);
 }
 
 .bet-tracker-page__bet-card.is-deleting {
@@ -730,14 +740,18 @@ h3.bet-tracker-page__bankroll-title {
 
 .bet-tracker-page__bet-card.is-win {
   border: 1px solid var(--border-light);
-  border-left: 2px solid var(--positive);
+  border-left: 1.5px solid var(--positive);
   background: var(--card-bg);
 }
 
 .bet-tracker-page__bet-card.is-loss {
   border: 1px solid var(--border-light);
-  border-left: 2px solid var(--negative);
+  border-left: 1.5px solid var(--negative);
   background: var(--card-bg);
+}
+
+.bet-tracker-page__bet-card + .bet-tracker-page__bet-card {
+  border-top: 1px solid #f1f5f9;
 }
 
 .bet-tracker-page__bet-card-top {
@@ -898,32 +912,33 @@ h3.bet-tracker-page__bankroll-title {
 }
 
 .bet-tracker-page__status-chip {
-  border: 1px solid #d1d5db;
+  border: 1px solid #dbe2ea;
   border-radius: 999px;
-  padding: 0.18rem 0.45rem;
-  font-size: 0.7rem;
+  padding: 0.14rem 0.38rem;
+  font-size: 0.66rem;
   font-weight: 600;
   text-transform: lowercase;
   background: #fff;
   cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
 }
 
 .bet-tracker-page__status-chip.status-pending {
-  color: #1e3a8a;
-  background: #eff6ff;
-  border-color: #93c5fd;
+  color: #1e40af;
+  background: #f8fbff;
+  border-color: #c8dbff;
 }
 
 .bet-tracker-page__status-chip.status-win {
   color: #166534;
-  background: #dcfce7;
-  border-color: #86efac;
+  background: #f2fbf5;
+  border-color: #bde9ca;
 }
 
 .bet-tracker-page__status-chip.status-loss {
   color: #991b1b;
-  background: #fee2e2;
-  border-color: #fca5a5;
+  background: #fff6f6;
+  border-color: #f5c9c9;
 }
 
 .bet-tracker-page__status-chip.is-pulse {
