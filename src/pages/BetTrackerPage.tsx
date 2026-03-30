@@ -1405,30 +1405,12 @@ export function BetTrackerPage() {
                       : (b.stake > 0 && Number.isFinite(b.stakeUnits as number) && (b.stakeUnits as number) > 0)
                         ? b.stake / (b.stakeUnits as number)
                         : null;
-                  const displayStakeUnits =
-                    Number.isFinite(b.stakeUnits as number)
-                      ? (b.stakeUnits as number)
-                      : canonicalUnitSize && canonicalUnitSize > 0
-                        ? b.stake / canonicalUnitSize
-                        : null;
                   const displayReturnUnits =
                     Number.isFinite(b.returnUnits as number)
                       ? (b.returnUnits as number)
                       : canonicalUnitSize && canonicalUnitSize > 0
                         ? b.returnAmount / canonicalUnitSize
                         : null;
-                  const displayProfitUnits =
-                    Number.isFinite(b.profitUnits as number)
-                      ? (b.profitUnits as number)
-                      : b.status === "pending"
-                        ? 0
-                        : b.status === "loss"
-                          ? displayStakeUnits != null
-                            ? -displayStakeUnits
-                            : null
-                          : displayStakeUnits != null && displayReturnUnits != null
-                            ? displayReturnUnits - displayStakeUnits
-                            : null;
                   return (
                     <article
                       key={b.id}
@@ -1444,16 +1426,33 @@ export function BetTrackerPage() {
                       }}
                     >
                       <header className="bet-tracker-page__bet-card-top">
-                        <div>
-                          <h3 className="bet-tracker-page__bet-match">{b.matchLabel}</h3>
-                          <p className="bet-tracker-page__bet-meta">
-                            {b.bookmakerName} • {fmtRelativeDate(b.createdAt)}
-                          </p>
-                          {b.sourceType === "manualMulti" && <span className="bet-tracker-page__source-tag">Custom Multi</span>}
+                        <div className="bet-tracker-page__bet-main">
+                          <h3 className="bet-tracker-page__bet-match">
+                            {b.matchLabel}
+                            <span className="bet-tracker-page__bet-meta-inline">
+                              {b.bookmakerName} · {fmtRelativeDate(b.createdAt)}
+                            </span>
+                          </h3>
+                          {isExpanded && b.sourceType === "manualMulti" && <span className="bet-tracker-page__source-tag">Custom Multi</span>}
                         </div>
-                        <div className="bet-tracker-page__bet-kickoff">
-                          <div>{b.leagueName || "—"}</div>
-                          <strong>{b.kickoffTime || "—"}</strong>
+                        <div className="bet-tracker-page__bet-inline-metrics">
+                          <span className="bet-tracker-page__inline-value">{b.oddsTaken.toFixed(2)}</span>
+                          <span className="bet-tracker-page__inline-value">£{fmtMoney(b.stake)}</span>
+                          <span className={`bet-tracker-page__inline-value ${pl > 0 ? "bet-tracker-page__pl is-profit" : pl < 0 ? "bet-tracker-page__pl is-loss" : "bet-tracker-page__pl is-pending"}`}>
+                            {fmtSignedMoney(pl)}
+                          </span>
+                          <button
+                            type="button"
+                            className={`bet-tracker-page__status-chip status-${b.status}${statusPulseBetIds.has(b.id) ? " is-pulse" : ""}`}
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              const next = getNextStatus(b.status);
+                              await onStatusChange(b.id, next);
+                            }}
+                            title="Cycle status: pending → win → loss"
+                          >
+                            {b.status}
+                          </button>
                         </div>
                         <div className={`bet-tracker-page__chevron${isExpanded ? " is-expanded" : ""}`} aria-hidden="true">
                           ▾
@@ -1489,69 +1488,42 @@ export function BetTrackerPage() {
                         </section>
                       )}
 
-                      <section className="bet-tracker-page__bet-metrics">
-                        <div><span>Odds</span><strong>{b.oddsTaken.toFixed(2)}</strong></div>
-                        <div><span>Stake</span><strong>£{fmtMoney(b.stake)}</strong><small>{displayStakeUnits != null ? `${displayStakeUnits.toFixed(2)}u` : "—"}</small></div>
-                        <div>
-                          <span>P/L</span>
-                          <strong className={pl > 0 ? "bet-tracker-page__pl is-profit" : pl < 0 ? "bet-tracker-page__pl is-loss" : "bet-tracker-page__pl is-pending"}>
-                            {fmtSignedMoney(pl)}
-                          </strong>
-                          <small className={(displayProfitUnits ?? 0) > 0 ? "bet-tracker-page__pl is-profit" : (displayProfitUnits ?? 0) < 0 ? "bet-tracker-page__pl is-loss" : "bet-tracker-page__pl is-pending"}>
-                            {displayProfitUnits != null ? `${displayProfitUnits > 0 ? "+" : ""}${displayProfitUnits.toFixed(2)}u` : "—"}
-                          </small>
-                        </div>
-                        {isExpanded && (
-                          <div><span>Return</span><strong>£{fmtMoney(b.returnAmount)}</strong><small>{displayReturnUnits != null ? `${displayReturnUnits.toFixed(2)}u` : "—"}</small></div>
-                        )}
-                      </section>
-
+                      {isExpanded && (
                       <footer className="bet-tracker-page__bet-card-bottom">
                         <div className="bet-tracker-page__bet-badges">{isExpanded && modelBadge && (
                           <span className="bet-tracker-page__bet-badge">
                             Model {typeof modelScore === "number" ? Math.round(modelScore) : "—"} | Score{" "}
                             <span className={scoreClass}>{typeof normalizedScore === "number" ? Math.round(normalizedScore) : "—"}</span>
                           </span>
+                        )}{isExpanded && (
+                          <span className="bet-tracker-page__bet-badge">
+                            Return £{fmtMoney(b.returnAmount)}{displayReturnUnits != null ? ` (${displayReturnUnits.toFixed(2)}u)` : ""}
+                          </span>
                         )}</div>
                         <div className="bet-tracker-page__bet-controls">
+                          <select
+                            className={`bet-tracker-page__status-select status-${b.status}`}
+                            value={b.status}
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={(e) => onStatusChange(b.id, e.target.value as TrackedBetStatus)}
+                          >
+                            <option value="pending">pending</option>
+                            <option value="win">win</option>
+                            <option value="loss">loss</option>
+                          </select>
                           <button
                             type="button"
-                            className={`bet-tracker-page__status-chip status-${b.status}${statusPulseBetIds.has(b.id) ? " is-pulse" : ""}`}
-                            onClick={async (e) => {
+                            className="bet-tracker-page__delete-btn"
+                            onClick={(e) => {
                               e.stopPropagation();
-                              const next = getNextStatus(b.status);
-                              await onStatusChange(b.id, next);
+                              void onDeleteBet(b.id);
                             }}
-                            title="Cycle status: pending → win → loss"
                           >
-                            {b.status}
+                            Delete
                           </button>
-                          {isExpanded && (
-                            <>
-                              <select
-                                className={`bet-tracker-page__status-select status-${b.status}`}
-                                value={b.status}
-                                onClick={(e) => e.stopPropagation()}
-                                onChange={(e) => onStatusChange(b.id, e.target.value as TrackedBetStatus)}
-                              >
-                                <option value="pending">pending</option>
-                                <option value="win">win</option>
-                                <option value="loss">loss</option>
-                              </select>
-                              <button
-                                type="button"
-                                className="bet-tracker-page__delete-btn"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  void onDeleteBet(b.id);
-                                }}
-                              >
-                                Delete
-                              </button>
-                            </>
-                          )}
                         </div>
                       </footer>
+                      )}
                     </article>
                   );
                 })}
