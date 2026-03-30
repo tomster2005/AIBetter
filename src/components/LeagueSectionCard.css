@@ -70,6 +70,7 @@
   font-size: 0.75rem;
   color: var(--text-secondary, #6b7280);
   font-variant-numeric: tabular-nums;
+  display: none;
 }
 
 .league-card__header-actions {
@@ -121,6 +122,13 @@
 
 .league-card__body[hidden] {
   display: none;
+}
+
+.league-card__empty {
+  margin: 0;
+  padding-top: 0.75rem;
+  font-size: 0.8125rem;
+  color: var(--text-secondary, #6b7280);
 }
 
 .league-card__grid {

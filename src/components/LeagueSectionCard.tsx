@@ -54,7 +54,7 @@ export function LeagueSectionCard({
           ) : (
             <span className="league-card__logo-placeholder" />
           )}
-          <h2 className="league-card__title">{leagueName}</h2>
+          <h2 className="league-card__title">{`${leagueName} (${fixtureCount} ${fixtureCount === 1 ? "match" : "matches"})`}</h2>
           <span className="league-card__count" aria-label={`${fixtureCount} fixtures`}>
             {fixtureCount}
           </span>
@@ -84,16 +84,20 @@ export function LeagueSectionCard({
         className="league-card__body"
         hidden={!isExpanded}
       >
-        <div className="league-card__grid">
-          {fixtures.map((f) => (
-            <FixtureTile
-              key={f.id}
-              fixture={f}
-              formatTime={formatTime}
-              onFixtureClick={onFixtureClick}
-            />
-          ))}
-        </div>
+        {fixtures.length === 0 ? (
+          <p className="league-card__empty">No fixtures available for this competition today.</p>
+        ) : (
+          <div className="league-card__grid">
+            {fixtures.map((f) => (
+              <FixtureTile
+                key={f.id}
+                fixture={f}
+                formatTime={formatTime}
+                onFixtureClick={onFixtureClick}
+              />
+            ))}
+          </div>
+        )}
       </div>
     </section>
   );

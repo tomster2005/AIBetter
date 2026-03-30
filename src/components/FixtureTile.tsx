@@ -26,6 +26,7 @@ export function FixtureTile({ fixture, formatTime, onFixtureClick }: FixtureTile
   const showScore = score !== null;
   const live = isLive(fixture.state);
   const isClickable = Boolean(onFixtureClick);
+  const hasSignalBadges = live || (!showScore && fixture.state?.nameShort && fixture.state.nameShort !== "NS");
 
   const content = (
     <>
@@ -57,8 +58,15 @@ export function FixtureTile({ fixture, formatTime, onFixtureClick }: FixtureTile
         </span>
         <span className="fixture-tile__team-name">{fixture.awayTeam.name}</span>
       </div>
+      {hasSignalBadges && (
+        <div className="fixture-tile__signals">
+          {live && <span className="fixture-tile__signal fixture-tile__signal--live">Live</span>}
+          {!live && !showScore && fixture.state?.nameShort && fixture.state.nameShort !== "NS" && (
+            <span className="fixture-tile__signal">{fixture.state.nameShort}</span>
+          )}
+        </div>
+      )}
       <div className="fixture-tile__right">
-        {live && <span className="fixture-tile__live">Live</span>}
         {showScore ? (
           <span className="fixture-tile__score">{score}</span>
         ) : (

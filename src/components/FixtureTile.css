@@ -1,7 +1,7 @@
 .fixture-tile {
   display: grid;
   grid-template-columns: 1fr auto;
-  grid-template-rows: auto auto;
+  grid-template-rows: auto auto auto;
   gap: 0.35rem 0.75rem;
   align-items: center;
   padding: 0.65rem 0.75rem;
@@ -54,14 +54,17 @@
   grid-column: 2;
   grid-row: 1 / -1;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: flex-end;
-  gap: 0.125rem;
+  justify-content: flex-end;
+  gap: 0;
+  min-width: 3.4rem;
 }
 
 .fixture-tile__time {
-  font-size: 0.75rem;
-  color: var(--text-secondary, #6b7280);
+  font-size: 0.82rem;
+  color: var(--text-primary, #1f2937);
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 
@@ -71,12 +74,29 @@
   color: var(--text-primary, #1f2937);
 }
 
-.fixture-tile__live {
-  font-size: 0.5625rem;
+.fixture-tile__signals {
+  grid-column: 1;
+  grid-row: 3;
+  display: flex;
+  align-items: center;
+  gap: 0.28rem;
+}
+
+.fixture-tile__signal {
+  font-size: 0.62rem;
   font-weight: 600;
-  text-transform: uppercase;
+  color: #64748b;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  padding: 0.06rem 0.3rem;
   letter-spacing: 0.02em;
-  color: #059669;
+  line-height: 1.2;
+}
+
+.fixture-tile__signal--live {
+  color: #047857;
+  border-color: #a7f3d0;
+  background: #ecfdf5;
 }
 
 .fixture-tile--clickable {
@@ -87,8 +107,12 @@
 }
 
 .fixture-tile--clickable:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.06);
-  border-color: #d1d5db;
-  background: var(--card-bg, #fff);
+  transform: translateY(0);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
+  border-color: #d8dee7;
+  background: #f8fafc;
+}
+
+.fixture-tile--clickable:hover .fixture-tile__team-name {
+  color: #0f172a;
 }
