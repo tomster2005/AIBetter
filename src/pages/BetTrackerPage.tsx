@@ -782,6 +782,20 @@ export function BetTrackerPage() {
   }, [resetQuickAdd]);
 
   useEffect(() => {
+    const onQuickAdd = () => onOpenQuickAdd();
+    const onInsights = () => {
+      const el = document.getElementById("bet-tracker-insights");
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
+    window.addEventListener("app:quick-add-bet", onQuickAdd as EventListener);
+    window.addEventListener("app:scroll-insights", onInsights as EventListener);
+    return () => {
+      window.removeEventListener("app:quick-add-bet", onQuickAdd as EventListener);
+      window.removeEventListener("app:scroll-insights", onInsights as EventListener);
+    };
+  }, [onOpenQuickAdd]);
+
+  useEffect(() => {
     if (!showQuickAdd) return;
 
     const modal = quickAddModalRef.current;
@@ -1104,7 +1118,7 @@ export function BetTrackerPage() {
         <div className="bet-tracker-page__summary-card"><span>Real ROI</span><strong>{(totals.roi * 100).toFixed(1)}%</strong></div>
       </section>
 
-      <section className="bet-tracker-page__section">
+      <section className="bet-tracker-page__section" id="bet-tracker-insights">
         <h2>Insights</h2>
         <div className="bet-tracker-page__insights-grid">
           <article className="bet-tracker-page__insight-card">

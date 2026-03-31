@@ -1,8 +1,9 @@
-import { useState, useEffect, type FormEvent } from "react";
+import { useState, useEffect, useMemo, type FormEvent } from "react";
 import { CalendarPage } from "./pages/CalendarPage.js";
 import { BetTrackerPage } from "./pages/BetTrackerPage.js";
 import { setCalibrationTable } from "./lib/valueBetCalibration.js";
 import type { CalibrationBucket } from "./lib/valueBetCalibration.js";
+import { getAllBookmakerStats, getTrackedBetStats } from "./services/betTrackerService.js";
 import "./App.css";
 
 type AppTab = "calendar" | "betTracker";
@@ -15,6 +16,54 @@ export default function App() {
   const [password, setPassword] = useState("");
   const [authError, setAuthError] = useState<string | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
+  const [sidebarTick, setSidebarTick] = useState(0);
+
+  useEffect(() => {
+    const onStorage = () => setSidebarTick((v) => v + 1);
+    const onTrackerEvent = () => setSidebarTick((v) => v + 1);
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("app:tracker-updated", onTrackerEvent as EventListener);
+    const t = window.setInterval(() => setSidebarTick((v) => v + 1), 5000);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("app:tracker-updated", onTrackerEvent as EventListener);
+      window.clearInterval(t);
+    };
+  }, []);
+
+  const quickStats = useMemo(() => {
+    try {
+      const tracker = getTrackedBetStats();
+      const books = getAllBookmakerStats();
+      const bankroll = books.reduce((sum, b) => sum + (Number.isFinite(b.currentBalance) ? b.currentBalance : 0), 0);
+      return {
+        bankroll,
+        totalProfit: tracker.totalProfit,
+        openBets: tracker.pendingBets,
+        totalBets: tracker.totalBets,
+      };
+    } catch {
+      return {
+        bankroll: null as number | null,
+        totalProfit: null as number | null,
+        openBets: null as number | null,
+        totalBets: null as number | null,
+      };
+    }
+  }, [sidebarTick]);
+
+  const fmtMoney = (n: number | null): string => {
+    if (n == null || !Number.isFinite(n)) return "—";
+    return `£${Math.abs(n).toFixed(2)}`;
+  };
+
+  const fmtSignedMoney = (n: number | null): string => {
+    if (n == null || !Number.isFinite(n)) return "—";
+    if (n === 0) return "£0.00";
+    return `${n > 0 ? "+" : "-"}£${Math.abs(n).toFixed(2)}`;
+  };
+
+  const emit = (name: string) => window.dispatchEvent(new CustomEvent(name));
 
   useEffect(() => {
     fetch("/api/auth/me", { credentials: "include" })
@@ -101,20 +150,70 @@ export default function App() {
   return (
     <div className="app-layout">
       <nav className="app-nav" aria-label="Main">
-        <button
-          type="button"
-          className={`app-nav__tab ${activeTab === "calendar" ? "app-nav__tab--active" : ""}`}
-          onClick={() => setActiveTab("calendar")}
-        >
-          Calendar
-        </button>
-        <button
-          type="button"
-          className={`app-nav__tab ${activeTab === "betTracker" ? "app-nav__tab--active" : ""}`}
-          onClick={() => setActiveTab("betTracker")}
-        >
-          Bet Tracker
-        </button>
+        <div className="app-nav__group">
+          <button
+            type="button"
+            className={`app-nav__tab ${activeTab === "calendar" ? "app-nav__tab--active" : ""}`}
+            onClick={() => setActiveTab("calendar")}
+          >
+            Calendar
+          </button>
+          <button
+            type="button"
+            className={`app-nav__tab ${activeTab === "betTracker" ? "app-nav__tab--active" : ""}`}
+            onClick={() => setActiveTab("betTracker")}
+          >
+            Bet Tracker
+          </button>
+        </div>
+
+        <section className="app-nav__panel" aria-label="Quick Stats">
+          <h3 className="app-nav__panel-title">Quick Stats</h3>
+          <div className="app-nav__stat-row"><span>Bankroll</span><strong>{fmtMoney(quickStats.bankroll)}</strong></div>
+          <div className="app-nav__stat-row">
+            <span>Total P/L</span>
+            <strong className={quickStats.totalProfit != null ? (quickStats.totalProfit > 0 ? "app-nav__value--profit" : quickStats.totalProfit < 0 ? "app-nav__value--loss" : "") : ""}>
+              {fmtSignedMoney(quickStats.totalProfit)}
+            </strong>
+          </div>
+          <div className="app-nav__stat-row"><span>Open Bets</span><strong>{quickStats.openBets ?? "—"}</strong></div>
+          <div className="app-nav__stat-row"><span>Total Bets</span><strong>{quickStats.totalBets ?? "—"}</strong></div>
+        </section>
+
+        <section className="app-nav__panel" aria-label="Quick Actions">
+          <h3 className="app-nav__panel-title">Quick Actions</h3>
+          <button
+            type="button"
+            className="app-nav__quick-btn"
+            onClick={() => {
+              setActiveTab("betTracker");
+              emit("app:quick-add-bet");
+            }}
+          >
+            Add Bet
+          </button>
+          <button
+            type="button"
+            className="app-nav__quick-btn"
+            onClick={() => {
+              setActiveTab("betTracker");
+              emit("app:scroll-insights");
+            }}
+          >
+            Insights
+          </button>
+          <button
+            type="button"
+            className="app-nav__quick-btn"
+            onClick={() => {
+              setActiveTab("calendar");
+              emit("app:calendar-today");
+            }}
+          >
+            Back to Today
+          </button>
+        </section>
+
         <button type="button" className="app-nav__tab app-nav__logout" onClick={handleLogout}>
           Log out
         </button>

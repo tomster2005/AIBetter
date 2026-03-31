@@ -88,6 +88,12 @@ export function CalendarPage() {
   const { isExpanded, toggleExpanded } = useExpandedLeagueState();
 
   useEffect(() => {
+    const onBackToToday = () => setSelectedDate(toLondonDateKey(new Date()));
+    window.addEventListener("app:calendar-today", onBackToToday as EventListener);
+    return () => window.removeEventListener("app:calendar-today", onBackToToday as EventListener);
+  }, []);
+
+  useEffect(() => {
     const keys = getNextSevenDateKeys();
     const start = keys[0];
     const end = keys[keys.length - 1];
