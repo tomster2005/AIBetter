@@ -18,7 +18,7 @@
 .app-nav__logout {
   margin-top: auto;
   border-top: 1px solid rgba(148, 163, 184, 0.25);
-  padding-top: 0.45rem;
+  padding-top: 0.35rem;
 }
 
 .app-nav__group {
@@ -31,14 +31,20 @@
 
 .app-nav__panel {
   display: grid;
-  gap: 0.3rem;
+  gap: 0.24rem;
   padding: 0.35rem 0 0.45rem;
   border-bottom: 1px solid rgba(148, 163, 184, 0.22);
 }
 
+.app-nav__panel--stats {
+  background: rgba(255, 255, 255, 0.45);
+  border-radius: 6px;
+  padding: 0.35rem 0.3rem 0.45rem;
+}
+
 .app-nav__panel-title {
   margin: 0;
-  font-size: 0.66rem;
+  font-size: 0.64rem;
   letter-spacing: 0.05em;
   text-transform: uppercase;
   color: #64748b;
@@ -50,14 +56,14 @@
   align-items: baseline;
   justify-content: space-between;
   gap: 0.35rem;
-  font-size: 0.68rem;
+  font-size: 0.62rem;
   color: #64748b;
 }
 
 .app-nav__stat-row strong {
   color: #0f172a;
   font-weight: 700;
-  font-size: 0.69rem;
+  font-size: 0.74rem;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -75,7 +81,7 @@
   background: #ffffff;
   color: #334155;
   border-radius: 6px;
-  padding: 0.3rem 0.42rem;
+  padding: 0.24rem 0.42rem;
   font-size: 0.7rem;
   font-weight: 600;
   text-align: left;

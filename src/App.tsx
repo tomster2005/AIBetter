@@ -3,7 +3,7 @@ import { CalendarPage } from "./pages/CalendarPage.js";
 import { BetTrackerPage } from "./pages/BetTrackerPage.js";
 import { setCalibrationTable } from "./lib/valueBetCalibration.js";
 import type { CalibrationBucket } from "./lib/valueBetCalibration.js";
-import { getAllBookmakerStats, getTrackedBetStats } from "./services/betTrackerService.js";
+import { getAllBookmakerStats, getTrackedBetStats, getTrackedBets } from "./services/betTrackerService.js";
 import "./App.css";
 
 type AppTab = "calendar" | "betTracker";
@@ -35,9 +35,21 @@ export default function App() {
     try {
       const tracker = getTrackedBetStats();
       const books = getAllBookmakerStats();
+      const bets = getTrackedBets();
       const bankroll = books.reduce((sum, b) => sum + (Number.isFinite(b.currentBalance) ? b.currentBalance : 0), 0);
+      const startOfToday = new Date();
+      startOfToday.setHours(0, 0, 0, 0);
+      const todayStartMs = startOfToday.getTime();
+      const todayProfit = bets.reduce((sum, b) => {
+        const createdMs = Date.parse(b.createdAt);
+        if (!Number.isFinite(createdMs) || createdMs < todayStartMs) return sum;
+        if (b.status === "win") return sum + (b.returnAmount - b.stake);
+        if (b.status === "loss") return sum - b.stake;
+        return sum;
+      }, 0);
       return {
         bankroll,
+        todayProfit,
         totalProfit: tracker.totalProfit,
         openBets: tracker.pendingBets,
         totalBets: tracker.totalBets,
@@ -45,6 +57,7 @@ export default function App() {
     } catch {
       return {
         bankroll: null as number | null,
+        todayProfit: null as number | null,
         totalProfit: null as number | null,
         openBets: null as number | null,
         totalBets: null as number | null,
@@ -167,9 +180,15 @@ export default function App() {
           </button>
         </div>
 
-        <section className="app-nav__panel" aria-label="Quick Stats">
+        <section className="app-nav__panel app-nav__panel--stats" aria-label="Quick Stats">
           <h3 className="app-nav__panel-title">Quick Stats</h3>
           <div className="app-nav__stat-row"><span>Bankroll</span><strong>{fmtMoney(quickStats.bankroll)}</strong></div>
+          <div className="app-nav__stat-row">
+            <span>Today P/L</span>
+            <strong className={quickStats.todayProfit != null ? (quickStats.todayProfit > 0 ? "app-nav__value--profit" : quickStats.todayProfit < 0 ? "app-nav__value--loss" : "") : ""}>
+              {fmtSignedMoney(quickStats.todayProfit)}
+            </strong>
+          </div>
           <div className="app-nav__stat-row">
             <span>Total P/L</span>
             <strong className={quickStats.totalProfit != null ? (quickStats.totalProfit > 0 ? "app-nav__value--profit" : quickStats.totalProfit < 0 ? "app-nav__value--loss" : "") : ""}>
@@ -180,7 +199,7 @@ export default function App() {
           <div className="app-nav__stat-row"><span>Total Bets</span><strong>{quickStats.totalBets ?? "—"}</strong></div>
         </section>
 
-        <section className="app-nav__panel" aria-label="Quick Actions">
+        <section className="app-nav__panel app-nav__panel--actions" aria-label="Quick Actions">
           <h3 className="app-nav__panel-title">Quick Actions</h3>
           <button
             type="button"
@@ -190,7 +209,7 @@ export default function App() {
               emit("app:quick-add-bet");
             }}
           >
-            Add Bet
+            ➕ Add Bet
           </button>
           <button
             type="button"
@@ -200,7 +219,7 @@ export default function App() {
               emit("app:scroll-insights");
             }}
           >
-            Insights
+            📊 Insights
           </button>
           <button
             type="button"
@@ -210,7 +229,7 @@ export default function App() {
               emit("app:calendar-today");
             }}
           >
-            Back to Today
+            📅 Back to Today
           </button>
         </section>
 
