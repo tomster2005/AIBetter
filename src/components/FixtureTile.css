@@ -68,6 +68,20 @@
   font-variant-numeric: tabular-nums;
 }
 
+.fixture-tile__readiness {
+  font-size: 0.64rem;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.fixture-tile__readiness--waiting {
+  color: #64748b;
+}
+
+.fixture-tile__readiness--ready {
+  color: #166534;
+}
+
 .fixture-tile__score {
   font-weight: 600;
   font-variant-numeric: tabular-nums;

@@ -2,6 +2,7 @@
   display: flex;
   min-height: 100vh;
   background: var(--bg-main);
+  align-items: flex-start;
 }
 
 .app-nav {
@@ -13,6 +14,17 @@
   background: #f1f3f6;
   border-right: 1px solid var(--border-light);
   box-shadow: 1px 0 0 rgba(0, 0, 0, 0.02);
+}
+
+@media (min-width: 900px) {
+  .app-nav {
+    position: sticky;
+    top: 0.5rem;
+    align-self: flex-start;
+    max-height: calc(100vh - 1rem);
+    overflow-y: auto;
+    scrollbar-gutter: stable both-edges;
+  }
 }
 
 .app-nav__logout {
@@ -42,6 +54,76 @@
   padding: 0.35rem 0.3rem 0.45rem;
 }
 
+.app-nav__panel--active-bets {
+  background: rgba(255, 255, 255, 0.35);
+  border-radius: 6px;
+  padding: 0.35rem 0.3rem 0.45rem;
+}
+
+.app-nav__active-empty {
+  margin: 0.15rem 0;
+  font-size: 0.66rem;
+  color: #64748b;
+}
+
+.app-nav__active-list {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.app-nav__active-item {
+  border: 0;
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+  background: transparent;
+  text-align: left;
+  padding: 0.28rem 0.2rem;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.app-nav__active-item:first-child {
+  border-top: 0;
+}
+
+.app-nav__active-item:hover {
+  background: rgba(148, 163, 184, 0.14);
+}
+
+.app-nav__active-line {
+  display: block;
+  font-size: 0.64rem;
+  color: #1e293b;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.app-nav__active-line--meta {
+  margin-top: 0.1rem;
+  font-size: 0.62rem;
+  color: #64748b;
+  font-weight: 400;
+}
+
+.app-nav__active-view-all {
+  border: 0;
+  background: transparent;
+  color: #334155;
+  font-size: 0.64rem;
+  font-weight: 600;
+  text-align: left;
+  padding: 0.22rem 0.2rem 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.app-nav__active-view-all:hover {
+  color: #0f172a;
+  background: rgba(148, 163, 184, 0.12);
+}
+
 .app-nav__panel-title {
   margin: 0;
   font-size: 0.64rem;
@@ -66,6 +148,26 @@
   font-size: 0.74rem;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.app-nav__stat-btn {
+  border: none;
+  background: transparent;
+  padding: 0.12rem 0.2rem;
+  margin: 0;
+  text-align: left;
+  width: 100%;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 0.12s ease, opacity 0.12s ease;
+}
+
+.app-nav__stat-btn:hover {
+  background: rgba(148, 163, 184, 0.14);
+}
+
+.app-nav__stat-btn:active {
+  opacity: 0.9;
 }
 
 .app-nav__value--profit {

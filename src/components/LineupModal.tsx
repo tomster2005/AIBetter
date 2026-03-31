@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import type { Fixture } from "../types/fixture.js";
 import type { FixtureLineup } from "../api/fixture-details-types.js";
 import type { RawLineupEntry } from "../api/fixture-details-types.js";
@@ -20,6 +20,7 @@ import {
   type PlayerOddsResponse as ServicePlayerOddsResponse,
 } from "../services/playerPropsService.js";
 import { appendBacktestSnapshots } from "../services/backtestSnapshotService.js";
+import { addManualMultiBet, getBookmakers, getUnitSize } from "../services/betTrackerService.js";
 import { useAutoResolveCombos } from "../hooks/useAutoResolveCombos.js";
 import {
   loadPlayerSeasonStats,
@@ -110,6 +111,7 @@ interface LineupModalProps {
   onClose: () => void;
   fixture: Fixture | null;
   loading: boolean;
+  refreshing?: boolean;
   error: string | null;
   lineup: FixtureLineup | null;
   formations?: { home?: string; away?: string };
@@ -225,6 +227,7 @@ type ValueSortKey = "odds" | "probability" | "edge";
 function LineupContent({
   fixture,
   loading,
+  refreshing = false,
   error,
   lineup,
   formations,
@@ -245,6 +248,7 @@ function LineupContent({
 }: {
   fixture: Fixture | null;
   loading: boolean;
+  refreshing?: boolean;
   error: string | null;
   lineup: FixtureLineup | null;
   formations?: { home?: string; away?: string };
@@ -264,6 +268,8 @@ function LineupContent({
   onSelectedBookmakerChange?: (value: string) => void;
 }) {
   const [matchOddsExpanded, setMatchOddsExpanded] = useState(false);
+  const [addingRowKey, setAddingRowKey] = useState<string | null>(null);
+  const [addRowMessage, setAddRowMessage] = useState<string | null>(null);
 
   const displayRows = useMemo(() => {
     const rows = valueBetRows ?? [];
@@ -294,6 +300,52 @@ function LineupContent({
     });
     return filtered;
   }, [valueBetRows, selectedBookmaker, hideNegativeEdge, sortConfig?.key, sortConfig?.direction]);
+
+  const handleAddSingleValueBet = useCallback((row: ValueBetRow) => {
+    if (!fixture) return;
+    const rowKey = `${row.playerName}-${row.marketName}-${row.outcome}-${row.line}-${row.bookmakerName}`;
+    setAddingRowKey(rowKey);
+    setAddRowMessage(null);
+    try {
+      const bookmakers = getBookmakers();
+      if (bookmakers.length === 0) {
+        setAddRowMessage("Add a bookmaker in Bet Tracker first.");
+        return;
+      }
+      const fallbackBookmaker = bookmakers[0];
+      const preferredBookmaker = bookmakers.find(
+        (b) => b.name.trim().toLowerCase() === (row.bookmakerName ?? "").trim().toLowerCase()
+      );
+      const selectedBookmaker = preferredBookmaker ?? fallbackBookmaker;
+      const stake = getUnitSize();
+      const saved = addManualMultiBet({
+        bookmakerId: selectedBookmaker.id,
+        stake,
+        oddsTaken: row.odds,
+        status: "pending",
+        selections: [
+          {
+            matchLabel: `${fixture.homeTeam?.name ?? "Home"} v ${fixture.awayTeam?.name ?? "Away"}`,
+            leagueName: fixture.league?.name ?? "-",
+            kickoffTime: fixture.startingAt ?? "-",
+            marketName: row.marketName,
+            selectionLabel: `${row.outcome} ${row.line}`,
+            playerName: row.playerName,
+            line: row.line,
+            outcome: row.outcome,
+            odds: row.odds,
+          },
+        ],
+      });
+      if (!saved) {
+        setAddRowMessage("Could not add this bet to Bet Tracker.");
+        return;
+      }
+      setAddRowMessage(`Added ${row.playerName} to Bet Tracker.`);
+    } finally {
+      setAddingRowKey(null);
+    }
+  }, [fixture]);
 
   const bookmakerOptions = useMemo(() => {
     const rows = valueBetRows ?? [];
@@ -352,10 +404,38 @@ function LineupContent({
 
   if (loading) return <p className="lineup-modal__message">Loading…</p>;
   if (error) return <p className="lineup-modal__message lineup-modal__message--error">{error}</p>;
-  // Only show "not released" when there is no lineup data at all (no entries to render).
   const entries = lineup ? (lineup.data as RawLineupEntry[]) : [];
+  const leagueName = fixture?.league?.name ?? "—";
+  const kickoffLabel = fixture != null ? formatKickoff(fixture.startingAt) : "—";
+  const lineupStateLabel =
+    lineup == null
+      ? "Pending"
+      : lineup.lineupConfirmed === true
+        ? "Lineups available"
+        : lineup.lineupConfirmed === false
+          ? "Predicted"
+          : "Pending";
+
   if (!lineup || entries.length === 0) {
-    return <p className="lineup-modal__message">Official lineups not released yet.</p>;
+    return (
+      <div className="lineup-content lineup-content--spaced">
+        <section className="lineup-content__status-box">
+          <p className="lineup-content__status-title">⏳ Waiting for lineups</p>
+          <p className="lineup-content__status-subtitle">
+            {refreshing ? "Updating analysis..." : "Analysis will unlock automatically."}
+          </p>
+        </section>
+        <section className="lineup-content__key-info" aria-label="Fixture info">
+          <div><span>League</span><strong>{leagueName}</strong></div>
+          <div><span>Kickoff</span><strong>{kickoffLabel || "—"}</strong></div>
+          <div><span>Status</span><strong>{lineupStateLabel}</strong></div>
+        </section>
+        <section className="lineup-content__waiting-empty" aria-label="Analysis not ready">
+          <p className="lineup-modal__message">Waiting for lineups</p>
+          <p className="lineup-content__value-analysis-note">Check back closer to kickoff.</p>
+        </section>
+      </div>
+    );
   }
   const homeId = fixture?.homeTeam.id ?? 0;
   const awayId = fixture?.awayTeam.id ?? 0;
@@ -370,6 +450,14 @@ function LineupContent({
 
   return (
     <div className="lineup-content lineup-content--spaced">
+      <section className="lineup-content__status-box" aria-label="Analysis status">
+        <p className="lineup-content__status-title">{loadingValueBets ? "Running value analysis…" : "✅ Analysis ready"}</p>
+      </section>
+      <section className="lineup-content__key-info" aria-label="Fixture info">
+        <div><span>League</span><strong>{leagueName}</strong></div>
+        <div><span>Kickoff</span><strong>{kickoffLabel || "—"}</strong></div>
+        <div><span>Status</span><strong>{lineupStateLabel}</strong></div>
+      </section>
       {lineup?.lineupProvisionalNotice === true && (
         <p className="lineup-modal__message" role="status">
           Official lineups not released yet — showing predicted lineups.
@@ -377,28 +465,6 @@ function LineupContent({
       )}
       <div className="lineup-content__find-value-section">
         <h3 className="lineup-content__starting-title">Starting Lineups</h3>
-        <div className="lineup-content__value-bet-buttons">
-          {showFindValueBets && (
-            <button
-              type="button"
-              className="lineup-content__find-value-btn"
-              onClick={onFindValueBets}
-              disabled={loadingValueBets}
-              aria-busy={loadingValueBets}
-            >
-              {loadingValueBets ? "Scanning player markets…" : "Find Value Bets"}
-            </button>
-          )}
-          {showBuildValueBets && (
-            <button
-              type="button"
-              className="lineup-content__find-value-btn lineup-content__build-value-btn"
-              onClick={onBuildValueBets}
-            >
-              Build Value Bets
-            </button>
-          )}
-        </div>
       </div>
       <TeamFormationHeader
         fixture={fixture}
@@ -499,7 +565,7 @@ function LineupContent({
       {/* Value Bet Analysis: only show section when button exists (lineups loaded) */}
       {showFindValueBets && (
         <section className="lineup-content__value-analysis" aria-label="Value bet analysis">
-          <h3 className="lineup-content__value-analysis-title">Value Bet Analysis</h3>
+          <h3 className="lineup-content__value-analysis-title">Value Bets</h3>
           <p className="lineup-content__value-analysis-note">Model estimates only — not guaranteed. Use bet quality and data confidence before relying on edges.</p>
           {!loadingValueBets && valueBetRows != null && foulsMarketsStatus?.foulStatsAvailable === true && foulsMarketsStatus?.foulMarketsSeen === 0 && (
             <p className="lineup-content__value-fouls-note" role="status">
@@ -507,15 +573,16 @@ function LineupContent({
             </p>
           )}
           {loadingValueBets && (
-            <p className="lineup-modal__message">Scanning player markets…</p>
+            <p className="lineup-modal__message">Loading analysis...</p>
           )}
           {!loadingValueBets && valueBetRows != null && valueBetRows.length === 0 && (
             <p className="lineup-modal__message">
               {valueBetStartingCount === 0
                 ? "Lineup not confirmed yet — using predicted players."
-                : "No value bets detected."}
+                : "No strong value bets found for this fixture"}
             </p>
           )}
+          {addRowMessage && <p className="lineup-content__value-analysis-note">{addRowMessage}</p>}
           {!loadingValueBets && valueBetRows != null && valueBetRows.length > 0 && (
               <>
                 <div className="lineup-content__value-controls">
@@ -555,10 +622,7 @@ function LineupContent({
                     <table className="lineup-content__value-table">
                       <thead>
                         <tr>
-                          <th className="lineup-content__value-th">Bookmaker</th>
-                          <th className="lineup-content__value-th">Player</th>
-                          <th className="lineup-content__value-th">Market</th>
-                          <th className="lineup-content__value-th">Line</th>
+                          <th className="lineup-content__value-th">Player / Market</th>
                           <th
                             className="lineup-content__value-th lineup-content__value-th--numeric lineup-content__value-th--sortable"
                             onClick={() => onSortConfigChange?.("odds")}
@@ -577,7 +641,7 @@ function LineupContent({
                             onKeyDown={(e) => e.key === "Enter" && onSortConfigChange?.("probability")}
                             aria-sort={sortConfig?.key === "probability" ? (sortConfig.direction === "asc" ? "ascending" : "descending") : undefined}
                           >
-                            Prob. {sortConfig?.key === "probability" ? (sortConfig.direction === "asc" ? "▲" : "▼") : ""}
+                            Model % {sortConfig?.key === "probability" ? (sortConfig.direction === "asc" ? "▲" : "▼") : ""}
                           </th>
                           <th
                             className="lineup-content__value-th lineup-content__value-th--numeric lineup-content__value-th--sortable"
@@ -589,7 +653,7 @@ function LineupContent({
                           >
                             Edge {sortConfig?.key === "edge" ? (sortConfig.direction === "asc" ? "▲" : "▼") : ""}
                           </th>
-                          <th className="lineup-content__value-th">Bet Quality</th>
+                          <th className="lineup-content__value-th">Action</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -620,10 +684,14 @@ function LineupContent({
                               className={`lineup-content__value-row ${i % 2 === 0 ? "lineup-content__value-row--even" : "lineup-content__value-row--odd"} ${isNewPlayer ? "lineup-content__value-row--player-start" : ""} ${isStrong ? "lineup-content__value-row--strong" : ""}`}
                               title={tooltipParts.join("\n") || undefined}
                             >
-                              <td className="lineup-content__value-td lineup-content__value-td--bookmaker">{row.bookmakerName ?? "Unknown bookmaker"}</td>
-                              <td className="lineup-content__value-td lineup-content__value-td--player">{row.playerName}</td>
-                              <td className="lineup-content__value-td lineup-content__value-td--market">{row.marketName}</td>
-                              <td className="lineup-content__value-td lineup-content__value-td--nowrap">{row.outcome} {row.line}</td>
+                              <td className="lineup-content__value-td">
+                                <div className="lineup-content__value-player-market">
+                                  <span className="lineup-content__value-td--player">{row.playerName}</span>
+                                  <span className="lineup-content__value-td--market">
+                                    {row.outcome} {row.line} {row.marketName}
+                                  </span>
+                                </div>
+                              </td>
                               <td className="lineup-content__value-td lineup-content__value-td--numeric">{row.odds.toFixed(2)}</td>
                               <td className="lineup-content__value-td lineup-content__value-td--numeric">{row.probabilityPct}</td>
                               <td
@@ -639,10 +707,15 @@ function LineupContent({
                               >
                                 {row.edgePct}
                               </td>
-                              <td className="lineup-content__value-td lineup-content__value-td--bet-quality">
-                                <span className={`lineup-content__value-bet-quality lineup-content__value-bet-quality--${row.betQuality}`}>
-                                  {row.betQuality.charAt(0).toUpperCase() + row.betQuality.slice(1)}
-                                </span>
+                              <td className="lineup-content__value-td lineup-content__value-td--nowrap">
+                                <button
+                                  type="button"
+                                  className="lineup-content__value-add-btn"
+                                  onClick={() => handleAddSingleValueBet(row)}
+                                  disabled={addingRowKey === `${row.playerName}-${row.marketName}-${row.outcome}-${row.line}-${row.bookmakerName}`}
+                                >
+                                  {addingRowKey === `${row.playerName}-${row.marketName}-${row.outcome}-${row.line}-${row.bookmakerName}` ? "Adding..." : "Add"}
+                                </button>
                               </td>
                             </tr>
                           );
@@ -652,6 +725,18 @@ function LineupContent({
                   </div>
                 )}
               </>
+          )}
+          {showBuildValueBets && (
+            <div className="lineup-content__value-action-row">
+              <button
+                type="button"
+                className="lineup-content__find-value-btn lineup-content__build-value-btn"
+                onClick={onBuildValueBets}
+                disabled={loadingValueBets || !valueBetRows || valueBetRows.length === 0}
+              >
+                Add to Bet Tracker
+              </button>
+            </div>
           )}
         </section>
       )}
@@ -1889,6 +1974,7 @@ export function LineupModal({
   onClose,
   fixture,
   loading,
+  refreshing = false,
   error,
   lineup,
   formations,
@@ -1911,6 +1997,7 @@ export function LineupModal({
   const [hideNegativeEdge, setHideNegativeEdge] = useState(false);
   const [selectedBookmaker, setSelectedBookmaker] = useState<string>("all");
   const [buildModalOpen, setBuildModalOpen] = useState(false);
+  const autoAnalyzedFixtureRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!open) {
@@ -1922,8 +2009,18 @@ export function LineupModal({
       setFoulsMarketsStatus(null);
       setSelectedBookmaker("all");
       setBuildModalOpen(false);
+      autoAnalyzedFixtureRef.current = null;
     }
   }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open, onClose]);
 
   const handleSortConfigChange = (key: ValueSortKey) => {
     setSortConfig((prev) => {
@@ -2059,6 +2156,15 @@ export function LineupModal({
     }
   };
 
+  useEffect(() => {
+    if (!open || fixture == null || lineup == null || loadingValueBets) return;
+    const entries = lineup.data as RawLineupEntry[];
+    if (!Array.isArray(entries) || entries.length === 0) return;
+    if (autoAnalyzedFixtureRef.current === fixture.id) return;
+    autoAnalyzedFixtureRef.current = fixture.id;
+    void handleFindValueBets();
+  }, [open, fixture, lineup, loadingValueBets, handleFindValueBets]);
+
   if (!open) return null;
 
   const kickoff = fixture ? formatKickoff(fixture.startingAt) : "";
@@ -2095,6 +2201,7 @@ export function LineupModal({
             <LineupContent
               fixture={fixture}
               loading={loading}
+              refreshing={refreshing}
               error={error}
               lineup={lineup}
               formations={formations}

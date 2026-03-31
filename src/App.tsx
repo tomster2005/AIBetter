@@ -21,12 +21,21 @@ export default function App() {
   useEffect(() => {
     const onStorage = () => setSidebarTick((v) => v + 1);
     const onTrackerEvent = () => setSidebarTick((v) => v + 1);
+    const onOpenTracker = () => setActiveTab("betTracker");
+    const onOpenTrackerInsights = () => {
+      setActiveTab("betTracker");
+      window.setTimeout(() => emit("app:scroll-insights"), 40);
+    };
     window.addEventListener("storage", onStorage);
     window.addEventListener("app:tracker-updated", onTrackerEvent as EventListener);
+    window.addEventListener("app:open-bet-tracker", onOpenTracker as EventListener);
+    window.addEventListener("app:open-bet-tracker-insights", onOpenTrackerInsights as EventListener);
     const t = window.setInterval(() => setSidebarTick((v) => v + 1), 5000);
     return () => {
       window.removeEventListener("storage", onStorage);
       window.removeEventListener("app:tracker-updated", onTrackerEvent as EventListener);
+      window.removeEventListener("app:open-bet-tracker", onOpenTracker as EventListener);
+      window.removeEventListener("app:open-bet-tracker-insights", onOpenTrackerInsights as EventListener);
       window.clearInterval(t);
     };
   }, []);
@@ -65,6 +74,17 @@ export default function App() {
     }
   }, [sidebarTick]);
 
+  const activeBets = useMemo(() => {
+    try {
+      return getTrackedBets()
+        .filter((b) => b.status === "pending")
+        .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+        .slice(0, 4);
+    } catch {
+      return [];
+    }
+  }, [sidebarTick]);
+
   const fmtMoney = (n: number | null): string => {
     if (n == null || !Number.isFinite(n)) return "—";
     return `£${Math.abs(n).toFixed(2)}`;
@@ -76,7 +96,18 @@ export default function App() {
     return `${n > 0 ? "+" : "-"}£${Math.abs(n).toFixed(2)}`;
   };
 
+  const activeBetLabel = (matchLabel: string, legs: { playerName?: string; label: string }[]): string => {
+    const first = Array.isArray(legs) && legs.length > 0 ? legs[0] : null;
+    if (!first) return matchLabel;
+    const legLabel = first.playerName ? `${first.playerName} ${first.label}` : first.label;
+    return `${legLabel}`;
+  };
+
   const emit = (name: string) => window.dispatchEvent(new CustomEvent(name));
+  const navigateAndEmit = (tab: AppTab, eventName: string) => {
+    setActiveTab(tab);
+    window.setTimeout(() => emit(eventName), 40);
+  };
 
   useEffect(() => {
     fetch("/api/auth/me", { credentials: "include" })
@@ -180,23 +211,66 @@ export default function App() {
           </button>
         </div>
 
+        <section className="app-nav__panel app-nav__panel--active-bets" aria-label="Active Bets">
+          <h3 className="app-nav__panel-title">Active Bets</h3>
+          {activeBets.length === 0 ? (
+            <p className="app-nav__active-empty">No active bets</p>
+          ) : (
+            <div className="app-nav__active-list">
+              {activeBets.map((bet) => (
+                <button
+                  key={bet.id}
+                  type="button"
+                  className="app-nav__active-item"
+                  onClick={() => navigateAndEmit("betTracker", "app:sidebar-open-bets")}
+                  title={activeBetLabel(bet.matchLabel, bet.legs)}
+                >
+                  <span className="app-nav__active-line">
+                    {`${activeBetLabel(bet.matchLabel, bet.legs)} @ ${bet.oddsTaken.toFixed(2)}`}
+                  </span>
+                  <span className="app-nav__active-line app-nav__active-line--meta">
+                    £{bet.stake.toFixed(2)} → £{bet.returnAmount.toFixed(2)}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+          <button
+            type="button"
+            className="app-nav__active-view-all"
+            onClick={() => navigateAndEmit("betTracker", "app:sidebar-open-bets")}
+          >
+            View All Bets →
+          </button>
+        </section>
+
         <section className="app-nav__panel app-nav__panel--stats" aria-label="Quick Stats">
           <h3 className="app-nav__panel-title">Quick Stats</h3>
-          <div className="app-nav__stat-row"><span>Bankroll</span><strong>{fmtMoney(quickStats.bankroll)}</strong></div>
-          <div className="app-nav__stat-row">
-            <span>Today P/L</span>
-            <strong className={quickStats.todayProfit != null ? (quickStats.todayProfit > 0 ? "app-nav__value--profit" : quickStats.todayProfit < 0 ? "app-nav__value--loss" : "") : ""}>
-              {fmtSignedMoney(quickStats.todayProfit)}
-            </strong>
-          </div>
-          <div className="app-nav__stat-row">
-            <span>Total P/L</span>
-            <strong className={quickStats.totalProfit != null ? (quickStats.totalProfit > 0 ? "app-nav__value--profit" : quickStats.totalProfit < 0 ? "app-nav__value--loss" : "") : ""}>
-              {fmtSignedMoney(quickStats.totalProfit)}
-            </strong>
-          </div>
-          <div className="app-nav__stat-row"><span>Open Bets</span><strong>{quickStats.openBets ?? "—"}</strong></div>
-          <div className="app-nav__stat-row"><span>Total Bets</span><strong>{quickStats.totalBets ?? "—"}</strong></div>
+          <button type="button" className="app-nav__stat-btn" onClick={() => navigateAndEmit("betTracker", "app:sidebar-bankroll")}>
+            <span className="app-nav__stat-row"><span>Bankroll</span><strong>{fmtMoney(quickStats.bankroll)}</strong></span>
+          </button>
+          <button type="button" className="app-nav__stat-btn" onClick={() => navigateAndEmit("betTracker", "app:sidebar-today-pl")}>
+            <span className="app-nav__stat-row">
+              <span>Today P/L</span>
+              <strong className={quickStats.todayProfit != null ? (quickStats.todayProfit > 0 ? "app-nav__value--profit" : quickStats.todayProfit < 0 ? "app-nav__value--loss" : "") : ""}>
+                {fmtSignedMoney(quickStats.todayProfit)}
+              </strong>
+            </span>
+          </button>
+          <button type="button" className="app-nav__stat-btn" onClick={() => navigateAndEmit("betTracker", "app:sidebar-total-pl")}>
+            <span className="app-nav__stat-row">
+              <span>Total P/L</span>
+              <strong className={quickStats.totalProfit != null ? (quickStats.totalProfit > 0 ? "app-nav__value--profit" : quickStats.totalProfit < 0 ? "app-nav__value--loss" : "") : ""}>
+                {fmtSignedMoney(quickStats.totalProfit)}
+              </strong>
+            </span>
+          </button>
+          <button type="button" className="app-nav__stat-btn" onClick={() => navigateAndEmit("betTracker", "app:sidebar-open-bets")}>
+            <span className="app-nav__stat-row"><span>Open Bets</span><strong>{quickStats.openBets ?? "—"}</strong></span>
+          </button>
+          <button type="button" className="app-nav__stat-btn" onClick={() => navigateAndEmit("betTracker", "app:sidebar-total-bets")}>
+            <span className="app-nav__stat-row"><span>Total Bets</span><strong>{quickStats.totalBets ?? "—"}</strong></span>
+          </button>
         </section>
 
         <section className="app-nav__panel app-nav__panel--actions" aria-label="Quick Actions">
@@ -204,30 +278,21 @@ export default function App() {
           <button
             type="button"
             className="app-nav__quick-btn"
-            onClick={() => {
-              setActiveTab("betTracker");
-              emit("app:quick-add-bet");
-            }}
+            onClick={() => navigateAndEmit("betTracker", "app:quick-add-bet")}
           >
             ➕ Add Bet
           </button>
           <button
             type="button"
             className="app-nav__quick-btn"
-            onClick={() => {
-              setActiveTab("betTracker");
-              emit("app:scroll-insights");
-            }}
+            onClick={() => navigateAndEmit("betTracker", "app:scroll-insights")}
           >
             📊 Insights
           </button>
           <button
             type="button"
             className="app-nav__quick-btn"
-            onClick={() => {
-              setActiveTab("calendar");
-              emit("app:calendar-today");
-            }}
+            onClick={() => navigateAndEmit("calendar", "app:calendar-today")}
           >
             📅 Back to Today
           </button>

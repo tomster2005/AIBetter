@@ -16,6 +16,7 @@ interface LeagueSectionCardProps {
   isExpanded?: boolean;
   onToggleExpand?: () => void;
   fixtureSignalCounts?: Record<number, number>;
+  fixtureReadiness?: Record<number, boolean>;
 }
 
 export function LeagueSectionCard({
@@ -30,9 +31,13 @@ export function LeagueSectionCard({
   isExpanded = false,
   onToggleExpand,
   fixtureSignalCounts,
+  fixtureReadiness,
 }: LeagueSectionCardProps) {
   const fixtureCount = fixtures.length;
   const sortedFixtures = [...fixtures].sort((a, b) => {
+    const ra = fixtureReadiness?.[a.id] === true ? 1 : 0;
+    const rb = fixtureReadiness?.[b.id] === true ? 1 : 0;
+    if (rb !== ra) return rb - ra;
     const sa = fixtureSignalCounts?.[a.id] ?? 0;
     const sb = fixtureSignalCounts?.[b.id] ?? 0;
     if (sb !== sa) return sb - sa;
@@ -107,6 +112,7 @@ export function LeagueSectionCard({
                 formatTime={formatTime}
                 onFixtureClick={onFixtureClick}
                 signalCount={fixtureSignalCounts?.[f.id] ?? 0}
+                analysisReady={fixtureReadiness?.[f.id] === true}
               />
             ))}
           </div>

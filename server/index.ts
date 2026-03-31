@@ -265,11 +265,13 @@ app.get("/api/fixtures/signals", (_req, res) => {
 
   const wanted = new Set(ids);
   const counts = new Map<number, number>();
+  const dataRowsByFixture = new Map<number, number>();
   try {
     const data = loadDataset();
     for (const row of data.rows) {
       const fixtureId = row.fixtureId;
       if (!wanted.has(fixtureId)) continue;
+      dataRowsByFixture.set(fixtureId, (dataRowsByFixture.get(fixtureId) ?? 0) + 1);
       // Value signal: positive modeled edge at snapshot time.
       if (typeof row.edge !== "number" || !Number.isFinite(row.edge) || row.edge <= 0) continue;
       counts.set(fixtureId, (counts.get(fixtureId) ?? 0) + 1);
@@ -278,12 +280,23 @@ app.get("/api/fixtures/signals", (_req, res) => {
     // Silent fallback: return empty signals.
   }
 
-  const out: Record<number, { hasSignal: boolean; signalCount: number }> = {};
+  const out: Record<number, { hasSignal: boolean; signalCount: number; hasRequiredData: boolean; dataRows: number }> = {};
+  let fixturesWithRequiredData = 0;
   for (const id of ids) {
     const signalCount = counts.get(id) ?? 0;
-    out[id] = { hasSignal: signalCount > 0, signalCount };
+    const dataRows = dataRowsByFixture.get(id) ?? 0;
+    const hasRequiredData = dataRows > 0;
+    if (hasRequiredData) fixturesWithRequiredData += 1;
+    out[id] = { hasSignal: signalCount > 0, signalCount, hasRequiredData, dataRows };
   }
-  return res.json({ signals: out });
+  return res.json({
+    signals: out,
+    readiness: {
+      fixturesRequested: ids.length,
+      fixturesWithRequiredData,
+      hasRequiredData: fixturesWithRequiredData > 0,
+    },
+  });
 });
 
 app.get("/api/fixtures/:id/odds", async (req, res) => {

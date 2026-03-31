@@ -77,12 +77,14 @@ export function CalendarPage() {
   const [lineupLoading, setLineupLoading] = useState(false);
   const [lineupError, setLineupError] = useState<string | null>(null);
   const [lineup, setLineup] = useState<FixtureLineup | null>(null);
+  const [lineupRefreshing, setLineupRefreshing] = useState(false);
   const [lineupFormations, setLineupFormations] = useState<{ home?: string; away?: string }>({});
   const [lineupCoaches, setLineupCoaches] = useState<{
     home?: { name?: string | null; image?: string | null };
     away?: { name?: string | null; image?: string | null };
   }>({});
   const [fixtureSignalCounts, setFixtureSignalCounts] = useState<Record<number, number>>({});
+  const [fixtureReadiness, setFixtureReadiness] = useState<Record<number, boolean>>({});
 
   const { favouriteIds, toggleFavourite, isFavourite } = useLeagueFavourites();
   const { isExpanded, toggleExpanded } = useExpandedLeagueState();
@@ -131,19 +133,26 @@ export function CalendarPage() {
           const qs = encodeURIComponent(ids.join(","));
           fetch(`/api/fixtures/signals?ids=${qs}`)
             .then((r) => (r.ok ? r.json() : { signals: {} }))
-            .then((payload: { signals?: Record<string, { signalCount?: number }> }) => {
+            .then((payload: { signals?: Record<string, { signalCount?: number; hasRequiredData?: boolean }> }) => {
               const out: Record<number, number> = {};
+              const readinessOut: Record<number, boolean> = {};
               const raw = payload?.signals ?? {};
               for (const [k, v] of Object.entries(raw)) {
                 const id = parseInt(k, 10);
                 const c = Number(v?.signalCount ?? 0);
                 if (Number.isFinite(id) && id > 0 && Number.isFinite(c) && c > 0) out[id] = c;
+                if (Number.isFinite(id) && id > 0) readinessOut[id] = v?.hasRequiredData === true;
               }
               setFixtureSignalCounts(out);
+              setFixtureReadiness(readinessOut);
             })
-            .catch(() => setFixtureSignalCounts({}));
+            .catch(() => {
+              setFixtureSignalCounts({});
+              setFixtureReadiness({});
+            });
         } else {
           setFixtureSignalCounts({});
+          setFixtureReadiness({});
         }
       })
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load fixtures"))
@@ -153,6 +162,15 @@ export function CalendarPage() {
   const fixtures = byDate?.[selectedDate] ?? [];
   const leagueGroupsUnsorted = groupFixturesByLeague(fixtures);
   const leagueGroups = sortLeagueGroupsByFavourite(leagueGroupsUnsorted, favouriteIds);
+  const valueFixtureCount = fixtures.reduce(
+    (sum, f) => sum + ((fixtureSignalCounts[f.id] ?? 0) > 0 ? 1 : 0),
+    0
+  );
+  const readyFixtureCount = fixtures.reduce(
+    (sum, f) => sum + (fixtureReadiness[f.id] === true ? 1 : 0),
+    0
+  );
+  const hasRequiredData = readyFixtureCount > 0;
 
   useEffect(() => {
     if (import.meta.env.DEV && leagueGroups.length >= 0) {
@@ -194,6 +212,7 @@ export function CalendarPage() {
     setLineupFixture(fixture);
     setLineupOpen(true);
     setLineupLoading(true);
+    setLineupRefreshing(false);
     setLineupError(null);
     setLineup(null);
     setLineupCoaches({});
@@ -242,9 +261,52 @@ export function CalendarPage() {
     setLineupFixture(null);
     setLineupError(null);
     setLineup(null);
+    setLineupRefreshing(false);
     setLineupFormations({});
     setLineupCoaches({});
   };
+
+  useEffect(() => {
+    if (!lineupOpen || lineupFixture == null) return;
+    const hasReadyLineup = Array.isArray(lineup?.data) && lineup.data.length > 0;
+    if (hasReadyLineup) return;
+
+    let cancelled = false;
+    const refreshLineups = async () => {
+      if (cancelled) return;
+      setLineupRefreshing(true);
+      try {
+        const res = await fetch(`/api/fixtures/${lineupFixture.id}`);
+        if (!res.ok) return;
+        const body = (await res.json()) as RawFixtureDetails;
+        if (cancelled) return;
+        const details = normalizeFixtureDetailsForClient(body);
+        setLineup(getLineupForFixture(details));
+        setLineupFormations(getFormationsFromDetails(details));
+        setLineupCoaches(
+          getCoachesFromDetails(details, {
+            homeTeamId: lineupFixture.homeTeam.id,
+            awayTeamId: lineupFixture.awayTeam.id,
+          })
+        );
+      } catch {
+        // Silent fail: retry on next tick.
+      } finally {
+        if (!cancelled) setLineupRefreshing(false);
+      }
+    };
+
+    const intervalMs = 45000;
+    const timer = window.setInterval(() => {
+      void refreshLineups();
+    }, intervalMs);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      setLineupRefreshing(false);
+    };
+  }, [lineupOpen, lineupFixture, lineup]);
 
   return (
     <div className="calendar-page">
@@ -272,6 +334,28 @@ export function CalendarPage() {
           {!loading && !error && fixtures.length === 0 && (
             <p className="calendar-page__message">No fixtures on this day.</p>
           )}
+          {!loading && !error && fixtures.length > 0 && valueFixtureCount === 0 && !hasRequiredData && (
+            <div className="calendar-page__quiet-state">
+              <p className="calendar-page__quiet-text">
+                Waiting for lineups to analyse value bets.
+              </p>
+              <p className="calendar-page__quiet-text">Value detection will update automatically.</p>
+            </div>
+          )}
+          {!loading && !error && fixtures.length > 0 && valueFixtureCount === 0 && hasRequiredData && (
+            <div className="calendar-page__quiet-state">
+              <p className="calendar-page__quiet-text">
+                No strong value bets today.
+              </p>
+              <button
+                type="button"
+                className="calendar-page__quiet-link"
+                onClick={() => window.dispatchEvent(new CustomEvent("app:open-bet-tracker-insights"))}
+              >
+                View Insights
+              </button>
+            </div>
+          )}
           {!loading && !error && leagueGroups.length > 0 && (
             <div className="calendar-page__league-cards">
               {leagueGroups.map((group) => (
@@ -288,6 +372,7 @@ export function CalendarPage() {
                   isExpanded={isExpanded(selectedDate, group.leagueId)}
                   onToggleExpand={() => toggleExpanded(selectedDate, group.leagueId)}
                   fixtureSignalCounts={fixtureSignalCounts}
+                  fixtureReadiness={fixtureReadiness}
                 />
               ))}
             </div>
@@ -297,6 +382,7 @@ export function CalendarPage() {
             onClose={handleLineupClose}
             fixture={lineupFixture}
             loading={lineupLoading}
+            refreshing={lineupRefreshing}
             error={lineupError}
             lineup={lineup}
             formations={lineupFormations}

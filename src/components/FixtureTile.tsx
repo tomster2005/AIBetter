@@ -6,6 +6,7 @@ interface FixtureTileProps {
   formatTime: (startingAt: string) => string;
   onFixtureClick?: (fixture: Fixture) => void;
   signalCount?: number;
+  analysisReady?: boolean;
 }
 
 function getCurrentScore(fixture: Fixture): string | null {
@@ -22,7 +23,13 @@ function isLive(state: Fixture["state"]): boolean {
   return true;
 }
 
-export function FixtureTile({ fixture, formatTime, onFixtureClick, signalCount = 0 }: FixtureTileProps) {
+export function FixtureTile({
+  fixture,
+  formatTime,
+  onFixtureClick,
+  signalCount = 0,
+  analysisReady = false,
+}: FixtureTileProps) {
   const score = getCurrentScore(fixture);
   const showScore = score !== null;
   const live = isLive(fixture.state);
@@ -74,6 +81,11 @@ export function FixtureTile({ fixture, formatTime, onFixtureClick, signalCount =
         ) : (
           <span className="fixture-tile__time">{formatTime(fixture.startingAt)}</span>
         )}
+        <span
+          className={`fixture-tile__readiness ${analysisReady ? "fixture-tile__readiness--ready" : "fixture-tile__readiness--waiting"}`}
+        >
+          {analysisReady ? "Ready" : "Waiting for lineups"}
+        </span>
         {hasValueSignal && (
           <span className="fixture-tile__value-badge" title={`${signalCount} value bet${signalCount === 1 ? "" : "s"}`}>
             🔥 {signalCount} value bet{signalCount === 1 ? "" : "s"}

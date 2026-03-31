@@ -312,6 +312,7 @@ export function BetTrackerPage() {
   const [bets, setBets] = useState<TrackedBetRecord[]>([]);
   const [selectedStatus, setSelectedStatus] = useState<"all" | TrackedBetStatus>("all");
   const [selectedBookmakerId, setSelectedBookmakerId] = useState<string>("all");
+  const [quickDateFilter, setQuickDateFilter] = useState<"all" | "today">("all");
   const [minScore, setMinScore] = useState<string>("");
   const [sortMode, setSortMode] = useState<"dateDesc" | "dateAsc" | "modelDesc" | "modelAsc" | "plDesc" | "plAsc">("dateDesc");
   const [timelineBookmakerId, setTimelineBookmakerId] = useState<string>("all");
@@ -561,6 +562,11 @@ export function BetTrackerPage() {
   const filteredAndSortedBets = useMemo(() => {
     const parsedMinScore = minScore.trim() === "" ? null : Number(minScore);
     const hasMinScore = parsedMinScore != null && Number.isFinite(parsedMinScore);
+    const todayStart = (() => {
+      const d = new Date();
+      d.setHours(0, 0, 0, 0);
+      return d.getTime();
+    })();
 
     const withDerived = bets
       .map((b) => {
@@ -572,6 +578,10 @@ export function BetTrackerPage() {
       .filter(({ b, normalizedScore }) => {
         if (selectedStatus !== "all" && b.status !== selectedStatus) return false;
         if (selectedBookmakerId !== "all" && b.bookmakerId !== selectedBookmakerId) return false;
+        if (quickDateFilter === "today") {
+          const ts = Date.parse(b.createdAt);
+          if (!Number.isFinite(ts) || ts < todayStart) return false;
+        }
         if (hasMinScore) {
           const isManualBet = b.sourceType === "manualMulti" || b.sourceMeta == null;
           if (!isManualBet) {
@@ -602,7 +612,7 @@ export function BetTrackerPage() {
     });
 
     return withDerived;
-  }, [bets, minScore, selectedBookmakerId, selectedStatus, sortMode]);
+  }, [bets, minScore, selectedBookmakerId, selectedStatus, sortMode, quickDateFilter]);
 
   useEffect(() => {
     if (!import.meta.env.DEV) return;
@@ -787,11 +797,52 @@ export function BetTrackerPage() {
       const el = document.getElementById("bet-tracker-insights");
       if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
     };
+    const onBankroll = () => {
+      setSelectedStatus("all");
+      setQuickDateFilter("all");
+      const el = document.getElementById("bet-tracker-bankroll");
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
+    const onTodayPl = () => {
+      setSelectedStatus("all");
+      setQuickDateFilter("today");
+      setSortMode("dateDesc");
+      const el = document.getElementById("bet-tracker-all-bets");
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
+    const onTotalPl = () => {
+      setSelectedStatus("all");
+      setQuickDateFilter("all");
+      const el = document.getElementById("bet-tracker-insights");
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
+    const onOpenBets = () => {
+      setSelectedStatus("pending");
+      setQuickDateFilter("all");
+      const el = document.getElementById("bet-tracker-all-bets");
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
+    const onTotalBets = () => {
+      setSelectedStatus("all");
+      setQuickDateFilter("all");
+      const el = document.getElementById("bet-tracker-all-bets");
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
     window.addEventListener("app:quick-add-bet", onQuickAdd as EventListener);
     window.addEventListener("app:scroll-insights", onInsights as EventListener);
+    window.addEventListener("app:sidebar-bankroll", onBankroll as EventListener);
+    window.addEventListener("app:sidebar-today-pl", onTodayPl as EventListener);
+    window.addEventListener("app:sidebar-total-pl", onTotalPl as EventListener);
+    window.addEventListener("app:sidebar-open-bets", onOpenBets as EventListener);
+    window.addEventListener("app:sidebar-total-bets", onTotalBets as EventListener);
     return () => {
       window.removeEventListener("app:quick-add-bet", onQuickAdd as EventListener);
       window.removeEventListener("app:scroll-insights", onInsights as EventListener);
+      window.removeEventListener("app:sidebar-bankroll", onBankroll as EventListener);
+      window.removeEventListener("app:sidebar-today-pl", onTodayPl as EventListener);
+      window.removeEventListener("app:sidebar-total-pl", onTotalPl as EventListener);
+      window.removeEventListener("app:sidebar-open-bets", onOpenBets as EventListener);
+      window.removeEventListener("app:sidebar-total-bets", onTotalBets as EventListener);
     };
   }, [onOpenQuickAdd]);
 
@@ -1051,7 +1102,7 @@ export function BetTrackerPage() {
             </select>
           </label>
         </div>
-        <div className="bet-tracker-page__bankroll-card">
+        <div className="bet-tracker-page__bankroll-card" id="bet-tracker-bankroll">
           <div className="bet-tracker-page__bankroll-card-head">
             <h3 className="bet-tracker-page__bankroll-title">Bankroll</h3>
             <p className="bet-tracker-page__bankroll-subtitle">Running balance after settled activity</p>
@@ -1298,7 +1349,7 @@ export function BetTrackerPage() {
         )}
       </section>
 
-      <section className="bet-tracker-page__section">
+      <section className="bet-tracker-page__section" id="bet-tracker-all-bets">
         <h2>All Bets</h2>
         <div className="bet-tracker-page__filters">
           <label>
