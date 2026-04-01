@@ -1,0 +1,106 @@
+.stake-calculator-page {
+  padding: 1.4rem 1.2rem 2rem;
+  max-width: 980px;
+  margin: 0 auto;
+}
+
+.stake-calculator-page__title {
+  margin: 0;
+  font-size: clamp(1.5rem, 2.3vw, 1.9rem);
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.stake-calculator-page__intro {
+  margin: 0.45rem 0 1.1rem;
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+}
+
+.stake-calculator-page__card {
+  border: 1px solid var(--border-light);
+  border-radius: 14px;
+  background: var(--card-bg);
+  padding: 1rem 1rem 1.15rem;
+  display: grid;
+  gap: 1rem;
+  max-width: 760px;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
+}
+
+.stake-calculator-page__card--flash {
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.25), 0 2px 8px rgba(15, 23, 42, 0.05);
+}
+
+.stake-calculator-page__inputs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.stake-calculator-page__inputs label {
+  display: grid;
+  gap: 0.28rem;
+}
+
+.stake-calculator-page__inputs span {
+  font-size: 0.8rem;
+  color: #64748b;
+}
+
+.stake-calculator-page__inputs input,
+.stake-calculator-page__inputs select {
+  border: 1px solid #d6dde7;
+  border-radius: 8px;
+  padding: 0.56rem 0.65rem;
+  font-size: 0.95rem;
+  color: #0f172a;
+  background: #fff;
+}
+
+.stake-calculator-page__inputs input:focus,
+.stake-calculator-page__inputs select:focus {
+  outline: none;
+  border-color: rgba(37, 99, 235, 0.45);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+.stake-calculator-page__result {
+  border: 1px solid #dbeafe;
+  background: #f8fbff;
+  border-radius: 10px;
+  padding: 0.8rem 0.9rem;
+}
+
+.stake-calculator-page__result-label {
+  margin: 0;
+  font-size: 0.78rem;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.stake-calculator-page__result-value {
+  margin: 0.2rem 0 0;
+  font-size: clamp(1.55rem, 2.6vw, 2rem);
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.stake-calculator-page__result-units {
+  margin: 0.2rem 0 0;
+  font-size: 0.92rem;
+  color: #334155;
+}
+
+.stake-calculator-page__result-note {
+  margin: 0.4rem 0 0;
+  font-size: 0.78rem;
+  color: #64748b;
+}
+
+@media (max-width: 860px) {
+  .stake-calculator-page__inputs {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,12 +1,13 @@
 import { useState, useEffect, useMemo, type FormEvent } from "react";
 import { CalendarPage } from "./pages/CalendarPage.js";
 import { BetTrackerPage } from "./pages/BetTrackerPage.js";
+import { StakeCalculatorPage } from "./pages/StakeCalculatorPage.js";
 import { setCalibrationTable } from "./lib/valueBetCalibration.js";
 import type { CalibrationBucket } from "./lib/valueBetCalibration.js";
 import { getAllBookmakerStats, getTrackedBetStats, getTrackedBets } from "./services/betTrackerService.js";
 import "./App.css";
 
-type AppTab = "calendar" | "betTracker";
+type AppTab = "calendar" | "betTracker" | "stakeCalculator";
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<AppTab>("calendar");
@@ -39,6 +40,7 @@ export default function App() {
       window.clearInterval(t);
     };
   }, []);
+
 
   const quickStats = useMemo(() => {
     try {
@@ -74,6 +76,7 @@ export default function App() {
     }
   }, [sidebarTick]);
 
+
   const activeBets = useMemo(() => {
     try {
       return getTrackedBets()
@@ -108,6 +111,7 @@ export default function App() {
     setActiveTab(tab);
     window.setTimeout(() => emit(eventName), 40);
   };
+
 
   useEffect(() => {
     fetch("/api/auth/me", { credentials: "include" })
@@ -209,6 +213,13 @@ export default function App() {
           >
             Bet Tracker
           </button>
+          <button
+            type="button"
+            className={`app-nav__tab ${activeTab === "stakeCalculator" ? "app-nav__tab--active" : ""}`}
+            onClick={() => setActiveTab("stakeCalculator")}
+          >
+            Stake Calculator
+          </button>
         </div>
 
         <section className="app-nav__panel app-nav__panel--active-bets" aria-label="Active Bets">
@@ -305,6 +316,7 @@ export default function App() {
       <main className="app-main">
         {activeTab === "calendar" && <CalendarPage />}
         {activeTab === "betTracker" && <BetTrackerPage />}
+        {activeTab === "stakeCalculator" && <StakeCalculatorPage defaultBankroll={quickStats.bankroll} />}
       </main>
     </div>
   );

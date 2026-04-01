@@ -683,6 +683,14 @@ function LineupContent({
                               key={i}
                               className={`lineup-content__value-row ${i % 2 === 0 ? "lineup-content__value-row--even" : "lineup-content__value-row--odd"} ${isNewPlayer ? "lineup-content__value-row--player-start" : ""} ${isStrong ? "lineup-content__value-row--strong" : ""}`}
                               title={tooltipParts.join("\n") || undefined}
+                              onClick={() => {
+                                const selectedEdge = row.modelEdge ?? row.edge ?? 0;
+                                window.dispatchEvent(
+                                  new CustomEvent("app:value-bet-selected", {
+                                    detail: { edgePercent: Number((selectedEdge * 100).toFixed(1)) },
+                                  })
+                                );
+                              }}
                             >
                               <td className="lineup-content__value-td">
                                 <div className="lineup-content__value-player-market">
@@ -711,7 +719,10 @@ function LineupContent({
                                 <button
                                   type="button"
                                   className="lineup-content__value-add-btn"
-                                  onClick={() => handleAddSingleValueBet(row)}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleAddSingleValueBet(row);
+                                  }}
                                   disabled={addingRowKey === `${row.playerName}-${row.marketName}-${row.outcome}-${row.line}-${row.bookmakerName}`}
                                 >
                                   {addingRowKey === `${row.playerName}-${row.marketName}-${row.outcome}-${row.line}-${row.bookmakerName}` ? "Adding..." : "Add"}
