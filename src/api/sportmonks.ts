@@ -4,11 +4,11 @@
  */
 
 import type { Fixture, FixtureLeague, FixtureScoreEntry, FixtureState, FixtureTeam } from "../types/fixture.js";
-import type { RawFixtureItem, RawLeague, RawParticipant, RawState, RawScoreItem } from "./sportmonks-types.js";
+import type { RawFixtureItem, RawLeague, RawLineupItem, RawParticipant, RawState, RawScoreItem } from "./sportmonks-types.js";
 
 const BASE_URL = "https://api.sportmonks.com/v3/football/fixtures/between";
 const DEFAULT_TIMEZONE = "Europe/London";
-const INCLUDES = "participants;league;state;scores";
+const INCLUDES = "participants;league;state;scores;lineups";
 
 function getApiToken(): string {
   const token = process.env.SPORTMONKS_API_TOKEN ?? process.env.SPORTMONKS_TOKEN;
@@ -95,6 +95,15 @@ function toScores(scores: RawScoreItem[] | undefined): FixtureScoreEntry[] {
     }));
 }
 
+function toLineups(lineups: RawFixtureItem["lineups"]): RawLineupItem[] {
+  if (Array.isArray(lineups)) return lineups;
+  if (lineups && typeof lineups === "object" && "data" in lineups) {
+    const data = (lineups as { data?: unknown }).data;
+    if (Array.isArray(data)) return data as RawLineupItem[];
+  }
+  return [];
+}
+
 function parseDateTime(startingAt: string | null): { date: string; time: string } {
   if (!startingAt) return { date: "", time: "" };
   const trimmed = startingAt.trim();
@@ -118,6 +127,7 @@ function cleanFixture(raw: RawFixtureItem): Fixture {
     league: toLeague(raw.league),
     state: toState(raw.state),
     scores: toScores(raw.scores),
+    lineups: toLineups(raw.lineups),
   };
 }
 
@@ -129,7 +139,7 @@ function isDev(): boolean {
 
 /**
  * Fetches fixtures between two dates (inclusive) and returns a cleaned array.
- * Uses includes: participants;league;state;scores and timezone Europe/London.
+ * Uses includes: participants;league;state;scores;lineups and timezone Europe/London.
  * Paginates with per_page=50 until has_more is false and merges all pages.
  *
  * @param startDate - Start of range (inclusive)

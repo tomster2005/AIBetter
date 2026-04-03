@@ -1,6 +1,6 @@
 /**
  * Minimal raw API response types for the fixtures/between endpoint
- * when using includes: participants;league;state;scores
+ * when using includes: participants;league;state;scores;lineups
  */
 
 export interface RawParticipantMeta {
@@ -40,6 +40,13 @@ export interface RawScoreItem {
   [key: string]: unknown;
 }
 
+export interface RawLineupItem {
+  formation_position?: number | null;
+  type?: string | null;
+  type_id?: number | null;
+  [key: string]: unknown;
+}
+
 export interface RawFixtureItem {
   id: number;
   starting_at: string | null;
@@ -47,6 +54,7 @@ export interface RawFixtureItem {
   league?: RawLeague;
   state?: RawState;
   scores?: RawScoreItem[];
+  lineups?: RawLineupItem[] | { data?: RawLineupItem[] };
   [key: string]: unknown;
 }
 

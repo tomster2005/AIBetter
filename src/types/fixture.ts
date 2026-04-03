@@ -37,4 +37,10 @@ export interface Fixture {
   league: FixtureLeague;
   state: FixtureState;
   scores: FixtureScoreEntry[];
+  /** Optional lineup rows when present in fixture list payloads. */
+  lineups?: Array<{
+    formation_position?: number | null;
+    type?: string | null;
+    type_id?: number | null;
+  }> | { data?: Array<{ formation_position?: number | null; type?: string | null; type_id?: number | null }> } | null;
 }

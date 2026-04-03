@@ -237,6 +237,7 @@ function LineupContent({
   onBuildValueBets,
   loadingValueBets,
   valueBetRows,
+  valueBetDiagnostics,
   valueBetStartingCount,
   foulsMarketsStatus,
   sortConfig,
@@ -258,6 +259,7 @@ function LineupContent({
   onBuildValueBets?: () => void;
   loadingValueBets?: boolean;
   valueBetRows?: ValueBetRow[] | null;
+  valueBetDiagnostics?: ValueBetBuildDiagnostics | null;
   valueBetStartingCount?: number | null;
   foulsMarketsStatus?: { foulStatsAvailable: boolean; foulMarketsSeen: number } | null;
   sortConfig?: { key: ValueSortKey; direction: "asc" | "desc" };
@@ -271,8 +273,17 @@ function LineupContent({
   const [addingRowKey, setAddingRowKey] = useState<string | null>(null);
   const [addRowMessage, setAddRowMessage] = useState<string | null>(null);
 
+  const strongSourceRows = useMemo(
+    () => (valueBetRows ?? []).filter((r) => r.isStrongBet === true),
+    [valueBetRows]
+  );
+  const weakSourceRows = useMemo(
+    () => (valueBetRows ?? []).filter((r) => r.isStrongBet !== true),
+    [valueBetRows]
+  );
+
   const displayRows = useMemo(() => {
-    const rows = valueBetRows ?? [];
+    const rows = strongSourceRows;
     if (rows.length === 0) return [];
     let filtered = [...rows];
     if (selectedBookmaker != null && selectedBookmaker !== "all") {
@@ -299,7 +310,37 @@ function LineupContent({
       return 0;
     });
     return filtered;
-  }, [valueBetRows, selectedBookmaker, hideNegativeEdge, sortConfig?.key, sortConfig?.direction]);
+  }, [strongSourceRows, selectedBookmaker, hideNegativeEdge, sortConfig?.key, sortConfig?.direction]);
+
+  const weakDisplayRows = useMemo(() => {
+    const rows = weakSourceRows;
+    if (rows.length === 0) return [];
+    let filtered = [...rows];
+    if (selectedBookmaker != null && selectedBookmaker !== "all") {
+      filtered = filtered.filter((row) => (row.bookmakerName ?? "Unknown bookmaker") === selectedBookmaker);
+    }
+    if (hideNegativeEdge) {
+      filtered = filtered.filter((row) => typeof row.modelEdge === "number" && row.modelEdge >= 0);
+    }
+    const key = sortConfig?.key ?? "edge";
+    const dir = sortConfig?.direction ?? "desc";
+    filtered.sort((a, b) => {
+      let va: number, vb: number;
+      if (key === "odds") {
+        va = a.odds ?? 0;
+        vb = b.odds ?? 0;
+      } else if (key === "probability") {
+        va = a.modelProbability ?? 0;
+        vb = b.modelProbability ?? 0;
+      } else {
+        va = a.modelEdge ?? a.edge ?? 0;
+        vb = b.modelEdge ?? b.edge ?? 0;
+      }
+      if (va !== vb) return dir === "asc" ? va - vb : vb - va;
+      return 0;
+    });
+    return filtered;
+  }, [weakSourceRows, selectedBookmaker, hideNegativeEdge, sortConfig?.key, sortConfig?.direction]);
 
   const handleAddSingleValueBet = useCallback((row: ValueBetRow) => {
     if (!fixture) return;
@@ -402,21 +443,100 @@ function LineupContent({
     }
   }, [valueBetRows, displayRowsByMarket]);
 
+  const noComputedRowsMessage = useMemo(() => {
+    if (valueBetStartingCount === 0) return "Lineup not confirmed yet — using predicted players.";
+    const d = valueBetDiagnostics;
+    if (!d) return "Not enough data to generate value bets for this fixture.";
+    const thinData =
+      d.supportedMarketsFound === 0 || d.playersWithOdds === 0 || d.playersWithStats === 0;
+    if (thinData) return "Not enough data to generate value bets for this fixture.";
+    return "Not enough data to generate value bets for this fixture.";
+  }, [valueBetDiagnostics, valueBetStartingCount]);
+
+  const renderValueBetRow = (row: ValueBetRow, i: number, rowList: ValueBetRow[], keyPrefix: string) => {
+    const isNewPlayer = i === 0 || rowList[i - 1].playerName !== row.playerName;
+    const edge = row.modelEdge ?? row.edge;
+    const isStrong = row.isStrongBet === true;
+    const tooltipParts: string[] = [];
+    tooltipParts.push(`Bookmaker: ${row.bookmakerName ?? "Unknown bookmaker"}`);
+    tooltipParts.push(`Data confidence: ${row.dataConfidence.charAt(0).toUpperCase() + row.dataConfidence.slice(1)} (${row.dataConfidenceScore})`);
+    tooltipParts.push(`Bet quality: ${row.betQuality.charAt(0).toUpperCase() + row.betQuality.slice(1)} (${row.betQualityScore})`);
+    if (row.modelInputs) {
+      tooltipParts.push(`Appearances: ${row.modelInputs.appearances}, mins: ${row.modelInputs.minutesPlayed}, exp mins: ${row.modelInputs.expectedMinutes.toFixed(0)}, pos mult: ${row.modelInputs.positionMultiplier.toFixed(2)}`);
+    }
+    if (row.rawModelProbability != null && row.calibratedProbability != null && row.rawModelProbability !== row.calibratedProbability) {
+      tooltipParts.push(`Raw: ${(row.rawModelProbability * 100).toFixed(1)}% → Calibrated: ${(row.calibratedProbability * 100).toFixed(1)}%`);
+    }
+    if (row.betQuality === "low" && row.calibratedProbability != null) {
+      const reasons: string[] = [];
+      if (row.calibratedProbability < 0.02) reasons.push(`calibrated probability only ${(row.calibratedProbability * 100).toFixed(1)}%`);
+      if ((edge ?? 0) < 0) reasons.push("negative edge");
+      if (row.odds > 15) reasons.push("odds very high");
+      if (reasons.length) tooltipParts.push(`Reason: ${reasons.join("; ")}`);
+    }
+    return (
+      <tr
+        key={`${keyPrefix}-${row.playerName}-${row.marketName}-${row.line}-${row.outcome}-${row.bookmakerName}-${i}`}
+        className={`lineup-content__value-row ${i % 2 === 0 ? "lineup-content__value-row--even" : "lineup-content__value-row--odd"} ${isNewPlayer ? "lineup-content__value-row--player-start" : ""} ${isStrong ? "lineup-content__value-row--strong" : ""}`}
+        title={tooltipParts.join("\n") || undefined}
+        onClick={() => {
+          const selectedEdge = row.modelEdge ?? row.edge ?? 0;
+          window.dispatchEvent(
+            new CustomEvent("app:value-bet-selected", {
+              detail: { edgePercent: Number((selectedEdge * 100).toFixed(1)) },
+            })
+          );
+        }}
+      >
+        <td className="lineup-content__value-td">
+          <div className="lineup-content__value-player-market">
+            <span className="lineup-content__value-td--player">{row.playerName}</span>
+            <span className="lineup-content__value-td--market">
+              {row.outcome} {row.line} {row.marketName}
+            </span>
+          </div>
+        </td>
+        <td className="lineup-content__value-td lineup-content__value-td--numeric">{row.odds.toFixed(2)}</td>
+        <td className="lineup-content__value-td lineup-content__value-td--numeric">{row.probabilityPct}</td>
+        <td
+          className={
+            edge != null
+              ? edge > 0.05
+                ? "lineup-content__value-td lineup-content__value-td--numeric lineup-content__value-td--edge-positive"
+                : edge < -0.05
+                  ? "lineup-content__value-td lineup-content__value-td--numeric lineup-content__value-td--edge-negative"
+                  : "lineup-content__value-td lineup-content__value-td--numeric"
+              : "lineup-content__value-td lineup-content__value-td--numeric"
+          }
+        >
+          {row.edgePct}
+        </td>
+        <td className="lineup-content__value-td lineup-content__value-td--nowrap">
+          <button
+            type="button"
+            className="lineup-content__value-add-btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              handleAddSingleValueBet(row);
+            }}
+            disabled={addingRowKey === `${row.playerName}-${row.marketName}-${row.outcome}-${row.line}-${row.bookmakerName}`}
+          >
+            {addingRowKey === `${row.playerName}-${row.marketName}-${row.outcome}-${row.line}-${row.bookmakerName}` ? "Adding..." : "Add"}
+          </button>
+        </td>
+      </tr>
+    );
+  };
+
   if (loading) return <p className="lineup-modal__message">Loading…</p>;
   if (error) return <p className="lineup-modal__message lineup-modal__message--error">{error}</p>;
   const entries = lineup ? (lineup.data as RawLineupEntry[]) : [];
+  const hasLineups = Array.isArray(entries) && entries.length > 0;
   const leagueName = fixture?.league?.name ?? "—";
   const kickoffLabel = fixture != null ? formatKickoff(fixture.startingAt) : "—";
-  const lineupStateLabel =
-    lineup == null
-      ? "Pending"
-      : lineup.lineupConfirmed === true
-        ? "Lineups available"
-        : lineup.lineupConfirmed === false
-          ? "Predicted"
-          : "Pending";
+  const lineupStateLabel = hasLineups ? "Lineups available" : "Waiting for lineups";
 
-  if (!lineup || entries.length === 0) {
+  if (!lineup || !hasLineups) {
     return (
       <div className="lineup-content lineup-content--spaced">
         <section className="lineup-content__status-box">
@@ -576,11 +696,7 @@ function LineupContent({
             <p className="lineup-modal__message">Loading analysis...</p>
           )}
           {!loadingValueBets && valueBetRows != null && valueBetRows.length === 0 && (
-            <p className="lineup-modal__message">
-              {valueBetStartingCount === 0
-                ? "Lineup not confirmed yet — using predicted players."
-                : "No strong value bets found for this fixture"}
-            </p>
+            <p className="lineup-modal__message">{noComputedRowsMessage}</p>
           )}
           {addRowMessage && <p className="lineup-content__value-analysis-note">{addRowMessage}</p>}
           {!loadingValueBets && valueBetRows != null && valueBetRows.length > 0 && (
@@ -612,11 +728,13 @@ function LineupContent({
                     <span>Hide negative edge</span>
                   </label>
                   <span className="lineup-content__value-controls-count" aria-live="polite">
-                    Showing {displayRows.length} of {valueBetRows.length} rows
+                    Showing {displayRows.length} of {strongSourceRows.length} strong rows
                   </span>
                 </div>
-                {displayRows.length === 0 ? (
-                  <p className="lineup-modal__message">No rows match the current filters.</p>
+                {strongSourceRows.length === 0 ? (
+                  <p className="lineup-modal__message">No strong value bets found for this fixture</p>
+                ) : displayRows.length === 0 ? (
+                  <p className="lineup-modal__message">No strong bets match the current filters.</p>
                 ) : (
                   <div className="lineup-content__value-table-wrap">
                     <table className="lineup-content__value-table">
@@ -657,82 +775,33 @@ function LineupContent({
                         </tr>
                       </thead>
                       <tbody>
-                        {displayRows.map((row, i) => {
-                          const isNewPlayer = i === 0 || displayRows[i - 1].playerName !== row.playerName;
-                          const edge = row.modelEdge ?? row.edge;
-                          const isStrong = row.isStrongBet === true;
-                          const tooltipParts: string[] = [];
-                          tooltipParts.push(`Bookmaker: ${row.bookmakerName ?? "Unknown bookmaker"}`);
-                          tooltipParts.push(`Data confidence: ${row.dataConfidence.charAt(0).toUpperCase() + row.dataConfidence.slice(1)} (${row.dataConfidenceScore})`);
-                          tooltipParts.push(`Bet quality: ${row.betQuality.charAt(0).toUpperCase() + row.betQuality.slice(1)} (${row.betQualityScore})`);
-                          if (row.modelInputs) {
-                            tooltipParts.push(`Appearances: ${row.modelInputs.appearances}, mins: ${row.modelInputs.minutesPlayed}, exp mins: ${row.modelInputs.expectedMinutes.toFixed(0)}, pos mult: ${row.modelInputs.positionMultiplier.toFixed(2)}`);
-                          }
-                          if (row.rawModelProbability != null && row.calibratedProbability != null && row.rawModelProbability !== row.calibratedProbability) {
-                            tooltipParts.push(`Raw: ${(row.rawModelProbability * 100).toFixed(1)}% → Calibrated: ${(row.calibratedProbability * 100).toFixed(1)}%`);
-                          }
-                          if (row.betQuality === "low" && row.calibratedProbability != null) {
-                            const reasons: string[] = [];
-                            if (row.calibratedProbability < 0.02) reasons.push(`calibrated probability only ${(row.calibratedProbability * 100).toFixed(1)}%`);
-                            if ((edge ?? 0) < 0) reasons.push("negative edge");
-                            if (row.odds > 15) reasons.push("odds very high");
-                            if (reasons.length) tooltipParts.push(`Reason: ${reasons.join("; ")}`);
-                          }
-                          return (
-                            <tr
-                              key={i}
-                              className={`lineup-content__value-row ${i % 2 === 0 ? "lineup-content__value-row--even" : "lineup-content__value-row--odd"} ${isNewPlayer ? "lineup-content__value-row--player-start" : ""} ${isStrong ? "lineup-content__value-row--strong" : ""}`}
-                              title={tooltipParts.join("\n") || undefined}
-                              onClick={() => {
-                                const selectedEdge = row.modelEdge ?? row.edge ?? 0;
-                                window.dispatchEvent(
-                                  new CustomEvent("app:value-bet-selected", {
-                                    detail: { edgePercent: Number((selectedEdge * 100).toFixed(1)) },
-                                  })
-                                );
-                              }}
-                            >
-                              <td className="lineup-content__value-td">
-                                <div className="lineup-content__value-player-market">
-                                  <span className="lineup-content__value-td--player">{row.playerName}</span>
-                                  <span className="lineup-content__value-td--market">
-                                    {row.outcome} {row.line} {row.marketName}
-                                  </span>
-                                </div>
-                              </td>
-                              <td className="lineup-content__value-td lineup-content__value-td--numeric">{row.odds.toFixed(2)}</td>
-                              <td className="lineup-content__value-td lineup-content__value-td--numeric">{row.probabilityPct}</td>
-                              <td
-                                className={
-                                  edge != null
-                                    ? edge > 0.05
-                                      ? "lineup-content__value-td lineup-content__value-td--numeric lineup-content__value-td--edge-positive"
-                                      : edge < -0.05
-                                        ? "lineup-content__value-td lineup-content__value-td--numeric lineup-content__value-td--edge-negative"
-                                        : "lineup-content__value-td lineup-content__value-td--numeric"
-                                    : "lineup-content__value-td lineup-content__value-td--numeric"
-                                }
-                              >
-                                {row.edgePct}
-                              </td>
-                              <td className="lineup-content__value-td lineup-content__value-td--nowrap">
-                                <button
-                                  type="button"
-                                  className="lineup-content__value-add-btn"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleAddSingleValueBet(row);
-                                  }}
-                                  disabled={addingRowKey === `${row.playerName}-${row.marketName}-${row.outcome}-${row.line}-${row.bookmakerName}`}
-                                >
-                                  {addingRowKey === `${row.playerName}-${row.marketName}-${row.outcome}-${row.line}-${row.bookmakerName}` ? "Adding..." : "Add"}
-                                </button>
-                              </td>
-                            </tr>
-                          );
-                        })}
+                        {displayRows.map((row, i) => renderValueBetRow(row, i, displayRows, "strong"))}
                       </tbody>
                     </table>
+                  </div>
+                )}
+                {weakDisplayRows.length > 0 && (
+                  <div className="lineup-content__value-weak-block" aria-label="Low confidence opportunities">
+                    <h4 className="lineup-content__value-weak-section-title">Other low-confidence opportunities</h4>
+                    <p className="lineup-content__value-analysis-note">
+                      Not meeting strong-bet criteria — lower data confidence, edge, or bet quality.
+                    </p>
+                    <div className="lineup-content__value-table-wrap">
+                      <table className="lineup-content__value-table">
+                        <thead>
+                          <tr>
+                            <th className="lineup-content__value-th">Player / Market</th>
+                            <th className="lineup-content__value-th lineup-content__value-th--numeric">Odds</th>
+                            <th className="lineup-content__value-th lineup-content__value-th--numeric">Model %</th>
+                            <th className="lineup-content__value-th lineup-content__value-th--numeric">Edge</th>
+                            <th className="lineup-content__value-th">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {weakDisplayRows.map((row, i) => renderValueBetRow(row, i, weakDisplayRows, "weak"))}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 )}
               </>
@@ -916,6 +985,47 @@ const SUPPORTED_VALUE_BET_MARKET_IDS = new Set([
   MARKET_ID_PLAYER_FOULS_WON,
   MARKET_ID_PLAYER_TACKLES,
 ]);
+
+/** Fixture-scoped diagnostics for value-bet generation (modal / dev debugging only). */
+export interface ValueBetBuildDiagnostics {
+  fixtureId: number;
+  totalPlayersInLineup: number;
+  playersWithStats: number;
+  playersWithOdds: number;
+  supportedMarketsFound: number;
+  computedRowsBeforeFiltering: number;
+  rowsAfterFiltering: number;
+  top5Edges: Array<{ playerName: string; marketName: string; edgePct: number }>;
+  dropoff: {
+    droppedMissingStats: number;
+    droppedMissingOdds: number;
+    droppedUnsupportedMarket: number;
+    droppedMissingLine: number;
+    droppedNonStarter: number;
+    droppedLowEdge: number;
+  };
+}
+
+function emptyValueBetDiagnostics(fixtureId: number): ValueBetBuildDiagnostics {
+  return {
+    fixtureId,
+    totalPlayersInLineup: 0,
+    playersWithStats: 0,
+    playersWithOdds: 0,
+    supportedMarketsFound: 0,
+    computedRowsBeforeFiltering: 0,
+    rowsAfterFiltering: 0,
+    top5Edges: [],
+    dropoff: {
+      droppedMissingStats: 0,
+      droppedMissingOdds: 0,
+      droppedUnsupportedMarket: 0,
+      droppedMissingLine: 0,
+      droppedNonStarter: 0,
+      droppedLowEdge: 0,
+    },
+  };
+}
 
 /**
  * Build model outputs and row fields. Uses expected minutes, position, and context factors.
@@ -1104,7 +1214,12 @@ export function buildValueBetRows(
   startingPlayerNames: Set<string>,
   statsByPlayerId: Map<number, PlayerSeasonStats>,
   nameToPlayerId: Map<string, number>
-): { rows: ValueBetRow[]; foulStatsAvailable: boolean; foulMarketsSeen: number } {
+): {
+  rows: ValueBetRow[];
+  foulStatsAvailable: boolean;
+  foulMarketsSeen: number;
+  diagnostics: ValueBetBuildDiagnostics;
+} {
   const rows: ValueBetRow[] = [];
   const fixtureId = typeof data.fixtureId === "number" && Number.isFinite(data.fixtureId) ? data.fixtureId : 0;
   const dropSummary = {
@@ -1155,6 +1270,7 @@ export function buildValueBetRows(
     statsMissing: 0,
   };
   let edgeMismatchCount = 0;
+  let rejectedInvalidModelOutput = 0;
   let lambdaInspectionLogCount = 0;
   const LAMBDA_INSPECTION_CAP = 25;
   let marketStatMappingLogCount = 0;
@@ -1307,9 +1423,23 @@ export function buildValueBetRows(
   };
 
   const markets = data.markets ?? [];
+  let supportedMarketsFound = 0;
+  const playersWithOddsSet = new Set<string>();
+  let playersWithStats = 0;
+  for (const id of startingPlayerIds) {
+    if (statsByPlayerId.has(id)) playersWithStats += 1;
+  }
+
   for (const market of markets) {
     const marketId = marketIdFromMarket(market as { marketId?: number; market_id?: number; id?: number });
     const rawMarketId = (market as { marketId?: number }).marketId ?? (market as { market_id?: number }).market_id ?? (market as { id?: number }).id;
+    if (
+      marketId > 0 &&
+      SUPPORTED_VALUE_BET_MARKET_IDS.has(marketId) &&
+      ((market as { players?: unknown[] }).players ?? []).length > 0
+    ) {
+      supportedMarketsFound += 1;
+    }
     /** Fouls + tackles: shared dev tracing and onFoulsReject skip breakdown. */
     const isPhysicalPropMarketForDev = rawMarketId === 338 || rawMarketId === 339 || rawMarketId === 340;
 
@@ -1379,6 +1509,9 @@ export function buildValueBetRows(
         }
         continue;
       }
+      const oddsPlayerKey =
+        playerIdFromProps != null && playerIdFromProps > 0 ? `id:${playerIdFromProps}` : `n:${normalizedName}`;
+      playersWithOddsSet.add(oddsPlayerKey);
       for (const sel of selections) {
         const line = sel.line ?? 0;
         const overOddsRaw = (sel as { overOdds?: number | null }).overOdds ?? (sel as { over_odds?: number | null }).over_odds;
@@ -1475,6 +1608,7 @@ export function buildValueBetRows(
             const modelEdge = modelEdgeVal;
             const bookmakerProb = built.bookmakerProbability;
             if (bookmakerProb < 0 || bookmakerProb > 1 || modelProb < 0 || modelProb > 1 || modelEdge < -1 || modelEdge > 1) {
+              rejectedInvalidModelOutput += 1;
               dropSummary.droppedMissingPlayer += 1;
               if (import.meta.env.DEV && isPhysicalPropMarketForDev) {
                 foulRowsSkipped += 1;
@@ -1977,7 +2111,43 @@ export function buildValueBetRows(
   });
   debugLog("playerProps", "[player-props-drop-summary]", { fixtureId, ...dropSummary });
   debugLog("playerProps", "[player-props-final-rows]", { fixtureId, rowCount: rows.length });
-  return { rows, foulStatsAvailable, foulMarketsSeen };
+
+  const rowsAfterFiltering = rows.filter((r) => r.isStrongBet === true).length;
+  const droppedLowEdge = rows.length - rowsAfterFiltering;
+  const top5Edges = [...rows]
+    .sort((a, b) => (b.modelEdge ?? b.edge ?? 0) - (a.modelEdge ?? a.edge ?? 0))
+    .slice(0, 5)
+    .map((r) => ({
+      playerName: r.playerName,
+      marketName: r.marketName,
+      edgePct: Number((((r.modelEdge ?? r.edge ?? 0) * 100)).toFixed(2)),
+    }));
+
+  const diagnostics: ValueBetBuildDiagnostics = {
+    fixtureId,
+    totalPlayersInLineup: entries.length,
+    playersWithStats,
+    playersWithOdds: playersWithOddsSet.size,
+    supportedMarketsFound,
+    computedRowsBeforeFiltering: rows.length,
+    rowsAfterFiltering,
+    top5Edges,
+    dropoff: {
+      droppedMissingStats:
+        skipReasons.statsMissing +
+        skipReasons.modelReturnedNull +
+        skipReasons.probabilityInvalid +
+        skipReasons.edgeInvalid +
+        rejectedInvalidModelOutput,
+      droppedMissingOdds: dropSummary.droppedMissingOdds,
+      droppedUnsupportedMarket: dropSummary.droppedUnsupportedMarket,
+      droppedMissingLine: dropSummary.droppedMissingLine,
+      droppedNonStarter: dropSummary.droppedNonStarter,
+      droppedLowEdge,
+    },
+  };
+
+  return { rows, foulStatsAvailable, foulMarketsSeen, diagnostics };
 }
 
 export function LineupModal({
@@ -1996,6 +2166,7 @@ export function LineupModal({
   const [selectedTeamName, setSelectedTeamName] = useState<string | null>(null);
   const [loadingValueBets, setLoadingValueBets] = useState(false);
   const [valueBetRows, setValueBetRows] = useState<ValueBetRow[] | null>(null);
+  const [valueBetDiagnostics, setValueBetDiagnostics] = useState<ValueBetBuildDiagnostics | null>(null);
   const [valueBetStartingCount, setValueBetStartingCount] = useState<number | null>(null);
   const [foulsMarketsStatus, setFoulsMarketsStatus] = useState<{
     foulStatsAvailable: boolean;
@@ -2016,6 +2187,7 @@ export function LineupModal({
       setSelectedTeamName(null);
       setLoadingValueBets(false);
       setValueBetRows(null);
+      setValueBetDiagnostics(null);
       setValueBetStartingCount(null);
       setFoulsMarketsStatus(null);
       setSelectedBookmaker("all");
@@ -2050,10 +2222,25 @@ export function LineupModal({
     rows: ValueBetRow[];
     foulStatsAvailable: boolean;
     foulMarketsSeen: number;
+    diagnostics: ValueBetBuildDiagnostics;
   }> => {
-    if (fixture == null || lineup == null) return { rows: [], foulStatsAvailable: false, foulMarketsSeen: 0 };
+    if (fixture == null || lineup == null) {
+      return {
+        rows: [],
+        foulStatsAvailable: false,
+        foulMarketsSeen: 0,
+        diagnostics: emptyValueBetDiagnostics(0),
+      };
+    }
     const entries = lineup.data as RawLineupEntry[];
-    if (!Array.isArray(entries) || entries.length === 0) return { rows: [], foulStatsAvailable: false, foulMarketsSeen: 0 };
+    if (!Array.isArray(entries) || entries.length === 0) {
+      return {
+        rows: [],
+        foulStatsAvailable: false,
+        foulMarketsSeen: 0,
+        diagnostics: emptyValueBetDiagnostics(fixture.id),
+      };
+    }
     const fixtureId = fixture.id;
     debugLog("playerProps", "[player-props-start]", { fixtureId });
     const [data, leagueSeason] = await Promise.all([
@@ -2127,7 +2314,12 @@ export function LineupModal({
       statsByPlayerId,
       nameToPlayerId
     );
-    return { rows: result.rows, foulStatsAvailable: result.foulStatsAvailable, foulMarketsSeen: result.foulMarketsSeen };
+    return {
+      rows: result.rows,
+      foulStatsAvailable: result.foulStatsAvailable,
+      foulMarketsSeen: result.foulMarketsSeen,
+      diagnostics: result.diagnostics,
+    };
   }, [fixture, lineup]);
 
   const handleFindValueBets = async () => {
@@ -2136,13 +2328,28 @@ export function LineupModal({
     if (!Array.isArray(entries) || entries.length === 0) return;
     setLoadingValueBets(true);
     setValueBetRows(null);
+    setValueBetDiagnostics(null);
     setValueBetStartingCount(null);
     try {
-      const { rows, foulStatsAvailable, foulMarketsSeen } = await getValueBetRowsForFixture();
+      const { rows, foulStatsAvailable, foulMarketsSeen, diagnostics } = await getValueBetRowsForFixture();
       const startingPlayerIds = getStartingPlayerIds(entries);
       setValueBetRows(rows);
+      setValueBetDiagnostics(diagnostics);
       setValueBetStartingCount(startingPlayerIds.size);
       setFoulsMarketsStatus({ foulStatsAvailable, foulMarketsSeen });
+      if (import.meta.env.DEV) {
+        console.log("[value-bets-fixture-debug]", {
+          fixtureId: diagnostics.fixtureId,
+          totalPlayersInLineup: diagnostics.totalPlayersInLineup,
+          playersWithStats: diagnostics.playersWithStats,
+          playersWithOdds: diagnostics.playersWithOdds,
+          supportedMarketsFound: diagnostics.supportedMarketsFound,
+          computedRowsBeforeFiltering: diagnostics.computedRowsBeforeFiltering,
+          rowsAfterFiltering: diagnostics.rowsAfterFiltering,
+          top5Edges: diagnostics.top5Edges,
+        });
+        console.log("[value-bets-dropoff]", diagnostics.dropoff);
+      }
       if (rows.length > 0) {
         if (import.meta.env.DEV) {
           console.log("[snapshot frontend] before POST /api/backtest-snapshots", {
@@ -2160,6 +2367,7 @@ export function LineupModal({
     } catch (err) {
       if (import.meta.env.DEV) console.error("Failed to load player props", err);
       setValueBetRows([]);
+      setValueBetDiagnostics(fixture != null ? emptyValueBetDiagnostics(fixture.id) : null);
       setValueBetStartingCount(null);
       setFoulsMarketsStatus(null);
     } finally {
@@ -2183,14 +2391,9 @@ export function LineupModal({
    * Badge: "Released" only when metadata lineup_confirmed is true.
    * Otherwise when lineup array exists show "Lineups available" or "Unconfirmed lineup data".
    */
-  const lineupStatusBadge =
-    lineup == null
-      ? null
-      : lineup.lineupConfirmed === true
-        ? "Released"
-        : lineup.lineupConfirmed === false
-          ? "Unconfirmed lineup data"
-          : "Lineups available";
+  const lineupEntries = lineup ? (lineup.data as RawLineupEntry[]) : [];
+  const hasLineups = Array.isArray(lineupEntries) && lineupEntries.length > 0;
+  const lineupStatusBadge = hasLineups ? "Lineups available" : null;
 
   return (
     <>
@@ -2222,6 +2425,7 @@ export function LineupModal({
               onBuildValueBets={fixture != null && lineup != null ? () => setBuildModalOpen(true) : undefined}
               loadingValueBets={loadingValueBets}
               valueBetRows={valueBetRows}
+              valueBetDiagnostics={valueBetDiagnostics}
               valueBetStartingCount={valueBetStartingCount}
               foulsMarketsStatus={foulsMarketsStatus}
               sortConfig={sortConfig}

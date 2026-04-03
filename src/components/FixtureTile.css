@@ -74,11 +74,15 @@
   white-space: nowrap;
 }
 
-.fixture-tile__readiness--waiting {
-  color: #64748b;
+.fixture-tile__readiness--none {
+  color: #94a3b8;
 }
 
-.fixture-tile__readiness--ready {
+.fixture-tile__readiness--predicted {
+  color: #b45309;
+}
+
+.fixture-tile__readiness--confirmed {
   color: #166534;
 }
 

@@ -424,6 +424,17 @@
   color: #111827;
 }
 
+.lineup-content__value-weak-section-title {
+  margin: 0.85rem 0 0.25rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: #374151;
+}
+
+.lineup-content__value-weak-block .lineup-content__value-analysis-note {
+  margin-bottom: 0.5rem;
+}
+
 .lineup-content__value-analysis-note {
   margin: 0 0 0.75rem;
   font-size: 0.75rem;
@@ -894,9 +905,9 @@
   border: var(--lineup-border);
   border-radius: var(--lineup-radius-md);
   box-shadow: var(--lineup-shadow-sm);
-  width: 5rem;
-  min-width: 5rem;
-  max-width: 5rem;
+  width: 5.3rem;
+  min-width: 5.3rem;
+  max-width: 5.3rem;
   position: relative;
   transition: box-shadow 0.15s ease;
   box-sizing: border-box;
@@ -936,15 +947,17 @@
 }
 
 .player-card__name {
-  font-size: 0.6875rem;
+  font-size: 0.65rem;
   font-weight: 500;
   color: #4b5563;
   text-align: center;
+  white-space: normal;
+  line-height: 1.1;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   max-width: 100%;
-  line-height: 1.25;
 }
 
 .player-card__role {
@@ -1107,8 +1120,8 @@
 }
 
 .bench-column__item .player-card__name {
-  font-size: 0.5625rem;
-  max-width: 4rem;
+  font-size: 0.58rem;
+  max-width: 4.2rem;
 }
 
 /* ========== Match Results odds (isolated section) ========== */
