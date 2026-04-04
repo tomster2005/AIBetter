@@ -116,6 +116,10 @@ export interface BuildLeg {
       hasSample: boolean;
       stableMinutes: boolean;
     };
+    /** Recent-app hit rate vs line (only when sample met builder min games). */
+    recentFormHitRate?: number;
+    recentHitsCount?: number;
+    recentHitsSampleSize?: number;
   };
   /** Used to reject combos with multiple legs from the same family (e.g. same player+market or multiple corner lines). */
   marketFamily: string;
@@ -439,6 +443,133 @@ const SHOT_MATCHUP_MAX_BONUS = 10;
 const SHOTS_MIN_PER90 = 0.8;
 /** Min shots on target per90 for SOT boost. */
 const SOT_MIN_PER90 = 0.25;
+
+/** Recent-form gate: last N apps used for hit rate / variance (not the Poisson model). */
+const PLAYER_PROP_RECENT_WINDOW = 10;
+const PLAYER_PROP_MIN_RECENT_GAMES = 5;
+const PLAYER_PROP_MIN_HIT_RATE = 0.4;
+const PLAYER_PROP_PER90_OVER_MIN_RATIO = 0.6;
+const PLAYER_PROP_HIGH_VARIANCE_THRESHOLD = 2.25;
+const PLAYER_PROP_SPIKY_HIT_RATE_MAX = 0.6;
+const PLAYER_PROP_STRONG_HIT_RATE = 0.7;
+const PLAYER_PROP_STRONG_HIT_RATE_SCORE_BONUS = 6;
+
+/**
+ * Coarse role for prop-market sanity checks (Sportmonks `position_id`).
+ * Unknown / missing → null (do not block on position).
+ */
+export type PlayerPropFilterPosition = "FWD" | "AM" | "MID" | "DEF" | "GK";
+
+export function positionRoleFromSportmonksId(positionId: number | undefined | null): PlayerPropFilterPosition | null {
+  if (positionId == null || !Number.isFinite(positionId)) return null;
+  const id = Math.trunc(positionId);
+  if (id === 1) return "GK";
+  if (id === 9 || id === 10) return "FWD";
+  if (id === 8) return "AM";
+  if (id === 6 || id === 7) return "MID";
+  if (id === 2 || id === 3 || id === 4 || id === 5) return "DEF";
+  return null;
+}
+
+/**
+ * Block unrealistic player+market pairs before they enter the builder pool.
+ * e.g. forwards / AMs rarely carry tackle or fouls-committed volume vs defenders.
+ */
+export function isValidMarketForPosition(
+  position: PlayerPropFilterPosition | null | undefined,
+  marketId: number
+): boolean {
+  if (position == null) return true;
+  if (position === "FWD" || position === "AM") {
+    if (marketId === MARKET_ID_PLAYER_TACKLES || marketId === MARKET_ID_PLAYER_FOULS_COMMITTED) return false;
+  }
+  return true;
+}
+
+function positionRoleForPlayerFromLineup(playerName: string, lineupContext: LineupContext | null | undefined): PlayerPropFilterPosition | null {
+  if (lineupContext == null) return null;
+  const key = normalizePlayerNameForMatch(playerName);
+  for (const p of lineupContext.homeStarters) {
+    if (normalizePlayerNameForMatch(p.playerName) === key) return positionRoleFromSportmonksId(p.positionId);
+  }
+  for (const p of lineupContext.awayStarters) {
+    if (normalizePlayerNameForMatch(p.playerName) === key) return positionRoleFromSportmonksId(p.positionId);
+  }
+  return null;
+}
+
+function getPlayerRecentGamesWindow(
+  playerName: string,
+  cat: ValueBetPlayerMarketCategory,
+  evidenceStats: BuildEvidenceContext["playerRecentStats"],
+  maxGames: number
+): number[] {
+  if (!evidenceStats?.length) return [];
+  const key = `${normalizePlayerNameForMatch(playerName)}|${cat}`;
+  const found = evidenceStats.find(
+    (e) => `${normalizePlayerNameForMatch(e.playerName)}|${e.marketCategory}` === key
+  );
+  if (found == null || !Array.isArray(found.recentValues)) return [];
+  return found.recentValues
+    .filter((v) => typeof v === "number" && Number.isFinite(v))
+    .slice(-maxGames);
+}
+
+function countOutcomeHits(recentGames: number[], line: number, outcome: "Over" | "Under"): number {
+  if (outcome === "Over") return recentGames.filter((v) => v >= line).length;
+  const maxWhole = Math.floor(line);
+  return recentGames.filter((v) => v <= maxWhole).length;
+}
+
+function calculateVariance(values: number[]): number {
+  const n = values.length;
+  if (n < 2) return 0;
+  const mean = values.reduce((s, v) => s + v, 0) / n;
+  return values.reduce((s, v) => s + (v - mean) ** 2, 0) / n;
+}
+
+function isVeryHighRecentVariance(recentGames: number[]): boolean {
+  if (recentGames.length < 2) return false;
+  const variance = calculateVariance(recentGames);
+  if (variance >= PLAYER_PROP_HIGH_VARIANCE_THRESHOLD) return true;
+  const mean = recentGames.reduce((s, v) => s + v, 0) / recentGames.length;
+  if (mean >= 0.75 && variance / mean >= 1.8) return true;
+  return false;
+}
+
+type PlayerPropRecentValidation =
+  | { accepted: true; hitRate: number; recentN: number; hits: number }
+  | { accepted: false; hitRate: number; recentN: number; reason: string };
+
+function validatePlayerPropRecentEvidence(
+  r: PlayerCandidateInput,
+  cat: ValueBetPlayerMarketCategory,
+  evidenceContext: BuildEvidenceContext | null | undefined,
+  per90ForLine: number
+): PlayerPropRecentValidation {
+  const recentGames = getPlayerRecentGamesWindow(r.playerName, cat, evidenceContext?.playerRecentStats, PLAYER_PROP_RECENT_WINDOW);
+
+  if (recentGames.length < PLAYER_PROP_MIN_RECENT_GAMES) {
+    return { accepted: false, hitRate: 0, recentN: recentGames.length, reason: "minSample" };
+  }
+
+  const hits = countOutcomeHits(recentGames, r.line, r.outcome);
+  const hitRate = hits / recentGames.length;
+
+  if (hitRate < PLAYER_PROP_MIN_HIT_RATE) {
+    return { accepted: false, hitRate, recentN: recentGames.length, reason: "hitRate" };
+  }
+
+  if (r.outcome === "Over" && per90ForLine < r.line * PLAYER_PROP_PER90_OVER_MIN_RATIO) {
+    return { accepted: false, hitRate, recentN: recentGames.length, reason: "per90Floor" };
+  }
+
+  if (isVeryHighRecentVariance(recentGames) && hitRate < PLAYER_PROP_SPIKY_HIT_RATE_MAX) {
+    return { accepted: false, hitRate, recentN: recentGames.length, reason: "spiky" };
+  }
+
+  return { accepted: true, hitRate, recentN: recentGames.length, hits };
+}
 
 /** Player-prop market buckets used for scoring, evidence, and line bounds. */
 export type ValueBetPlayerMarketCategory = "shots" | "shotsOnTarget" | "foulsCommitted" | "foulsWon" | "tackles";
@@ -1235,7 +1366,8 @@ function applyShotMatchupBoost(
 /** Filter and convert player rows to build legs. */
 export function filterPlayerCandidates(
   rows: PlayerCandidateInput[],
-  evidenceContext?: BuildEvidenceContext | null
+  evidenceContext?: BuildEvidenceContext | null,
+  lineupContext?: LineupContext | null
 ): BuildLeg[] {
   const legs: BuildLeg[] = [];
   const seen = new Set<string>();
@@ -1322,6 +1454,13 @@ export function filterPlayerCandidates(
       continue;
     }
     const marketIdForLine = marketIdFromPlayerCategory(cat);
+    const positionRole = positionRoleForPlayerFromLineup(r.playerName, lineupContext ?? null);
+    if (!isValidMarketForPosition(positionRole, marketIdForLine)) {
+      if (isFoulsCat) {
+        foulsRejectedReasons["positionMarket"] = (foulsRejectedReasons["positionMarket"] ?? 0) + 1;
+      }
+      continue;
+    }
     const per90ForLine = getModelInputNumber(r, "per90") ?? 0;
     if (!isSensiblePlayerPropLine(r.line, per90ForLine, marketIdForLine, r.outcome)) {
       if (isFoulsCat) {
@@ -1351,6 +1490,25 @@ export function filterPlayerCandidates(
       continue;
     }
 
+    const recentCheck = validatePlayerPropRecentEvidence(r, cat, evidenceContext, per90ForLine);
+    if (!recentCheck.accepted) {
+      if (import.meta.env.DEV) {
+        console.log({
+          player: r.playerName,
+          line: r.line,
+          hitRate: recentCheck.hitRate,
+          per90: per90ForLine,
+          accepted: false,
+          reason: recentCheck.reason,
+          recentN: recentCheck.recentN,
+        });
+      }
+      if (isFoulsCat) {
+        foulsRejectedReasons["recentEvidence"] = (foulsRejectedReasons["recentEvidence"] ?? 0) + 1;
+      }
+      continue;
+    }
+
     const key = `${r.playerName}|${r.marketName}|${r.line}|${r.outcome}|${r.bookmakerName}`;
     if (seen.has(key)) {
       if (isFoulsCat) {
@@ -1360,7 +1518,11 @@ export function filterPlayerCandidates(
     }
     seen.add(key);
 
-    const quality = computePlayerLegQualitySignals(r, evidenceContext);
+    const quality = computePlayerLegQualitySignals(r, evidenceContext, {
+      hitRate: recentCheck.hitRate,
+      hits: recentCheck.hits,
+      recentN: recentCheck.recentN,
+    });
     const score = scorePlayerLeg(r, quality);
     const implied = 1 / r.odds;
     const probability = clamp01(implied + (r.modelEdge ?? 0));
@@ -1495,7 +1657,8 @@ function computeRecencyScore(r: PlayerCandidateInput, evidenceContext?: BuildEvi
 
 function computePlayerLegQualitySignals(
   r: PlayerCandidateInput,
-  evidenceContext?: BuildEvidenceContext | null
+  evidenceContext?: BuildEvidenceContext | null,
+  recentFormGate?: { hitRate: number; hits: number; recentN: number } | null
 ): PlayerLegQualitySignals {
   const cat = getMarketCategory(r.marketName);
   const appearances = getModelInputNumber(r, "appearances") ?? 0;
@@ -1589,6 +1752,13 @@ function computePlayerLegQualitySignals(
       hasSample: appearances >= 6 || minutesPlayed >= 500,
       stableMinutes: expectedMinutes >= 60,
     },
+    ...(recentFormGate != null
+      ? {
+          recentFormHitRate: recentFormGate.hitRate,
+          recentHitsCount: recentFormGate.hits,
+          recentHitsSampleSize: recentFormGate.recentN,
+        }
+      : {}),
   };
 }
 
@@ -1640,6 +1810,12 @@ function scorePlayerLeg(r: PlayerCandidateInput, quality: PlayerLegQualitySignal
 
   score += (quality.qualityScore - 50) * SCORING_CONFIG.playerQualityAggregation.qualityScoreMultiplier;
   score += (quality.marketSpecificScore - 0.5) * SCORING_CONFIG.playerQualityAggregation.marketSpecificOffsetMultiplier;
+  if (
+    quality.recentFormHitRate != null &&
+    quality.recentFormHitRate > PLAYER_PROP_STRONG_HIT_RATE
+  ) {
+    score += PLAYER_PROP_STRONG_HIT_RATE_SCORE_BONUS;
+  }
   return Math.max(0, score);
 }
 
@@ -1654,6 +1830,13 @@ function buildLegReason(r: PlayerCandidateInput, quality: PlayerLegQualitySignal
   if (quality.sampleReliability >= 0.7) reasons.push("reliable sample");
   if (quality.minutesReliability >= 0.75) reasons.push("stable minutes");
   if (quality.recencyScore >= 0.65) reasons.push("recent form supports line");
+  if (
+    quality.recentHitsCount != null &&
+    quality.recentHitsSampleSize != null &&
+    quality.recentHitsSampleSize >= PLAYER_PROP_MIN_RECENT_GAMES
+  ) {
+    reasons.push(`Hits: ${quality.recentHitsCount}/${quality.recentHitsSampleSize} recent apps vs line`);
+  }
   if (quality.playerTier === "weak") reasons.push("limited signal reliability");
   return reasons.length > 0 ? reasons.join("; ") : "value";
 }
@@ -2407,6 +2590,24 @@ function buildPlayerLegTipsterExplanation(
     out.push("");
   }
 
+  if (
+    rawSeries.length >= PLAYER_PROP_MIN_RECENT_GAMES &&
+    cat != null &&
+    (leg.outcome === "Over" || leg.outcome === "Under")
+  ) {
+    const recentGames = rawSeries.slice(-PLAYER_PROP_RECENT_WINDOW);
+    const hits = countOutcomeHits(recentGames, leg.line, leg.outcome);
+    const rate = hits / recentGames.length;
+    const note =
+      rate >= PLAYER_PROP_STRONG_HIT_RATE
+        ? "strong signal"
+        : rate >= 0.5
+          ? "solid signal"
+          : "above builder floor";
+    out.push(`Hits: ${hits}/${recentGames.length} (${leg.outcome} line ${leg.line}) — ${note}`);
+    out.push("");
+  }
+
   const fromReason = extractTipsterContextFromReason(leg.reason);
   out.push(fromReason ?? shortFallbackContextLine(cat));
 
@@ -2809,7 +3010,7 @@ export function buildValueBetCombos(
     headToHeadContext = null,
     teamFormContext = null,
   } = options;
-  const playerLegs = filterPlayerCandidates(playerRows, evidenceContext);
+  const playerLegs = filterPlayerCandidates(playerRows, evidenceContext, lineupContext);
   applyFoulMatchupBoost(playerLegs, playerRows, lineupContext);
   applyShotMatchupBoost(playerLegs, playerRows, lineupContext);
   const teamLegs =
