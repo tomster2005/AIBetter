@@ -34,8 +34,37 @@ import { getCompressedNormalizedScore } from "./modelScoreNormalization.js";
 
 /** Min expected minutes for player legs (align with value bet hard filter). */
 const MIN_EXPECTED_MINUTES = 35;
-/** Min edge to include a player leg (positive only). */
+/** Min edge to include a player leg (positive only). Superseded for builder pool by `isValidBuilderCandidate`. */
 const MIN_EDGE = 0.001;
+
+/** Builder pool: drop junk prices unless model edge justifies them. */
+const BUILDER_ODDS_HARD_REJECT = 1.15;
+const BUILDER_LOW_ODDS_BAND = 1.25;
+const BUILDER_LOW_ODDS_MIN_EDGE = 0.05;
+const BUILDER_MIN_MODEL_EDGE = 0.02;
+/** Selections without a numeric model edge (e.g. some team legs) must meet this minimum odds. */
+const BUILDER_ODDS_MIN_WITHOUT_MODEL_EDGE = 1.25;
+/** Recursion: do not pad combos that already have 2+ legs with ultra-short prices. */
+const BUILDER_FILLER_ODDS_MAX = 1.2;
+const BUILDER_RANK_LOW_ODDS_LINE = 1.25;
+const BUILDER_RANK_LOW_ODDS_PENALTY_EACH = 0.01;
+
+/**
+ * Whether a leg should enter the combo builder pool.
+ * Strong edge can justify moderately short odds; without edge data, require clearer prices.
+ */
+export function isValidBuilderCandidate(odds: number, edge: number | null | undefined): boolean {
+  if (!Number.isFinite(odds)) return false;
+  if (odds < BUILDER_ODDS_HARD_REJECT) return false;
+
+  const e = Number.isFinite(edge as number) ? (edge as number) : null;
+  if (e == null) {
+    return odds >= BUILDER_ODDS_MIN_WITHOUT_MODEL_EDGE;
+  }
+  if (e < BUILDER_MIN_MODEL_EDGE) return false;
+  if (odds < BUILDER_LOW_ODDS_BAND && e < BUILDER_LOW_ODDS_MIN_EDGE) return false;
+  return true;
+}
 /** Max odds per leg to avoid longshot junk. */
 const MAX_ODDS_PER_LEG = 15;
 /** Minimum combo EV (model prob − implied prob) to keep; ~+1% edge. If none qualify, unfiltered list is used. */
@@ -247,6 +276,8 @@ export interface BuildCombo {
   comboScore: number;
   comboEdge: number;
   adjustedComboEdge: number;
+  /** comboEdge minus low-odds penalty; used for ranking (prefers fewer junk short prices). */
+  rankingComboEdge: number;
   combinedProb: number;
   impliedProb: number;
   comboEV: number;
@@ -1222,6 +1253,7 @@ export function filterPlayerCandidates(
     expectedMinutes: number | undefined;
   }> = [];
   let sensibleLineVerboseLogs = 0;
+  let builderOddsGateVerboseLogs = 0;
 
   for (const r of rows) {
     const cat = getMarketCategory(r.marketName);
@@ -1246,8 +1278,7 @@ export function filterPlayerCandidates(
       }
       continue;
     }
-    const edge = r.modelEdge ?? 0;
-    if (edge < MIN_EDGE) {
+    if (!isValidBuilderCandidate(r.odds, r.modelEdge)) {
       if (isFoulsCat) {
         foulsRejectedReasons["edge"] = (foulsRejectedReasons["edge"] ?? 0) + 1;
         if (foulsRejectedSamples.length < 5) {
@@ -1261,6 +1292,14 @@ export function filterPlayerCandidates(
             expectedMinutes: r.modelInputs?.expectedMinutes,
           });
         }
+      }
+      if (BUILDER_DEBUG_VERBOSE && builderOddsGateVerboseLogs < 40) {
+        builderOddsGateVerboseLogs += 1;
+        console.log("[build-value-bets] builder candidate gate", {
+          odds: r.odds,
+          edge: r.modelEdge,
+          accepted: false,
+        });
       }
       continue;
     }
@@ -2154,7 +2193,14 @@ export function getTeamLegsFromOdds(
     });
   }
 
-  return allTeamLegs;
+  const teamFiltered = allTeamLegs.filter((l) => isValidBuilderCandidate(l.odds, l.edge));
+  if (import.meta.env?.DEV && teamFiltered.length !== allTeamLegs.length) {
+    console.log("[build-value-bets] team legs filtered by odds/edge gate", {
+      before: allTeamLegs.length,
+      after: teamFiltered.length,
+    });
+  }
+  return teamFiltered;
 }
 
 /** Get per90 and stat label for a player leg from rows (for explanation). */
@@ -2575,6 +2621,18 @@ function buildSuffixMaxLegProducts(legs: BuildLeg[], maxK: number): number[][] {
   return dp;
 }
 
+/** Prefer stronger model edges, then longer prices, then leg score (reliability proxy). */
+function compareBuilderLegsForSearch(a: BuildLeg, b: BuildLeg): number {
+  const ea = Number.isFinite(a.edge as number) ? (a.edge as number) : -Infinity;
+  const eb = Number.isFinite(b.edge as number) ? (b.edge as number) : -Infinity;
+  if (ea !== eb) return eb - ea;
+  if (a.odds !== b.odds) return b.odds - a.odds;
+  const sa = a.score ?? 0;
+  const sb = b.score ?? 0;
+  if (sa !== sb) return sb - sa;
+  return (a.id ?? "").localeCompare(b.id ?? "");
+}
+
 /** Generate multi-leg combos (2–maxLegs) near target odds: stop each branch once odds ≥ target; cap overshoot; prune dead ends. */
 export function generateCombos(
   legs: BuildLeg[],
@@ -2625,6 +2683,8 @@ export function generateCombos(
     const comboEVPercent = combinedProb * combinedOdds - 1;
     const kellyStakePct = computeKellyStakePct(combinedOdds, combinedProb);
     const adjustedComboEdge = comboEdge * (1 - boundedPenalty);
+    const lowOddsPenalty = selected.filter((l) => l.odds < BUILDER_RANK_LOW_ODDS_LINE).length * BUILDER_RANK_LOW_ODDS_PENALTY_EACH;
+    const rankingComboEdge = comboEdge - lowOddsPenalty;
     const key = indices.slice().sort((a, b) => a - b).join(",");
     if (!used.has(key)) {
       used.add(key);
@@ -2637,6 +2697,7 @@ export function generateCombos(
         comboScore,
         comboEdge,
         adjustedComboEdge,
+        rankingComboEdge,
         combinedProb,
         impliedProb,
         comboEV,
@@ -2684,6 +2745,8 @@ export function generateCombos(
     if (maxAchievable < targetOdds - pruneEps) return;
 
     for (let i = start; i < n; i++) {
+      const cand = legs[i]!;
+      if (L >= 2 && cand.odds < BUILDER_FILLER_ODDS_MAX) continue;
       indices.push(i);
       recurse(i + 1, indices);
       indices.pop();
@@ -2715,7 +2778,7 @@ export function generateCombos(
 
   rankedSource.sort((a, b) => {
     if (a.distanceFromTarget !== b.distanceFromTarget) return a.distanceFromTarget - b.distanceFromTarget;
-    if (a.comboEdge !== b.comboEdge) return b.comboEdge - a.comboEdge;
+    if (a.rankingComboEdge !== b.rankingComboEdge) return b.rankingComboEdge - a.rankingComboEdge;
     if (a.legs.length !== b.legs.length) return a.legs.length - b.legs.length;
     if (a.comboScore !== b.comboScore) return b.comboScore - a.comboScore;
     if (a.comboEV !== b.comboEV) return b.comboEV - a.comboEV;
@@ -2763,6 +2826,7 @@ export function buildValueBetCombos(
         )
       : [];
   const allLegs = [...playerLegs, ...teamLegs];
+  allLegs.sort(compareBuilderLegsForSearch);
 
   type PlayerCat = "shots" | "shotsOnTarget" | "foulsWon" | "foulsCommitted" | "tackles";
   const playerCats: PlayerCat[] = ["shots", "shotsOnTarget", "foulsWon", "foulsCommitted", "tackles"];
@@ -3441,7 +3505,7 @@ export function buildValueBetCombos(
       combos = [...postSanityCombosSnapshot]
         .sort((a, b) => {
           if (a.distanceFromTarget !== b.distanceFromTarget) return a.distanceFromTarget - b.distanceFromTarget;
-          if (a.comboEdge !== b.comboEdge) return b.comboEdge - a.comboEdge;
+          if (a.rankingComboEdge !== b.rankingComboEdge) return b.rankingComboEdge - a.rankingComboEdge;
           if (a.legs.length !== b.legs.length) return a.legs.length - b.legs.length;
           return b.comboScore - a.comboScore;
         })
