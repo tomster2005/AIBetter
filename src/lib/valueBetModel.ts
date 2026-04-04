@@ -172,6 +172,33 @@ export function isOddsSane(odds: number): boolean {
   return Number.isFinite(odds) && odds >= BOOKMAKER_SANITY.minOdds && odds < 1000;
 }
 
+/**
+ * Drop player-prop lines that are unrealistic vs typical output (per 90) or above sport-sane caps.
+ * Used when building rows and when filtering builder candidates. Does not change odds fetching.
+ */
+export function isSensiblePlayerPropLine(
+  line: number,
+  per90: number,
+  marketId: number,
+  outcome: "Over" | "Under"
+): boolean {
+  if (!Number.isFinite(line) || line < 0.5) return false;
+
+  const hardCaps: Partial<Record<number, number>> = {
+    [MARKET_ID_PLAYER_SHOTS_ON_TARGET]: 2.5,
+    [MARKET_ID_PLAYER_SHOTS]: 4.5,
+    [MARKET_ID_PLAYER_FOULS_COMMITTED]: 4.5,
+    [MARKET_ID_PLAYER_FOULS_WON]: 3.5,
+    [MARKET_ID_PLAYER_TACKLES]: 4.5,
+  };
+  const cap = hardCaps[marketId];
+  if (cap != null && line > cap) return false;
+
+  if (outcome === "Over" && Number.isFinite(per90) && per90 > 0 && line > per90 * 2.5) return false;
+
+  return true;
+}
+
 export function bookmakerProbability(odds: number): number {
   if (!isOddsSane(odds)) return 0;
   const p = 1 / odds;
@@ -282,6 +309,16 @@ export function computeBetQualityScore(params: BetQualityParams): number {
     (marketId === MARKET_ID_PLAYER_TACKLES && line > 5)
   )
     score -= 20;
+
+  // Slight drag on higher lines so extreme overs do not rank above similar-edge 0.5/1.5 plays.
+  const isPlayerPropMarket =
+    marketId === MARKET_ID_PLAYER_SHOTS ||
+    marketId === MARKET_ID_PLAYER_SHOTS_ON_TARGET ||
+    marketId === MARKET_ID_PLAYER_FOULS_COMMITTED ||
+    marketId === MARKET_ID_PLAYER_FOULS_WON ||
+    marketId === MARKET_ID_PLAYER_TACKLES;
+  if (isPlayerPropMarket && line >= 2.5) score -= 2;
+  if (isPlayerPropMarket && line >= 3.5) score -= 2;
 
   if (params.dataConfidence === "high") score += 10;
   else if (params.dataConfidence === "medium") score += 5;

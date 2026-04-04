@@ -279,6 +279,13 @@
   color: #166534;
 }
 
+.build-value-bets-modal__combo-leg-count {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #6b7280;
+  white-space: nowrap;
+}
+
 .build-value-bets-modal__combo-odds {
   font-size: 1rem;
   font-weight: 600;

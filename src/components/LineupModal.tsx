@@ -48,6 +48,7 @@ import {
   computeBetQualityScore,
   betQualityBucket,
   getRelevantStatForMarket,
+  isSensiblePlayerPropLine,
   isStrongBetCandidate,
   type ConfidenceLevel,
   type BetQualityLevel,
@@ -1260,6 +1261,7 @@ export function buildValueBetRows(
     invalidOddsOrLine: 0,
     bookmakerProbLte0: 0,
     noRelevantStat: 0,
+    lineUnrealistic: 0,
   };
   const skipReasons: Record<string, number> = {
     invalidOdds: 0,
@@ -1540,14 +1542,6 @@ export function buildValueBetRows(
             }
             return;
           }
-          const dedupeKey = `${playerName}|${marketId}|${line}|${outcome}|${bookmakerName}|${oddsNum}`;
-          if (seen.has(dedupeKey)) {
-            if (import.meta.env.DEV && isPhysicalPropMarketForDev) {
-              foulRowsSkipped += 1;
-              skipReasonsBreakdown.duplicate += 1;
-            }
-            return;
-          }
           if (!Number.isFinite(line)) {
             dropSummary.droppedMissingLine += 1;
             skipReasons.invalidLine += 1;
@@ -1556,6 +1550,36 @@ export function buildValueBetRows(
               skipReasonsBreakdown.invalidLine += 1;
             }
             return;
+          }
+          const dedupeKey = `${playerName}|${marketId}|${line}|${outcome}|${bookmakerName}|${oddsNum}`;
+          if (seen.has(dedupeKey)) {
+            if (import.meta.env.DEV && isPhysicalPropMarketForDev) {
+              foulRowsSkipped += 1;
+              skipReasonsBreakdown.duplicate += 1;
+            }
+            return;
+          }
+          if (stats) {
+            const minutesPlayedVal = stats.minutesPlayed ?? 0;
+            const statVal = getRelevantStatForMarket(stats, marketId, minutesPlayedVal);
+            const per90Quick =
+              statVal != null && minutesPlayedVal > 0 ? (statVal / minutesPlayedVal) * 90 : 0;
+            if (!isSensiblePlayerPropLine(line, per90Quick, marketId, outcome)) {
+              skipReasonsBreakdown.lineUnrealistic += 1;
+              if (import.meta.env.DEV && isPhysicalPropMarketForDev) {
+                foulRowsSkipped += 1;
+              }
+              if (import.meta.env.DEV) {
+                console.log("[value-bets] skipped unrealistic line", {
+                  playerName,
+                  marketId,
+                  line,
+                  per90: per90Quick,
+                  outcome,
+                });
+              }
+              return;
+            }
           }
           seen.add(dedupeKey);
 

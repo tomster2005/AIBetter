@@ -1,5 +1,5 @@
 /**
- * Modal to build multi-leg value bets: target odds input and suggested 2/3-leg combos.
+ * Modal to build multi-leg value bets: target odds input and suggested 2–5 leg combos.
  * Reuses value-bet candidate pipeline and fixture odds team props.
  */
 
@@ -534,7 +534,9 @@ export function BuildValueBetsModal({
           {result && (
             <div className="build-value-bets-modal__results">
               {result.combos.length > 0 && (
-                <p className="build-value-bets-modal__results-ev-note">Ranked by Expected Value (EV)</p>
+                <p className="build-value-bets-modal__results-ev-note">
+                  Ranked by distance to target, then edge (preferring fewer legs when close)
+                </p>
               )}
               <p className="build-value-bets-modal__results-meta">
                 {result.combos.length} combo{result.combos.length !== 1 ? "s" : ""} from {result.legCount} candidate leg
@@ -549,6 +551,9 @@ export function BuildValueBetsModal({
                   {result.combos.map((combo, i) => (
                     <li key={combo.fingerprint ?? `${combo.combinedOdds}-${i}`} className="build-value-bets-modal__combo-card">
                       <div className="build-value-bets-modal__combo-header">
+                        <span className="build-value-bets-modal__combo-leg-count" title="Legs in this combo">
+                          {combo.legs.length} pick{combo.legs.length !== 1 ? "s" : ""}
+                        </span>
                         <span className="build-value-bets-modal__combo-odds">
                           {combo.combinedOdds.toFixed(2)}×
                         </span>

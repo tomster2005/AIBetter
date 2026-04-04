@@ -1,10 +1,10 @@
 /**
- * Build Value Bets: filter candidates, score legs, generate 2/3-leg combos near target odds.
+ * Build Value Bets: filter candidates, score legs, generate multi-leg combos (2–5 legs) near target odds.
  * Version 1: no correlation; reuses value-bet pipeline outputs and fixture odds team props.
  * Includes market-family overlap protection and model-based Alternative Corners.
  */
 
-import { isOddsSane } from "./valueBetModel.js";
+import { isOddsSane, isSensiblePlayerPropLine } from "./valueBetModel.js";
 import { probabilityOverLine, probabilityUnderLine } from "./playerPropProbability.js";
 import {
   MARKET_ID_ALTERNATIVE_CORNERS,
@@ -12,6 +12,11 @@ import {
   MARKET_ID_BTTS,
   MARKET_ID_MATCH_GOALS,
   MARKET_ID_MATCH_RESULTS,
+  MARKET_ID_PLAYER_FOULS_COMMITTED,
+  MARKET_ID_PLAYER_FOULS_WON,
+  MARKET_ID_PLAYER_SHOTS,
+  MARKET_ID_PLAYER_SHOTS_ON_TARGET,
+  MARKET_ID_PLAYER_TACKLES,
   MARKET_ID_TEAM_TOTAL_GOALS,
   MARKET_ID_TOTAL_CORNERS,
 } from "../constants/marketIds.js";
@@ -35,18 +40,15 @@ const MIN_EDGE = 0.001;
 const MAX_ODDS_PER_LEG = 15;
 /** Minimum combo EV (model prob − implied prob) to keep; ~+1% edge. If none qualify, unfiltered list is used. */
 const MIN_COMBO_EV = 0.01;
+/** Build-combo search: min/max legs (cap avoids combinatorial blow-up). */
+const COMBO_MIN_LEGS = 2;
+const COMBO_MAX_LEGS_CAP = 5;
+/** Drop completed combos whose odds exceed this multiple of target (inefficient vs target). */
+const COMBO_MAX_ODDS_MULTIPLIER = 1.2;
 /** Cap full Kelly fraction at 5% of bankroll before applying fractional Kelly. */
 const KELLY_FULL_CAP = 0.05;
 /** Fractional Kelly: half of capped full Kelly. */
 const KELLY_FRACTIONAL = 0.5;
-/** Sensible line bounds per market (loose). */
-const LINE_BOUNDS: Record<string, { min: number; max: number }> = {
-  shots: { min: 0.5, max: 8 },
-  shotsOnTarget: { min: 0.5, max: 5 },
-  foulsCommitted: { min: 0.5, max: 5 },
-  foulsWon: { min: 0.5, max: 4 },
-  tackles: { min: 0.5, max: 5 },
-};
 
 /** Fouls + tackles: used for combo ranking boost and team-leg coherence (physical / midfield duels). */
 const PHYSICAL_PLAYER_PROP_CATS = ["foulsCommitted", "foulsWon", "tackles"] as const;
@@ -420,11 +422,21 @@ function getMarketCategory(marketName: string): ValueBetPlayerMarketCategory | n
   return null;
 }
 
-function isLineSensible(marketName: string, line: number): boolean {
-  const cat = getMarketCategory(marketName);
-  if (!cat || !LINE_BOUNDS[cat]) return true;
-  const { min, max } = LINE_BOUNDS[cat];
-  return line >= min && line <= max;
+function marketIdFromPlayerCategory(cat: ValueBetPlayerMarketCategory): number {
+  switch (cat) {
+    case "shotsOnTarget":
+      return MARKET_ID_PLAYER_SHOTS_ON_TARGET;
+    case "shots":
+      return MARKET_ID_PLAYER_SHOTS;
+    case "foulsCommitted":
+      return MARKET_ID_PLAYER_FOULS_COMMITTED;
+    case "foulsWon":
+      return MARKET_ID_PLAYER_FOULS_WON;
+    case "tackles":
+      return MARKET_ID_PLAYER_TACKLES;
+    default:
+      return 0;
+  }
 }
 
 /** Parse line from "Over 2.5" / "Under 10.5" style. */
@@ -1209,6 +1221,7 @@ export function filterPlayerCandidates(
     edge: number | undefined;
     expectedMinutes: number | undefined;
   }> = [];
+  let sensibleLineVerboseLogs = 0;
 
   for (const r of rows) {
     const cat = getMarketCategory(r.marketName);
@@ -1269,7 +1282,9 @@ export function filterPlayerCandidates(
       }
       continue;
     }
-    if (!isLineSensible(r.marketName, r.line)) {
+    const marketIdForLine = marketIdFromPlayerCategory(cat);
+    const per90ForLine = getModelInputNumber(r, "per90") ?? 0;
+    if (!isSensiblePlayerPropLine(r.line, per90ForLine, marketIdForLine, r.outcome)) {
       if (isFoulsCat) {
         foulsRejectedReasons["line"] = (foulsRejectedReasons["line"] ?? 0) + 1;
         if (foulsRejectedSamples.length < 5) {
@@ -1283,6 +1298,16 @@ export function filterPlayerCandidates(
             expectedMinutes: r.modelInputs?.expectedMinutes,
           });
         }
+      }
+      if (BUILDER_DEBUG_VERBOSE && sensibleLineVerboseLogs < 30) {
+        sensibleLineVerboseLogs += 1;
+        console.log("[build-value-bets] player line filtered", {
+          player: r.playerName,
+          line: r.line,
+          per90: per90ForLine,
+          marketId: marketIdForLine,
+          edge: r.modelEdge,
+        });
       }
       continue;
     }
@@ -1302,7 +1327,8 @@ export function filterPlayerCandidates(
     const probability = clamp01(implied + (r.modelEdge ?? 0));
     const id = `player-${legs.length}-${key.slice(0, 40)}`;
     const reason = buildLegReason(r, quality);
-    const marketFamily = `player:${String(r.playerName).trim().toLowerCase()}|${cat}`;
+    // One player per combo: overlap rule uses marketFamily; same player → same family (any market/line).
+    const marketFamily = `player:${String(r.playerName).trim().toLowerCase()}`;
     const smPid = r.sportmonksPlayerId;
     legs.push({
       id,
@@ -1312,6 +1338,7 @@ export function filterPlayerCandidates(
         typeof smPid === "number" && Number.isFinite(smPid) && smPid > 0 ? smPid : undefined,
       playerQuality: quality,
       marketFamily,
+      marketId: marketIdForLine,
       label: `${r.playerName} ${r.marketName} ${r.line} ${r.outcome}`,
       marketName: r.marketName,
       line: r.line,
@@ -1540,7 +1567,12 @@ function scorePlayerLeg(r: PlayerCandidateInput, quality: PlayerLegQualitySignal
   const conf = r.dataConfidenceScore ?? 0;
   score += Math.min(10, conf / 10);
   if (r.isStrongBet) score += 10;
-  if (!isLineSensible(r.marketName, r.line)) score -= 20;
+  {
+    const catLeg = getMarketCategory(r.marketName);
+    const midLeg = catLeg ? marketIdFromPlayerCategory(catLeg) : 0;
+    const per90Leg = getModelInputNumber(r, "per90") ?? 0;
+    if (catLeg == null || !isSensiblePlayerPropLine(r.line, per90Leg, midLeg, r.outcome)) score -= 20;
+  }
   if (r.odds > 8) score -= 5;
   if (r.odds > 12) score -= 10;
   score += getBuilderMarketPriority(getMarketCategory(r.marketName));
@@ -2521,77 +2553,144 @@ function computeKellyStakePct(combinedOdds: number, combinedProb: number): numbe
   return capped * KELLY_FRACTIONAL;
 }
 
-/** Generate 2-leg and 3-leg combos, rank by distance, then EV, then combo score. Rejects same-family overlap. */
+/**
+ * Max product of exactly `k` legs from legs[i..] with strictly increasing indices (for optimistic pruning).
+ */
+function buildSuffixMaxLegProducts(legs: BuildLeg[], maxK: number): number[][] {
+  const n = legs.length;
+  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(maxK + 1).fill(0));
+  for (let i = 0; i <= n; i++) dp[i]![0] = 1;
+
+  for (let i = n - 1; i >= 0; i--) {
+    for (let k = 1; k <= maxK; k++) {
+      let best = 0;
+      const maxJ = n - k;
+      for (let j = i; j <= maxJ; j++) {
+        const v = legs[j]!.odds * dp[j + 1]![k - 1]!;
+        if (v > best) best = v;
+      }
+      dp[i]![k] = best;
+    }
+  }
+  return dp;
+}
+
+/** Generate multi-leg combos (2–maxLegs) near target odds: stop each branch once odds ≥ target; cap overshoot; prune dead ends. */
 export function generateCombos(
   legs: BuildLeg[],
   targetOdds: number,
   options: { maxCombos?: number; maxLegs?: number } = {}
 ): BuildCombo[] {
-  const { maxCombos = 50, maxLegs = 3 } = options;
+  const { maxCombos = 50, maxLegs: maxLegsOpt } = options;
+  const MAX_LEGS = Math.max(COMBO_MIN_LEGS, Math.min(maxLegsOpt ?? COMBO_MAX_LEGS_CAP, COMBO_MAX_LEGS_CAP));
+  const MIN_LEGS = COMBO_MIN_LEGS;
   const combos: BuildCombo[] = [];
   const used = new Set<string>();
   let rejectedOverlap = 0;
+  const n = legs.length;
 
-  for (let n = 2; n <= Math.min(maxLegs, 3); n++) {
-    const indices: number[] = [];
-    function recurse(start: number, depth: number) {
-      if (depth === n) {
-        const selected = indices.map((i) => legs[i]);
-        if (hasSameFamilyOverlap(selected)) {
-          rejectedOverlap += 1;
-          return;
-        }
-        const combinedOdds = selected.reduce((acc, leg) => acc * leg.odds, 1);
-        const distanceFromTarget = Math.abs(combinedOdds - targetOdds);
-        const comboScore = selected.reduce((s, leg) => s + leg.score, 0);
-        const comboEdge = selected.reduce((s, leg) => s + (Number.isFinite(leg.edge as number) ? (leg.edge as number) : 0), 0);
-        const combinedProbRaw = selected.reduce((acc, leg) => {
-          const fallbackProb = leg.odds > 0 ? 1 / leg.odds : 0;
-          const legProb = Number.isFinite(leg.probability as number) ? (leg.probability as number) : fallbackProb;
-          return acc * clamp01(legProb);
-        }, 1);
-        let correlationPenalty = 0;
-        for (let i = 0; i < selected.length; i++) {
-          for (let j = i + 1; j < selected.length; j++) {
-            correlationPenalty += getCorrelationPenalty(selected[i]!, selected[j]!);
-          }
-        }
-        const boundedPenalty = Math.max(0, Math.min(0.9, correlationPenalty));
-        const combinedProb = clamp01(combinedProbRaw * (1 - boundedPenalty));
-        const impliedProb = combinedOdds > 0 ? 1 / combinedOdds : 0;
-        const comboEV = combinedProb - impliedProb;
-        const comboEVPercent = combinedProb * combinedOdds - 1;
-        const kellyStakePct = computeKellyStakePct(combinedOdds, combinedProb);
-        const adjustedComboEdge = comboEdge * (1 - boundedPenalty);
-        const key = indices.slice().sort((a, b) => a - b).join(",");
-        if (!used.has(key)) {
-          used.add(key);
-          const fingerprint = comboFingerprintFromLegs(selected);
-          combos.push({
-            legs: selected,
-            fingerprint,
-            combinedOdds,
-            distanceFromTarget,
-            comboScore,
-            comboEdge,
-            adjustedComboEdge,
-            combinedProb,
-            impliedProb,
-            comboEV,
-            comboEVPercent,
-            kellyStakePct,
-          });
-        }
-        return;
-      }
-      for (let i = start; i < legs.length; i++) {
-        indices.push(i);
-        recurse(i + 1, depth + 1);
-        indices.pop();
+  if (n < MIN_LEGS || !Number.isFinite(targetOdds) || targetOdds < 1.001) {
+    return [];
+  }
+
+  const suffixDp = buildSuffixMaxLegProducts(legs, MAX_LEGS);
+  const targetCap = targetOdds * COMBO_MAX_ODDS_MULTIPLIER;
+  const pruneEps = 1e-9;
+  let verboseComboLogCount = 0;
+
+  function pushCombo(selected: BuildLeg[], indices: number[]) {
+    if (hasSameFamilyOverlap(selected)) {
+      rejectedOverlap += 1;
+      return;
+    }
+    const combinedOdds = selected.reduce((acc, leg) => acc * leg.odds, 1);
+    const distanceFromTarget = Math.abs(combinedOdds - targetOdds);
+    const comboScore = selected.reduce((s, leg) => s + leg.score, 0);
+    const comboEdge = selected.reduce((s, leg) => s + (Number.isFinite(leg.edge as number) ? (leg.edge as number) : 0), 0);
+    const combinedProbRaw = selected.reduce((acc, leg) => {
+      const fallbackProb = leg.odds > 0 ? 1 / leg.odds : 0;
+      const legProb = Number.isFinite(leg.probability as number) ? (leg.probability as number) : fallbackProb;
+      return acc * clamp01(legProb);
+    }, 1);
+    let correlationPenalty = 0;
+    for (let i = 0; i < selected.length; i++) {
+      for (let j = i + 1; j < selected.length; j++) {
+        correlationPenalty += getCorrelationPenalty(selected[i]!, selected[j]!);
       }
     }
-    recurse(0, 0);
+    const boundedPenalty = Math.max(0, Math.min(0.9, correlationPenalty));
+    const combinedProb = clamp01(combinedProbRaw * (1 - boundedPenalty));
+    const impliedProb = combinedOdds > 0 ? 1 / combinedOdds : 0;
+    const comboEV = combinedProb - impliedProb;
+    const comboEVPercent = combinedProb * combinedOdds - 1;
+    const kellyStakePct = computeKellyStakePct(combinedOdds, combinedProb);
+    const adjustedComboEdge = comboEdge * (1 - boundedPenalty);
+    const key = indices.slice().sort((a, b) => a - b).join(",");
+    if (!used.has(key)) {
+      used.add(key);
+      const fingerprint = comboFingerprintFromLegs(selected);
+      combos.push({
+        legs: selected,
+        fingerprint,
+        combinedOdds,
+        distanceFromTarget,
+        comboScore,
+        comboEdge,
+        adjustedComboEdge,
+        combinedProb,
+        impliedProb,
+        comboEV,
+        comboEVPercent,
+        kellyStakePct,
+      });
+      if (BUILDER_DEBUG_VERBOSE && verboseComboLogCount < 40) {
+        verboseComboLogCount += 1;
+        console.log("[build-value-bets] combo branch", { legs: selected.length, odds: combinedOdds });
+      }
+    }
   }
+
+  function recurse(start: number, indices: number[]) {
+    const L = indices.length;
+    const P = L === 0 ? 1 : indices.reduce((acc, i) => acc * legs[i]!.odds, 1);
+
+    if (L >= MIN_LEGS && P > targetCap) return;
+
+    if (L >= MIN_LEGS && P >= targetOdds) {
+      pushCombo(
+        indices.map((i) => legs[i]!),
+        indices
+      );
+      return;
+    }
+
+    if (L >= MAX_LEGS) return;
+
+    if (L + (n - start) < MIN_LEGS) return;
+
+    const slotsLeft = MAX_LEGS - L;
+    const canPick = Math.min(slotsLeft, n - start);
+    if (canPick <= 0) return;
+
+    const minExtra = L >= MIN_LEGS ? 1 : MIN_LEGS - L;
+    if (minExtra > canPick) return;
+
+    let maxAchievable = 0;
+    for (let t = minExtra; t <= canPick; t++) {
+      const ext = suffixDp[start]![t] ?? 0;
+      const cand = P * ext;
+      if (cand > maxAchievable) maxAchievable = cand;
+    }
+    if (maxAchievable < targetOdds - pruneEps) return;
+
+    for (let i = start; i < n; i++) {
+      indices.push(i);
+      recurse(i + 1, indices);
+      indices.pop();
+    }
+  }
+
+  recurse(0, []);
 
   if (import.meta.env?.DEV && rejectedOverlap > 0) {
     console.log("[build-value-bets] combos rejected for same-family overlap", rejectedOverlap);
@@ -2616,8 +2715,10 @@ export function generateCombos(
 
   rankedSource.sort((a, b) => {
     if (a.distanceFromTarget !== b.distanceFromTarget) return a.distanceFromTarget - b.distanceFromTarget;
-    if (a.comboEV !== b.comboEV) return b.comboEV - a.comboEV;
+    if (a.comboEdge !== b.comboEdge) return b.comboEdge - a.comboEdge;
+    if (a.legs.length !== b.legs.length) return a.legs.length - b.legs.length;
     if (a.comboScore !== b.comboScore) return b.comboScore - a.comboScore;
+    if (a.comboEV !== b.comboEV) return b.comboEV - a.comboEV;
     return (a.fingerprint ?? "").localeCompare(b.fingerprint ?? "");
   });
 
@@ -2748,7 +2849,7 @@ export function buildValueBetCombos(
   const finalMaxRequested = options.maxCombos ?? 30;
   const finalMax = Math.min(3, finalMaxRequested);
   const internalMax = Math.max(finalMax, finalMax * DIVERSITY_INTERNAL_MULTIPLIER);
-  let combos = generateCombos(allLegs, targetOdds, { maxCombos: internalMax });
+  let combos = generateCombos(allLegs, targetOdds, { maxCombos: internalMax, maxLegs: COMBO_MAX_LEGS_CAP });
   const generatedCount = combos.length;
 
   const h2hOkForCounts = headToHeadContext?.sampleSize != null && headToHeadContext?.sampleSize >= MIN_H2H_SAMPLE_SIZE;
@@ -3340,6 +3441,8 @@ export function buildValueBetCombos(
       combos = [...postSanityCombosSnapshot]
         .sort((a, b) => {
           if (a.distanceFromTarget !== b.distanceFromTarget) return a.distanceFromTarget - b.distanceFromTarget;
+          if (a.comboEdge !== b.comboEdge) return b.comboEdge - a.comboEdge;
+          if (a.legs.length !== b.legs.length) return a.legs.length - b.legs.length;
           return b.comboScore - a.comboScore;
         })
         .slice(0, finalMax);
