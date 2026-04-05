@@ -5,7 +5,7 @@ import { BetTrackerPage } from "./pages/BetTrackerPage.js";
 import { StakeCalculatorPage } from "./pages/StakeCalculatorPage.js";
 import { setCalibrationTable } from "./lib/valueBetCalibration.js";
 import type { CalibrationBucket } from "./lib/valueBetCalibration.js";
-import { getAllBookmakerStats, getTrackedBetStats, getTrackedBets } from "./services/betTrackerService.js";
+import { clearAllTrackedBetsShared, getAllBookmakerStats, getTrackedBetStats, getTrackedBets } from "./services/betTrackerService.js";
 import "./App.css";
 
 type AppTab = "calendar" | "betTracker" | "stakeCalculator";
@@ -118,6 +118,17 @@ export default function App() {
   const navigateAndEmit = (tab: AppTab, eventName: string) => {
     setActiveTab(tab);
     window.setTimeout(() => emit(eventName), 40);
+  };
+
+  const onResetAllBets = async () => {
+    const ok = window.confirm("Delete all bet data? This cannot be undone.");
+    if (!ok) return;
+    const cleared = await clearAllTrackedBetsShared();
+    if (!cleared) {
+      window.alert("Could not clear bet data. Please try again.");
+      return;
+    }
+    window.dispatchEvent(new CustomEvent("app:bets-updated"));
   };
 
 
@@ -410,6 +421,13 @@ export default function App() {
             onClick={() => navigateAndEmit("betTracker", "app:scroll-insights")}
           >
             📊 Insights
+          </button>
+          <button
+            type="button"
+            className="app-nav__quick-btn app-nav__danger-btn"
+            onClick={onResetAllBets}
+          >
+            🧹 Delete All Bet Data
           </button>
           <button
             type="button"

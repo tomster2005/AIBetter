@@ -132,6 +132,11 @@ export class BetsStore {
     return result.changes > 0;
   }
 
+  deleteAll(): number {
+    const result = this.db.prepare(`DELETE FROM shared_bets`).run();
+    return result.changes ?? 0;
+  }
+
   getById(id: string): SharedBetRecord | null {
     const row = this.db.prepare(`SELECT payload_json FROM shared_bets WHERE id = ?`).get(id) as { payload_json: string } | undefined;
     if (!row) return null;

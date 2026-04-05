@@ -961,6 +961,17 @@ app.delete("/api/bets/:id", (req, res) => {
   }
 });
 
+app.delete("/api/bets", (_req, res) => {
+  try {
+    const deletedCount = betsStore.deleteAll();
+    console.log("[api/bets] DELETE all", { deletedCount, totalCount: betsStore.count() });
+    io.emit("bets_updated");
+    res.json({ deletedCount });
+  } catch {
+    res.status(500).json({ error: "Failed to delete all bets." });
+  }
+});
+
 console.log("[static-path-debug]", {
   cwd: process.cwd(),
   distDir: DIST_DIR,

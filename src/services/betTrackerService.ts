@@ -535,6 +535,16 @@ function writeTrackedBets(value: TrackedBetRecord[]): void {
   write(TRACKED_BETS_STORAGE_KEY, value);
 }
 
+function clearTrackedBetsLocal(): void {
+  writeTrackedBets([]);
+  if (!canUseStorage()) return;
+  try {
+    window.localStorage.removeItem(TRACKED_BETS_BACKUP_KEY);
+  } catch {
+    // ignore
+  }
+}
+
 function sanitizeTrackedBetsList(value: unknown): TrackedBetRecord[] {
   const raw = Array.isArray(value) ? value : [];
   const sanitized = raw.map(sanitizeTrackedBet).filter((b): b is TrackedBetRecord => b != null).map(repairUnits);
@@ -1494,6 +1504,21 @@ export async function deleteTrackedBetShared(id: string): Promise<boolean> {
   if (!ok) return false;
   writeTrackedBets(current.filter((b) => b.id !== id));
   return true;
+}
+
+export async function clearAllTrackedBetsShared(): Promise<boolean> {
+  if (typeof window === "undefined") return false;
+  try {
+    const res = await fetch(`${getSharedBetsApiUrl()}`, {
+      method: "DELETE",
+      credentials: "include",
+    });
+    if (!res.ok) return false;
+    clearTrackedBetsLocal();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function getTrackedBetsByBookmaker(bookmakerId: string): TrackedBetRecord[] {
