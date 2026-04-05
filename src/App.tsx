@@ -14,6 +14,11 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<AppTab>("calendar");
   const [authChecked, setAuthChecked] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
+  const [siteChecked, setSiteChecked] = useState(false);
+  const [siteAuthenticated, setSiteAuthenticated] = useState(false);
+  const [sitePassword, setSitePassword] = useState("");
+  const [siteError, setSiteError] = useState<string | null>(null);
+  const [siteBusy, setSiteBusy] = useState(false);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [authError, setAuthError] = useState<string | null>(null);
@@ -118,12 +123,19 @@ export default function App() {
 
   useEffect(() => {
     fetch("/api/auth/me", { credentials: "include" })
-      .then((res) => (res.ok ? res.json() : { authenticated: false }))
-      .then((data: { authenticated?: boolean }) => {
+      .then((res) => (res.ok ? res.json() : { authenticated: false, siteAuthenticated: false }))
+      .then((data: { authenticated?: boolean; siteAuthenticated?: boolean }) => {
         setAuthenticated(data?.authenticated === true);
+        setSiteAuthenticated(data?.siteAuthenticated === true);
       })
-      .catch(() => setAuthenticated(false))
-      .finally(() => setAuthChecked(true));
+      .catch(() => {
+        setAuthenticated(false);
+        setSiteAuthenticated(false);
+      })
+      .finally(() => {
+        setAuthChecked(true);
+        setSiteChecked(true);
+      });
   }, []);
 
   useEffect(() => {
@@ -210,13 +222,61 @@ export default function App() {
     }
   }
 
+  async function handleSiteLogin(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setSiteBusy(true);
+    setSiteError(null);
+    try {
+      const res = await fetch("/api/auth/site-login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ password: sitePassword }),
+      });
+      if (!res.ok) {
+        const payload = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(payload.error || "Access denied.");
+      }
+      setSiteAuthenticated(true);
+      setSitePassword("");
+    } catch (err) {
+      setSiteError(err instanceof Error ? err.message : "Access denied.");
+    } finally {
+      setSiteBusy(false);
+    }
+  }
+
   async function handleLogout() {
     await fetch("/api/auth/logout", { method: "POST", credentials: "include" }).catch(() => {});
     setAuthenticated(false);
+    setSiteAuthenticated(false);
   }
 
-  if (!authChecked) {
+  if (!authChecked || !siteChecked) {
     return <div className="auth-screen">Checking session...</div>;
+  }
+
+  if (!siteAuthenticated) {
+    return (
+      <div className="auth-screen">
+        <form className="auth-card" onSubmit={handleSiteLogin}>
+          <h1>Access Required</h1>
+          <label>
+            Access Password
+            <input
+              type="password"
+              value={sitePassword}
+              onChange={(e) => setSitePassword(e.target.value)}
+              autoComplete="current-password"
+            />
+          </label>
+          {siteError ? <p className="auth-error">{siteError}</p> : null}
+          <button type="submit" disabled={siteBusy}>
+            {siteBusy ? "Checking..." : "Enter"}
+          </button>
+        </form>
+      </div>
+    );
   }
 
   if (!authenticated) {

@@ -38,6 +38,7 @@ import { BetsStore, type SharedBetRecord } from "./betsStore.js";
 declare module "express-session" {
   interface SessionData {
     authenticated?: boolean;
+    siteAuthenticated?: boolean;
   }
 }
 
@@ -51,6 +52,7 @@ const SHARED_BETS_PATH = join(PROJECT_ROOT, "server", "data", "bets.json");
 const APP_LOGIN_USERNAME = process.env.APP_LOGIN_USERNAME;
 const APP_LOGIN_PASSWORD = process.env.APP_LOGIN_PASSWORD;
 const SESSION_SECRET = process.env.SESSION_SECRET;
+const SITE_ACCESS_PASSWORD = process.env.SITE_ACCESS_PASSWORD;
 const IS_PRODUCTION = process.env.NODE_ENV === "production";
 
 if (!APP_LOGIN_USERNAME || !APP_LOGIN_PASSWORD) {
@@ -61,6 +63,11 @@ if (!APP_LOGIN_USERNAME || !APP_LOGIN_PASSWORD) {
 if (!SESSION_SECRET || SESSION_SECRET.length < 16) {
   console.warn(
     "\n⚠️  SESSION_SECRET is missing or too short. Set a long random secret in your environment.\n"
+  );
+}
+if (!SITE_ACCESS_PASSWORD) {
+  console.warn(
+    "\n⚠️  SITE_ACCESS_PASSWORD is not set. Site access gate will fail until this is configured.\n"
   );
 }
 
@@ -220,6 +227,27 @@ app.post("/api/auth/login", (req, res) => {
   });
 });
 
+app.post("/api/auth/site-login", (req, res) => {
+  const body = req.body as { password?: unknown };
+  const password = typeof body?.password === "string" ? body.password : "";
+  if (!SITE_ACCESS_PASSWORD) {
+    res.status(500).json({ error: "Site access is not configured on this server." });
+    return;
+  }
+  if (password !== SITE_ACCESS_PASSWORD) {
+    res.status(401).json({ error: "Invalid access password." });
+    return;
+  }
+  req.session.siteAuthenticated = true;
+  req.session.save((err) => {
+    if (err) {
+      res.status(500).json({ error: "Failed to create session." });
+      return;
+    }
+    res.json({ authenticated: true });
+  });
+});
+
 app.post("/api/auth/logout", (req, res) => {
   req.session.destroy(() => {
     res.clearCookie("aibetter.sid");
@@ -228,12 +256,28 @@ app.post("/api/auth/logout", (req, res) => {
 });
 
 app.get("/api/auth/me", (req, res) => {
-  res.json({ authenticated: req.session?.authenticated === true });
+  res.json({
+    authenticated: req.session?.authenticated === true,
+    siteAuthenticated: req.session?.siteAuthenticated === true,
+  });
+});
+
+app.get("/api/auth/site-me", (req, res) => {
+  res.json({ authenticated: req.session?.siteAuthenticated === true });
 });
 
 app.use("/api", (req, res, next) => {
-  if (req.path === "/auth/login" || req.path === "/auth/logout" || req.path === "/auth/me") {
+  if (
+    req.path === "/auth/login" ||
+    req.path === "/auth/logout" ||
+    req.path === "/auth/me" ||
+    req.path === "/auth/site-login" ||
+    req.path === "/auth/site-me"
+  ) {
     return next();
+  }
+  if (req.session?.siteAuthenticated !== true) {
+    return res.status(401).json({ error: "Site access required." });
   }
   if (req.session?.authenticated === true) {
     return next();
