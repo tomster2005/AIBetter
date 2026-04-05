@@ -1,19 +1,6 @@
 import type { BuildCombo, BuildLeg } from "../lib/valueBetBuilder.js";
 import { resolveLegsToResult } from "./comboPerformanceService.js";
 import { fetchFixtureResolutionData } from "./comboResolutionDataService.js";
-import {
-  collection,
-  deleteDoc,
-  doc,
-  getDocs,
-  onSnapshot,
-  orderBy,
-  query,
-  setDoc,
-  writeBatch,
-  type Unsubscribe,
-} from "firebase/firestore";
-import { firebaseAuth, firestore } from "./firebase.js";
 
 const BOOKMAKERS_STORAGE_KEY = "betTracker:bookmakers:v1";
 const TRACKED_BETS_STORAGE_KEY = "betTracker:trackedBets:v1";
@@ -144,34 +131,10 @@ let balanceAdjustmentsCache: BalanceAdjustment[] = [];
 let balanceAdjustmentsLoaded = false;
 let unitSizeCache: number | null = null;
 
-let betsUnsubscribe: Unsubscribe | null = null;
-let bookmakersUnsubscribe: Unsubscribe | null = null;
-let adjustmentsUnsubscribe: Unsubscribe | null = null;
-let settingsUnsubscribe: Unsubscribe | null = null;
-
 function canUseStorage(): boolean {
   return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
 }
 
-function getUserId(): string | null {
-  return firebaseAuth.currentUser?.uid ?? null;
-}
-
-function betsCollectionRef(uid: string) {
-  return collection(firestore, "users", uid, "bets");
-}
-
-function bookmakersCollectionRef(uid: string) {
-  return collection(firestore, "users", uid, "bookmakers");
-}
-
-function balanceAdjustmentsCollectionRef(uid: string) {
-  return collection(firestore, "users", uid, "balanceAdjustments");
-}
-
-function settingsDocRef(uid: string) {
-  return doc(firestore, "users", uid, "settings", "betTracker");
-}
 
 function read<T>(key: string): T[] {
   if (!canUseStorage()) return [];
@@ -442,12 +405,6 @@ export function setUnitSize(value: number): number {
   } catch {
     // ignore
   }
-  const uid = getUserId();
-  if (uid) {
-    setDoc(settingsDocRef(uid), { unitSize: safe }, { merge: true }).catch(() => {
-      // ignore
-    });
-  }
   return safe;
 }
 
@@ -518,12 +475,6 @@ export function adjustBalance(
 
   const current = readBalanceAdjustments();
   writeBalanceAdjustments([adj, ...current]);
-  const uid = getUserId();
-  if (uid) {
-    setDoc(doc(balanceAdjustmentsCollectionRef(uid), adj.id), stripUndefined(adj) as Record<string, unknown>).catch(() => {
-      // ignore
-    });
-  }
   return adj;
 }
 
@@ -620,147 +571,13 @@ export function replaceTrackedBets(records: unknown): TrackedBetRecord[] {
   return next;
 }
 
-function emitTrackerUpdated(): void {
-  if (typeof window === "undefined") return;
-  window.dispatchEvent(new CustomEvent("app:bets-updated"));
-  window.dispatchEvent(new CustomEvent("app:tracker-updated"));
-}
-
-function stripUndefined(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(stripUndefined);
-  }
-  if (value && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, v]) => v !== undefined)
-      .map(([k, v]) => [k, stripUndefined(v)] as const);
-    return Object.fromEntries(entries);
-  }
-  return value;
-}
-
-function toFirestoreBet(record: TrackedBetRecord): Record<string, unknown> {
-  const createdAtMs = Date.parse(record.createdAt);
-  const updatedAtMs = Date.parse(record.updatedAt);
-  const { id, ...rest } = record;
-  const payload = {
-    ...rest,
-    createdAtMs: Number.isFinite(createdAtMs) ? createdAtMs : Date.now(),
-    updatedAtMs: Number.isFinite(updatedAtMs) ? updatedAtMs : Date.now(),
-  };
-  return stripUndefined(payload) as Record<string, unknown>;
-}
-
-function toTrackedBetFromFirestore(id: string, raw: Record<string, unknown>): TrackedBetRecord | null {
-  const createdAtMs = typeof raw.createdAtMs === "number" ? raw.createdAtMs : undefined;
-  const updatedAtMs = typeof raw.updatedAtMs === "number" ? raw.updatedAtMs : undefined;
-  const createdAt = normalizeText(raw.createdAt) || (createdAtMs ? new Date(createdAtMs).toISOString() : new Date(0).toISOString());
-  const updatedAt = normalizeText(raw.updatedAt) || (updatedAtMs ? new Date(updatedAtMs).toISOString() : createdAt);
-  return sanitizeTrackedBet({ ...raw, id, createdAt, updatedAt });
-}
-
-function applyTrackedBetsSnapshot(next: TrackedBetRecord[]): TrackedBetRecord[] {
-  const sorted = next.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
-  writeTrackedBets(sorted);
-  lastSyncTimestamp = Date.now();
-  lastSyncServerCount = sorted.length;
-  lastSyncSource = "server";
-  emitTrackerUpdated();
-  return sorted;
-}
-
 export async function refreshTrackedBetsFromServer(): Promise<TrackedBetRecord[] | null> {
   if (typeof window === "undefined") return null;
-  const uid = getUserId();
   const local = readTrackedBets();
-  if (!uid) return local;
-  try {
-    const snapshot = await getDocs(query(betsCollectionRef(uid), orderBy("createdAtMs", "desc")));
-    const next = snapshot.docs
-      .map((docSnap) => toTrackedBetFromFirestore(docSnap.id, docSnap.data() as Record<string, unknown>))
-      .filter((b): b is TrackedBetRecord => b != null)
-      .map(repairUnits);
-    return applyTrackedBetsSnapshot(next);
-  } catch {
-    lastSyncTimestamp = Date.now();
-    lastSyncSource = "local-fallback";
-    return local;
-  }
-}
-
-export function startBetTrackerRealtime(): void {
-  const uid = getUserId();
-  if (!uid) return;
-  stopBetTrackerRealtime();
-
-  betsUnsubscribe = onSnapshot(
-    query(betsCollectionRef(uid), orderBy("createdAtMs", "desc")),
-    (snapshot) => {
-      const next = snapshot.docs
-        .map((docSnap) => toTrackedBetFromFirestore(docSnap.id, docSnap.data() as Record<string, unknown>))
-        .filter((b): b is TrackedBetRecord => b != null)
-        .map(repairUnits);
-      trackedBetsLoaded = true;
-      applyTrackedBetsSnapshot(next);
-    },
-    () => {
-      lastSyncTimestamp = Date.now();
-      lastSyncSource = "local-fallback";
-    }
-  );
-
-  bookmakersUnsubscribe = onSnapshot(
-    bookmakersCollectionRef(uid),
-    (snapshot) => {
-      const next = snapshot.docs
-        .map((docSnap) => sanitizeBookmaker({ id: docSnap.id, ...(docSnap.data() as Record<string, unknown>) }))
-        .filter((b): b is TrackedBookmaker => b != null)
-        .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
-      bookmakersLoaded = true;
-      writeBookmakers(next);
-      emitTrackerUpdated();
-    }
-  );
-
-  adjustmentsUnsubscribe = onSnapshot(
-    balanceAdjustmentsCollectionRef(uid),
-    (snapshot) => {
-      const next = snapshot.docs
-        .map((docSnap) => sanitizeBalanceAdjustment({ id: docSnap.id, ...(docSnap.data() as Record<string, unknown>) }))
-        .filter((a): a is BalanceAdjustment => a != null)
-        .sort((a, b) => b.createdAt - a.createdAt);
-      balanceAdjustmentsLoaded = true;
-      writeBalanceAdjustments(next);
-      emitTrackerUpdated();
-    }
-  );
-
-  settingsUnsubscribe = onSnapshot(settingsDocRef(uid), (snapshot) => {
-    const data = snapshot.data() as Record<string, unknown> | undefined;
-    const rawUnit = data ? Number(data.unitSize) : NaN;
-    if (Number.isFinite(rawUnit) && rawUnit > 0) {
-      unitSizeCache = rawUnit;
-      if (canUseStorage()) {
-        try {
-          window.localStorage.setItem(UNIT_SIZE_STORAGE_KEY, String(rawUnit));
-        } catch {
-          // ignore
-        }
-      }
-      emitTrackerUpdated();
-    }
-  });
-}
-
-export function stopBetTrackerRealtime(): void {
-  if (betsUnsubscribe) betsUnsubscribe();
-  if (bookmakersUnsubscribe) bookmakersUnsubscribe();
-  if (adjustmentsUnsubscribe) adjustmentsUnsubscribe();
-  if (settingsUnsubscribe) settingsUnsubscribe();
-  betsUnsubscribe = null;
-  bookmakersUnsubscribe = null;
-  adjustmentsUnsubscribe = null;
-  settingsUnsubscribe = null;
+  lastSyncTimestamp = Date.now();
+  lastSyncServerCount = local.length;
+  lastSyncSource = "local-fallback";
+  return local;
 }
 
 export function restoreTrackedBetsFromBackup(): { restored: boolean; count: number } {
@@ -1036,12 +853,6 @@ export function addBookmaker(name: string, startingBalance: number): TrackedBook
     createdAt: new Date().toISOString(),
   };
   writeBookmakers([...existing, next]);
-  const uid = getUserId();
-  if (uid) {
-    setDoc(doc(bookmakersCollectionRef(uid), next.id), stripUndefined(next) as Record<string, unknown>).catch(() => {
-      // ignore
-    });
-  }
   return next;
 }
 
@@ -1264,12 +1075,6 @@ export function addManualMultiBet(input: AddManualMultiBetInput): TrackedBetReco
   };
   const current = getTrackedBets();
   writeTrackedBets([record, ...current]);
-  const uid = getUserId();
-  if (uid) {
-    setDoc(doc(betsCollectionRef(uid), record.id), toFirestoreBet(record)).catch(() => {
-      // ignore
-    });
-  }
 
   if (import.meta.env.DEV) {
     console.log("[bet-tracker quick-add]", {
@@ -1333,12 +1138,6 @@ export function addTrackedBet(input: AddTrackedBetInput): TrackedBetRecord | nul
   };
   const current = getTrackedBets();
   writeTrackedBets([record, ...current]);
-  const uid = getUserId();
-  if (uid) {
-    setDoc(doc(betsCollectionRef(uid), record.id), toFirestoreBet(record)).catch(() => {
-      // ignore
-    });
-  }
   if (import.meta.env.DEV) {
     console.log("[bet-tracker add]", {
       bookmaker: bookmaker.name,
@@ -1402,14 +1201,6 @@ export function updateTrackedBetStatus(id: string, status: TrackedBetStatus): Tr
     return updatedRecord;
   });
   writeTrackedBets(next);
-  if (updatedRecord) {
-    const uid = getUserId();
-    if (uid) {
-      setDoc(doc(betsCollectionRef(uid), updatedRecord.id), toFirestoreBet(updatedRecord)).catch(() => {
-        // ignore
-      });
-    }
-  }
   return updatedRecord;
 }
 
@@ -1460,15 +1251,7 @@ export async function updateTrackedBetCashOutShared(id: string, cashOutAmount: n
     returnUnits: Number(stableReturnUnits.toFixed(4)),
     profitUnits: Number(profitUnits.toFixed(4)),
   };
-  const uid = getUserId();
   writeTrackedBets(current.map((r) => (r.id === id ? updated : r)));
-  if (uid) {
-    try {
-      await setDoc(doc(betsCollectionRef(uid), updated.id), toFirestoreBet(updated));
-    } catch {
-      return null;
-    }
-  }
   return updated;
 }
 
@@ -1477,12 +1260,6 @@ export function deleteTrackedBet(id: string): boolean {
   const next = current.filter((b) => b.id !== id);
   if (next.length === current.length) return false;
   writeTrackedBets(next);
-  const uid = getUserId();
-  if (uid) {
-    deleteDoc(doc(betsCollectionRef(uid), id)).catch(() => {
-      // ignore
-    });
-  }
   return true;
 }
 
@@ -1490,36 +1267,13 @@ export async function deleteTrackedBetShared(id: string): Promise<boolean> {
   const current = getTrackedBets();
   if (!current.some((b) => b.id === id)) return false;
   writeTrackedBets(current.filter((b) => b.id !== id));
-  const uid = getUserId();
-  if (!uid) return true;
-  try {
-    await deleteDoc(doc(betsCollectionRef(uid), id));
-    return true;
-  } catch {
-    return false;
-  }
+  return true;
 }
 
 export async function clearAllTrackedBetsShared(): Promise<boolean> {
   if (typeof window === "undefined") return false;
-  const uid = getUserId();
-  if (!uid) return false;
-  try {
-    const snapshot = await getDocs(betsCollectionRef(uid));
-    const docs = snapshot.docs;
-    for (let i = 0; i < docs.length; i += 450) {
-      const batch = writeBatch(firestore);
-      for (const docSnap of docs.slice(i, i + 450)) {
-        batch.delete(docSnap.ref);
-      }
-      await batch.commit();
-    }
-    clearTrackedBetsLocal();
-    emitTrackerUpdated();
-    return true;
-  } catch {
-    return false;
-  }
+  clearTrackedBetsLocal();
+  return true;
 }
 
 export function getTrackedBetsByBookmaker(bookmakerId: string): TrackedBetRecord[] {

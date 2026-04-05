@@ -8,7 +8,6 @@ import {
   getBookmakers,
   getBalanceAdjustments,
   getUnitSize,
-  refreshTrackedBetsFromServer,
   restoreTrackedBetsFromBackup,
   settlePendingTrackedBets,
   getTrackedBetsDebugState,
@@ -448,27 +447,16 @@ export function BetTrackerPage() {
 
   useEffect(() => {
     let cancelled = false;
-    const pull = async (markLoaded: boolean) => {
-      await refreshTrackedBetsFromServer();
-      if (cancelled) return;
+    const pull = async () => {
       await settlePendingTrackedBets();
       if (!cancelled) {
         refresh();
-        if (markLoaded) setInitialSyncLoading(false);
+        setInitialSyncLoading(false);
       }
     };
-    void pull(true);
-    const t = window.setInterval(() => {
-      void pull(false);
-    }, 5000);
-    const onSocketRefresh = () => {
-      void pull(false);
-    };
-    window.addEventListener("app:bets-updated", onSocketRefresh as EventListener);
+    void pull();
     return () => {
       cancelled = true;
-      window.clearInterval(t);
-      window.removeEventListener("app:bets-updated", onSocketRefresh as EventListener);
     };
   }, [refresh]);
 

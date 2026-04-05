@@ -1,12 +1,10 @@
 import { useState, useEffect, useMemo, type FormEvent } from "react";
-import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { CalendarPage } from "./pages/CalendarPage.js";
 import { BetTrackerPage } from "./pages/BetTrackerPage.js";
 import { StakeCalculatorPage } from "./pages/StakeCalculatorPage.js";
 import { setCalibrationTable } from "./lib/valueBetCalibration.js";
 import type { CalibrationBucket } from "./lib/valueBetCalibration.js";
-import { firebaseAuth } from "./services/firebase.js";
-import { clearAllTrackedBetsShared, getAllBookmakerStats, getTrackedBetStats, getTrackedBets, startBetTrackerRealtime, stopBetTrackerRealtime } from "./services/betTrackerService.js";
+import { clearAllTrackedBetsShared, getAllBookmakerStats, getTrackedBetStats, getTrackedBets } from "./services/betTrackerService.js";
 import "./App.css";
 
 type AppTab = "calendar" | "betTracker" | "stakeCalculator";
@@ -15,8 +13,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<AppTab>("calendar");
   const [authChecked, setAuthChecked] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const [sitePassword, setSitePassword] = useState("");
   const [authError, setAuthError] = useState<string | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
   const [sidebarTick, setSidebarTick] = useState(0);
@@ -127,19 +124,17 @@ export default function App() {
 
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(firebaseAuth, (user) => {
-      setAuthenticated(!!user);
+    const configured = typeof import.meta.env !== "undefined"
+      ? String(import.meta.env?.VITE_SITE_PASSWORD ?? "").trim()
+      : "";
+    if (!configured) {
+      setAuthenticated(true);
       setAuthChecked(true);
-      if (user) {
-        startBetTrackerRealtime();
-      } else {
-        stopBetTrackerRealtime();
-      }
-    });
-    return () => {
-      unsubscribe();
-      stopBetTrackerRealtime();
-    };
+      return;
+    }
+    const cached = typeof window !== "undefined" && window.localStorage.getItem("siteAccessGranted") === "true";
+    setAuthenticated(cached);
+    setAuthChecked(true);
   }, []);
 
   useEffect(() => {
@@ -159,8 +154,21 @@ export default function App() {
     setAuthBusy(true);
     setAuthError(null);
     try {
-      await signInWithEmailAndPassword(firebaseAuth, email, password);
-      setPassword("");
+      const configured = typeof import.meta.env !== "undefined"
+        ? String(import.meta.env?.VITE_SITE_PASSWORD ?? "").trim()
+        : "";
+      if (!configured) {
+        setAuthenticated(true);
+        return;
+      }
+      if (sitePassword.trim() !== configured) {
+        throw new Error("Incorrect password.");
+      }
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem("siteAccessGranted", "true");
+      }
+      setAuthenticated(true);
+      setSitePassword("");
     } catch (err) {
       setAuthError(err instanceof Error ? err.message : "Login failed.");
     } finally {
@@ -169,7 +177,10 @@ export default function App() {
   }
 
   async function handleLogout() {
-    await signOut(firebaseAuth).catch(() => {});
+    if (typeof window !== "undefined") {
+      window.localStorage.removeItem("siteAccessGranted");
+    }
+    setAuthenticated(false);
   }
 
   if (!authChecked) {
@@ -180,17 +191,13 @@ export default function App() {
     return (
       <div className="auth-screen">
         <form className="auth-card" onSubmit={handleLogin}>
-          <h1>Sign In</h1>
-          <label>
-            Email
-            <input value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" />
-          </label>
+          <h1>Access Required</h1>
           <label>
             Password
             <input
               type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              value={sitePassword}
+              onChange={(e) => setSitePassword(e.target.value)}
               autoComplete="current-password"
             />
           </label>
