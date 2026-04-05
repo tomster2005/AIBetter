@@ -520,7 +520,7 @@ export function adjustBalance(
   writeBalanceAdjustments([adj, ...current]);
   const uid = getUserId();
   if (uid) {
-    setDoc(doc(balanceAdjustmentsCollectionRef(uid), adj.id), adj).catch(() => {
+    setDoc(doc(balanceAdjustmentsCollectionRef(uid), adj.id), stripUndefined(adj) as Record<string, unknown>).catch(() => {
       // ignore
     });
   }
@@ -626,15 +626,29 @@ function emitTrackerUpdated(): void {
   window.dispatchEvent(new CustomEvent("app:tracker-updated"));
 }
 
+function stripUndefined(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(stripUndefined);
+  }
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, v]) => v !== undefined)
+      .map(([k, v]) => [k, stripUndefined(v)] as const);
+    return Object.fromEntries(entries);
+  }
+  return value;
+}
+
 function toFirestoreBet(record: TrackedBetRecord): Record<string, unknown> {
   const createdAtMs = Date.parse(record.createdAt);
   const updatedAtMs = Date.parse(record.updatedAt);
   const { id, ...rest } = record;
-  return {
+  const payload = {
     ...rest,
     createdAtMs: Number.isFinite(createdAtMs) ? createdAtMs : Date.now(),
     updatedAtMs: Number.isFinite(updatedAtMs) ? updatedAtMs : Date.now(),
   };
+  return stripUndefined(payload) as Record<string, unknown>;
 }
 
 function toTrackedBetFromFirestore(id: string, raw: Record<string, unknown>): TrackedBetRecord | null {
@@ -1024,7 +1038,7 @@ export function addBookmaker(name: string, startingBalance: number): TrackedBook
   writeBookmakers([...existing, next]);
   const uid = getUserId();
   if (uid) {
-    setDoc(doc(bookmakersCollectionRef(uid), next.id), next).catch(() => {
+    setDoc(doc(bookmakersCollectionRef(uid), next.id), stripUndefined(next) as Record<string, unknown>).catch(() => {
       // ignore
     });
   }
