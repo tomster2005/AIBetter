@@ -1,11 +1,12 @@
-import { useState, useEffect, useMemo, useRef, type FormEvent } from "react";
-import { io, type Socket } from "socket.io-client";
+import { useState, useEffect, useMemo, type FormEvent } from "react";
+import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { CalendarPage } from "./pages/CalendarPage.js";
 import { BetTrackerPage } from "./pages/BetTrackerPage.js";
 import { StakeCalculatorPage } from "./pages/StakeCalculatorPage.js";
 import { setCalibrationTable } from "./lib/valueBetCalibration.js";
 import type { CalibrationBucket } from "./lib/valueBetCalibration.js";
-import { clearAllTrackedBetsShared, clearTrackedBetsLocalOnly, getAllBookmakerStats, getTrackedBetStats, getTrackedBets } from "./services/betTrackerService.js";
+import { firebaseAuth } from "./services/firebase.js";
+import { clearAllTrackedBetsShared, getAllBookmakerStats, getTrackedBetStats, getTrackedBets, startBetTrackerRealtime, stopBetTrackerRealtime } from "./services/betTrackerService.js";
 import "./App.css";
 
 type AppTab = "calendar" | "betTracker" | "stakeCalculator";
@@ -14,18 +15,11 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<AppTab>("calendar");
   const [authChecked, setAuthChecked] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
-  const [siteChecked, setSiteChecked] = useState(false);
-  const [siteAuthenticated, setSiteAuthenticated] = useState(false);
-  const [sitePassword, setSitePassword] = useState("");
-  const [siteError, setSiteError] = useState<string | null>(null);
-  const [siteBusy, setSiteBusy] = useState(false);
-  const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [authError, setAuthError] = useState<string | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
   const [sidebarTick, setSidebarTick] = useState(0);
-  const socketRef = useRef<Socket | null>(null);
-  const socketDebounceRef = useRef<number | null>(null);
 
   useEffect(() => {
     const onStorage = () => setSidebarTick((v) => v + 1);
@@ -133,75 +127,20 @@ export default function App() {
 
 
   useEffect(() => {
-    fetch("/api/auth/me", { credentials: "include" })
-      .then((res) => (res.ok ? res.json() : { authenticated: false, siteAuthenticated: false }))
-      .then((data: { authenticated?: boolean; siteAuthenticated?: boolean }) => {
-        setAuthenticated(data?.authenticated === true);
-        setSiteAuthenticated(data?.siteAuthenticated === true);
-      })
-      .catch(() => {
-        setAuthenticated(false);
-        setSiteAuthenticated(false);
-      })
-      .finally(() => {
-        setAuthChecked(true);
-        setSiteChecked(true);
-      });
-  }, []);
-
-  useEffect(() => {
-    if (!authenticated) {
-      if (socketRef.current) {
-        socketRef.current.disconnect();
-        socketRef.current = null;
-      }
-      if (socketDebounceRef.current != null) {
-        window.clearTimeout(socketDebounceRef.current);
-        socketDebounceRef.current = null;
-      }
-      return;
-    }
-    if (socketRef.current) return;
-    const base = typeof import.meta.env !== "undefined" ? import.meta.env?.VITE_API_ORIGIN : undefined;
-    const socket = typeof base === "string" && base.trim() !== ""
-      ? io(base, { withCredentials: true })
-      : io({ withCredentials: true });
-    socketRef.current = socket;
-    socket.on("connect", () => {
-      if (import.meta.env.DEV) {
-        console.log("[socket] connected", { id: socket.id });
+    const unsubscribe = onAuthStateChanged(firebaseAuth, (user) => {
+      setAuthenticated(!!user);
+      setAuthChecked(true);
+      if (user) {
+        startBetTrackerRealtime();
+      } else {
+        stopBetTrackerRealtime();
       }
     });
-    socket.on("connect_error", (err: unknown) => {
-      console.warn("[socket] connect_error", err instanceof Error ? err.message : err);
-    });
-    const onBetsUpdated = () => {
-      if (socketDebounceRef.current != null) return;
-      socketDebounceRef.current = window.setTimeout(() => {
-        socketDebounceRef.current = null;
-        window.dispatchEvent(new CustomEvent("app:bets-updated"));
-        if (import.meta.env.DEV) {
-          console.log("[socket] bets_updated received");
-        }
-      }, 250);
-    };
-    const onBetsCleared = () => {
-      clearTrackedBetsLocalOnly();
-      window.dispatchEvent(new CustomEvent("app:bets-updated"));
-    };
-    socket.on("bets_updated", onBetsUpdated);
-    socket.on("bets_cleared", onBetsCleared);
     return () => {
-      socket.off("bets_updated", onBetsUpdated);
-      socket.off("bets_cleared", onBetsCleared);
-      socket.disconnect();
-      socketRef.current = null;
-      if (socketDebounceRef.current != null) {
-        window.clearTimeout(socketDebounceRef.current);
-        socketDebounceRef.current = null;
-      }
+      unsubscribe();
+      stopBetTrackerRealtime();
     };
-  }, [authenticated]);
+  }, []);
 
   useEffect(() => {
     if (!authenticated) return;
@@ -220,17 +159,7 @@ export default function App() {
     setAuthBusy(true);
     setAuthError(null);
     try {
-      const res = await fetch("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ username, password }),
-      });
-      if (!res.ok) {
-        const payload = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(payload.error || "Login failed.");
-      }
-      setAuthenticated(true);
+      await signInWithEmailAndPassword(firebaseAuth, email, password);
       setPassword("");
     } catch (err) {
       setAuthError(err instanceof Error ? err.message : "Login failed.");
@@ -239,71 +168,22 @@ export default function App() {
     }
   }
 
-  async function handleSiteLogin(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    setSiteBusy(true);
-    setSiteError(null);
-    try {
-      const res = await fetch("/api/auth/site-login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ password: sitePassword }),
-      });
-      if (!res.ok) {
-        const payload = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(payload.error || "Access denied.");
-      }
-      setSiteAuthenticated(true);
-      setSitePassword("");
-    } catch (err) {
-      setSiteError(err instanceof Error ? err.message : "Access denied.");
-    } finally {
-      setSiteBusy(false);
-    }
-  }
-
   async function handleLogout() {
-    await fetch("/api/auth/logout", { method: "POST", credentials: "include" }).catch(() => {});
-    setAuthenticated(false);
-    setSiteAuthenticated(false);
+    await signOut(firebaseAuth).catch(() => {});
   }
 
-  if (!authChecked || !siteChecked) {
+  if (!authChecked) {
     return <div className="auth-screen">Checking session...</div>;
-  }
-
-  if (!siteAuthenticated) {
-    return (
-      <div className="auth-screen">
-        <form className="auth-card" onSubmit={handleSiteLogin}>
-          <h1>Access Required</h1>
-          <label>
-            Access Password
-            <input
-              type="password"
-              value={sitePassword}
-              onChange={(e) => setSitePassword(e.target.value)}
-              autoComplete="current-password"
-            />
-          </label>
-          {siteError ? <p className="auth-error">{siteError}</p> : null}
-          <button type="submit" disabled={siteBusy}>
-            {siteBusy ? "Checking..." : "Enter"}
-          </button>
-        </form>
-      </div>
-    );
   }
 
   if (!authenticated) {
     return (
       <div className="auth-screen">
         <form className="auth-card" onSubmit={handleLogin}>
-          <h1>AIBetter Login</h1>
+          <h1>Sign In</h1>
           <label>
-            Username
-            <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" />
+            Email
+            <input value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" />
           </label>
           <label>
             Password
