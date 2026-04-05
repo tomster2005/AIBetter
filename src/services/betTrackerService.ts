@@ -545,6 +545,10 @@ function clearTrackedBetsLocal(): void {
   }
 }
 
+export function clearTrackedBetsLocalOnly(): void {
+  clearTrackedBetsLocal();
+}
+
 function sanitizeTrackedBetsList(value: unknown): TrackedBetRecord[] {
   const raw = Array.isArray(value) ? value : [];
   const sanitized = raw.map(sanitizeTrackedBet).filter((b): b is TrackedBetRecord => b != null).map(repairUnits);

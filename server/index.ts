@@ -966,6 +966,7 @@ app.delete("/api/bets", (_req, res) => {
     const deletedCount = betsStore.deleteAll();
     console.log("[api/bets] DELETE all", { deletedCount, totalCount: betsStore.count() });
     io.emit("bets_updated");
+    io.emit("bets_cleared");
     res.json({ deletedCount });
   } catch {
     res.status(500).json({ error: "Failed to delete all bets." });

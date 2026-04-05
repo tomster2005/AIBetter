@@ -5,7 +5,7 @@ import { BetTrackerPage } from "./pages/BetTrackerPage.js";
 import { StakeCalculatorPage } from "./pages/StakeCalculatorPage.js";
 import { setCalibrationTable } from "./lib/valueBetCalibration.js";
 import type { CalibrationBucket } from "./lib/valueBetCalibration.js";
-import { clearAllTrackedBetsShared, getAllBookmakerStats, getTrackedBetStats, getTrackedBets } from "./services/betTrackerService.js";
+import { clearAllTrackedBetsShared, clearTrackedBetsLocalOnly, getAllBookmakerStats, getTrackedBetStats, getTrackedBets } from "./services/betTrackerService.js";
 import "./App.css";
 
 type AppTab = "calendar" | "betTracker" | "stakeCalculator";
@@ -172,7 +172,7 @@ export default function App() {
         console.log("[socket] connected", { id: socket.id });
       }
     });
-    socket.on("connect_error", (err) => {
+    socket.on("connect_error", (err: unknown) => {
       console.warn("[socket] connect_error", err instanceof Error ? err.message : err);
     });
     const onBetsUpdated = () => {
@@ -185,9 +185,15 @@ export default function App() {
         }
       }, 250);
     };
+    const onBetsCleared = () => {
+      clearTrackedBetsLocalOnly();
+      window.dispatchEvent(new CustomEvent("app:bets-updated"));
+    };
     socket.on("bets_updated", onBetsUpdated);
+    socket.on("bets_cleared", onBetsCleared);
     return () => {
       socket.off("bets_updated", onBetsUpdated);
+      socket.off("bets_cleared", onBetsCleared);
       socket.disconnect();
       socketRef.current = null;
       if (socketDebounceRef.current != null) {
