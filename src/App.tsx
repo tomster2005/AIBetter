@@ -141,9 +141,17 @@ export default function App() {
     if (socketRef.current) return;
     const base = typeof import.meta.env !== "undefined" ? import.meta.env?.VITE_API_ORIGIN : undefined;
     const socket = typeof base === "string" && base.trim() !== ""
-      ? io(base, { withCredentials: true, transports: ["websocket"] })
-      : io({ withCredentials: true, transports: ["websocket"] });
+      ? io(base, { withCredentials: true })
+      : io({ withCredentials: true });
     socketRef.current = socket;
+    socket.on("connect", () => {
+      if (import.meta.env.DEV) {
+        console.log("[socket] connected", { id: socket.id });
+      }
+    });
+    socket.on("connect_error", (err) => {
+      console.warn("[socket] connect_error", err instanceof Error ? err.message : err);
+    });
     const onBetsUpdated = () => {
       if (socketDebounceRef.current != null) return;
       socketDebounceRef.current = window.setTimeout(() => {
