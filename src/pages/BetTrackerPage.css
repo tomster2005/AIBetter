@@ -647,6 +647,12 @@ h3.bet-tracker-page__bankroll-title {
   border-color: #fca5a5;
 }
 
+.bet-tracker-page__status-select.status-cashed_out {
+  color: #9a3412;
+  background: #ffedd5;
+  border-color: #fed7aa;
+}
+
 .profit-positive {
   color: var(--positive);
 }
@@ -747,6 +753,12 @@ h3.bet-tracker-page__bankroll-title {
 .bet-tracker-page__bet-card.is-loss {
   border: 1px solid var(--border-light);
   border-left: 1.5px solid var(--negative);
+  background: var(--card-bg);
+}
+
+.bet-tracker-page__bet-card.is-cashed-out {
+  border: 1px solid var(--border-light);
+  border-left: 1.5px solid #f59e0b;
   background: var(--card-bg);
 }
 
@@ -905,10 +917,33 @@ h3.bet-tracker-page__bankroll-title {
   font-weight: 600;
 }
 
+.bet-tracker-page__bet-badge--cashout {
+  border-color: #c7d2fe;
+  background: #eef2ff;
+  color: #3730a3;
+}
+
 .bet-tracker-page__bet-controls {
   display: flex;
   align-items: center;
   gap: 0.6rem;
+}
+
+.bet-tracker-page__cashout-btn {
+  border: 1px solid #fdba74;
+  background: #fff7ed;
+  color: #9a3412;
+  border-radius: 6px;
+  padding: 0.3rem 0.55rem;
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.16s ease, border-color 0.16s ease;
+}
+
+.bet-tracker-page__cashout-btn:hover {
+  background: #ffedd5;
+  border-color: #f59e0b;
 }
 
 .bet-tracker-page__status-chip {
@@ -941,8 +976,87 @@ h3.bet-tracker-page__bankroll-title {
   border-color: #f5c9c9;
 }
 
+.bet-tracker-page__status-chip.status-cashed_out {
+  color: #9a3412;
+  background: #fff7ed;
+  border-color: #fed7aa;
+}
+
 .bet-tracker-page__status-chip.is-pulse {
   animation: bet-tracker-status-pulse 0.38s ease;
+}
+
+.bet-tracker-page__status-chip:disabled {
+  cursor: default;
+  opacity: 0.85;
+}
+
+.bet-tracker-page__cashout-panel {
+  margin-top: 0.5rem;
+  border: 1px solid #c7d2fe;
+  border-radius: 8px;
+  padding: 0.55rem 0.65rem;
+  background: #eef2ff;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.bet-tracker-page__cashout-panel label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.78rem;
+  color: #312e81;
+}
+
+.bet-tracker-page__cashout-panel input {
+  border: 1px solid #a5b4fc;
+  border-radius: 6px;
+  padding: 0.38rem 0.5rem;
+  font-size: 0.82rem;
+  background: #fff;
+}
+
+.bet-tracker-page__cashout-preview {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #312e81;
+}
+
+.bet-tracker-page__cashout-confirm {
+  border-top: 1px dashed #c7d2fe;
+  padding-top: 0.4rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.bet-tracker-page__cashout-confirm p {
+  margin: 0;
+  font-size: 0.78rem;
+  color: #1e1b4b;
+}
+
+.bet-tracker-page__cashout-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+
+.bet-tracker-page__cashout-actions button {
+  border: none;
+  background: #4f46e5;
+  color: #fff;
+  border-radius: 6px;
+  padding: 0.35rem 0.65rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.bet-tracker-page__cashout-actions button.secondary {
+  background: #fff;
+  color: #3730a3;
+  border: 1px solid #a5b4fc;
 }
 
 .bet-tracker-page__bet-card:hover .bet-tracker-page__delete-btn,

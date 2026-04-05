@@ -54,7 +54,7 @@ export default function App() {
       const todayProfit = bets.reduce((sum, b) => {
         const createdMs = Date.parse(b.createdAt);
         if (!Number.isFinite(createdMs) || createdMs < todayStartMs) return sum;
-        if (b.status === "win") return sum + (b.returnAmount - b.stake);
+        if (b.status === "win" || b.status === "cashed_out") return sum + (b.returnAmount - b.stake);
         if (b.status === "loss") return sum - b.stake;
         return sum;
       }, 0);

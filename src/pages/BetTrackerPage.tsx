@@ -19,6 +19,7 @@ import {
   adjustBalance,
   deleteTrackedBetShared,
   updateTrackedBetStatusShared,
+  updateTrackedBetCashOutShared,
   type BookmakerStats,
   type ManualTrackedSelectionInput,
   type ScoreBandAnalysisRow,
@@ -64,6 +65,36 @@ function fmtRelativeDate(v: string): string {
   if (t >= startOfToday) return `Today ${hhmm}`;
   if (t >= startOfYesterday) return `Yesterday ${hhmm}`;
   return d.toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" }) + ` ${hhmm}`;
+}
+
+function getBetProfit(bet: TrackedBetRecord): number {
+  if (bet.status === "win" || bet.status === "cashed_out") return bet.returnAmount - bet.stake;
+  if (bet.status === "loss") return -bet.stake;
+  return 0;
+}
+
+function getStatusLabel(status: TrackedBetStatus): string {
+  return status === "cashed_out" ? "cashed out" : status;
+}
+
+function getSettledOutcome(bet: TrackedBetRecord): "win" | "loss" | null {
+  if (bet.status === "win") return "win";
+  if (bet.status === "loss") return "loss";
+  if (bet.status === "cashed_out") return bet.returnAmount >= bet.stake ? "win" : "loss";
+  return null;
+}
+
+function sanitizeCashOutInput(value: string): string {
+  const cleaned = value.replace(/[^0-9.]/g, "");
+  if (cleaned === "") return "";
+  const [intPart, ...rest] = cleaned.split(".");
+  const decimals = rest.join("");
+  const nextDecimals = decimals.length > 0 ? decimals.slice(0, 2) : "";
+  return nextDecimals.length > 0 ? `${intPart}.${nextDecimals}` : intPart;
+}
+
+function toMoneyString(value: number): string {
+  return `£${value.toFixed(2)}`;
 }
 
 export type QuickAddSelectionDraft = {
@@ -329,6 +360,10 @@ export function BetTrackerPage() {
   const [expandedBetIds, setExpandedBetIds] = useState<Set<string>>(new Set());
   const [deletingBetIds, setDeletingBetIds] = useState<Set<string>>(new Set());
   const [statusPulseBetIds, setStatusPulseBetIds] = useState<Set<string>>(new Set());
+  const [cashOutOpenIds, setCashOutOpenIds] = useState<Set<string>>(new Set());
+  const [cashOutValues, setCashOutValues] = useState<Record<string, string>>({});
+  const [cashOutErrors, setCashOutErrors] = useState<Record<string, string>>({});
+  const [cashOutConfirmIds, setCashOutConfirmIds] = useState<Set<string>>(new Set());
   const [toast, setToast] = useState<{ id: number; text: string } | null>(null);
   const [initialSyncLoading, setInitialSyncLoading] = useState(true);
   const [evalPlayerName, setEvalPlayerName] = useState("");
@@ -433,7 +468,7 @@ export function BetTrackerPage() {
   const settledBets = useMemo(() => bets.filter((b) => b.status !== "pending"), [bets]);
   const totals = useMemo(() => {
     const totalStaked = settledBets.reduce((sum, b) => sum + b.stake, 0);
-    const totalReturned = settledBets.reduce((sum, b) => sum + (b.status === "win" ? b.returnAmount : 0), 0);
+    const totalReturned = settledBets.reduce((sum, b) => sum + (b.status === "win" || b.status === "cashed_out" ? b.returnAmount : 0), 0);
     const totalProfit = totalReturned - totalStaked;
     const roi = totalStaked > 0 ? totalProfit / totalStaked : 0;
     return { totalStaked, totalReturned, totalProfit, roi };
@@ -457,8 +492,8 @@ export function BetTrackerPage() {
     ];
     return ranges.map((r) => {
       const inRange = settledBets.filter((b) => b.oddsTaken >= r.min && b.oddsTaken < r.max);
-      const wins = inRange.filter((b) => b.status === "win").length;
-      const profit = inRange.reduce((sum, b) => sum + (b.status === "win" ? b.returnAmount - b.stake : -b.stake), 0);
+      const wins = inRange.filter((b) => getSettledOutcome(b) === "win").length;
+      const profit = inRange.reduce((sum, b) => sum + getBetProfit(b), 0);
       return {
         label: r.label,
         bets: inRange.length,
@@ -478,7 +513,8 @@ export function BetTrackerPage() {
     let run = 0;
     let runType: "win" | "loss" | null = null;
     for (const b of ordered) {
-      const t = b.status === "win" ? "win" : "loss";
+      const t = getSettledOutcome(b);
+      if (!t) continue;
       if (runType === t) run += 1;
       else {
         runType = t;
@@ -488,11 +524,13 @@ export function BetTrackerPage() {
       else longestLoss = Math.max(longestLoss, run);
     }
     if (ordered.length > 0) {
-      const last = ordered[ordered.length - 1]!.status === "win" ? "win" : "loss";
+      const last = getSettledOutcome(ordered[ordered.length - 1]!);
+      if (!last) return { current, currentType, longestWin, longestLoss };
       currentType = last;
       current = 0;
       for (let i = ordered.length - 1; i >= 0; i--) {
-        const t = ordered[i]!.status === "win" ? "win" : "loss";
+        const t = getSettledOutcome(ordered[i]!);
+        if (!t) break;
         if (t !== last) break;
         current += 1;
       }
@@ -503,19 +541,19 @@ export function BetTrackerPage() {
     if (settledBets.length === 0) {
       return { best: null as TrackedBetRecord | null, worst: null as TrackedBetRecord | null, highestOddsWin: null as TrackedBetRecord | null };
     }
-    const profitOf = (b: TrackedBetRecord) => (b.status === "win" ? b.returnAmount - b.stake : -b.stake);
+    const profitOf = (b: TrackedBetRecord) => getBetProfit(b);
     const best = [...settledBets].sort((a, b) => profitOf(b) - profitOf(a))[0] ?? null;
     const worst = [...settledBets].sort((a, b) => profitOf(a) - profitOf(b))[0] ?? null;
     const highestOddsWin =
-      [...settledBets].filter((b) => b.status === "win").sort((a, b) => b.oddsTaken - a.oddsTaken)[0] ?? null;
+      [...settledBets].filter((b) => getSettledOutcome(b) === "win").sort((a, b) => b.oddsTaken - a.oddsTaken)[0] ?? null;
     return { best, worst, highestOddsWin };
   }, [settledBets]);
   const recentPerformance = useMemo(() => {
     const ordered = [...settledBets].sort((a, b) => Date.parse(b.updatedAt || b.createdAt) - Date.parse(a.updatedAt || a.createdAt));
     const calc = (n: number) => {
       const sample = ordered.slice(0, n);
-      const wins = sample.filter((b) => b.status === "win").length;
-      const profit = sample.reduce((sum, b) => sum + (b.status === "win" ? b.returnAmount - b.stake : -b.stake), 0);
+      const wins = sample.filter((b) => getSettledOutcome(b) === "win").length;
+      const profit = sample.reduce((sum, b) => sum + getBetProfit(b), 0);
       return {
         count: sample.length,
         winRate: sample.length > 0 ? wins / sample.length : 0,
@@ -572,7 +610,7 @@ export function BetTrackerPage() {
       .map((b) => {
         const modelScore = b.sourceMeta?.modelScore;
         const normalizedScore = b.sourceMeta?.normalizedScore;
-        const pl = b.status === "win" ? b.returnAmount - b.stake : b.status === "loss" ? -b.stake : 0;
+        const pl = getBetProfit(b);
         return { b, modelScore, normalizedScore, pl };
       })
       .filter(({ b, normalizedScore }) => {
@@ -769,6 +807,82 @@ export function BetTrackerPage() {
     if (status === "win") return "loss";
     return "pending";
   }
+
+  const onOpenCashOut = useCallback((betId: string) => {
+    setCashOutOpenIds((prev) => new Set(prev).add(betId));
+    setCashOutValues((prev) => ({ ...prev, [betId]: prev[betId] ?? "" }));
+    setCashOutErrors((prev) => {
+      if (!prev[betId]) return prev;
+      const next = { ...prev };
+      delete next[betId];
+      return next;
+    });
+  }, []);
+
+  const onCloseCashOut = useCallback((betId: string) => {
+    setCashOutOpenIds((prev) => {
+      const next = new Set(prev);
+      next.delete(betId);
+      return next;
+    });
+    setCashOutConfirmIds((prev) => {
+      const next = new Set(prev);
+      next.delete(betId);
+      return next;
+    });
+    setCashOutErrors((prev) => {
+      if (!prev[betId]) return prev;
+      const next = { ...prev };
+      delete next[betId];
+      return next;
+    });
+  }, []);
+
+  const onConfirmCashOut = useCallback(async (bet: TrackedBetRecord) => {
+    const raw = cashOutValues[bet.id] ?? "";
+    const amount = Number(raw);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setCashOutErrors((prev) => ({ ...prev, [bet.id]: "Enter a valid cash out amount." }));
+      return;
+    }
+    if (amount > bet.returnAmount) {
+      setCashOutErrors((prev) => ({ ...prev, [bet.id]: "Cash out cannot exceed the potential return." }));
+      return;
+    }
+    const updated = await updateTrackedBetCashOutShared(bet.id, amount);
+    if (!updated) {
+      setMessage("Cash out failed (server unavailable). Please try again.");
+      return;
+    }
+    onCloseCashOut(bet.id);
+    setToast({ id: Date.now(), text: `Bet cashed out for ${toMoneyString(amount)}` });
+    if (import.meta.env.DEV) {
+      console.log("[cash-out-ui] confirmed", { betId: bet.id, amount });
+    }
+    refresh();
+  }, [cashOutValues, onCloseCashOut, refresh]);
+
+  const onRequestCashOutConfirm = useCallback((bet: TrackedBetRecord) => {
+    const raw = cashOutValues[bet.id] ?? "";
+    const amount = Number(raw);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setCashOutErrors((prev) => ({ ...prev, [bet.id]: "Enter a valid cash out amount." }));
+      return;
+    }
+    if (amount > bet.returnAmount) {
+      setCashOutErrors((prev) => ({ ...prev, [bet.id]: `Cannot exceed potential return (${toMoneyString(bet.returnAmount)}).` }));
+      return;
+    }
+    setCashOutConfirmIds((prev) => new Set(prev).add(bet.id));
+  }, [cashOutValues]);
+
+  const onCancelCashOutConfirm = useCallback((betId: string) => {
+    setCashOutConfirmIds((prev) => {
+      const next = new Set(prev);
+      next.delete(betId);
+      return next;
+    });
+  }, []);
 
   const resetQuickAdd = useCallback(() => {
     setQuickAddBookmakerId("");
@@ -1210,7 +1324,7 @@ export function BetTrackerPage() {
             <h3>Best / Worst Bets</h3>
             <ul>
               <li><span>Highest profit</span><strong>{bestWorst.best ? `${bestWorst.best.matchLabel} (${fmtSignedMoney(bestWorst.best.returnAmount - bestWorst.best.stake)})` : "—"}</strong></li>
-              <li><span>Biggest loss</span><strong>{bestWorst.worst ? `${bestWorst.worst.matchLabel} (${fmtSignedMoney(-bestWorst.worst.stake)})` : "—"}</strong></li>
+              <li><span>Biggest loss</span><strong>{bestWorst.worst ? `${bestWorst.worst.matchLabel} (${fmtSignedMoney(getBetProfit(bestWorst.worst))})` : "—"}</strong></li>
               <li><span>Highest odds win</span><strong>{bestWorst.highestOddsWin ? `${bestWorst.highestOddsWin.matchLabel} (${bestWorst.highestOddsWin.oddsTaken.toFixed(2)})` : "—"}</strong></li>
             </ul>
           </article>
@@ -1359,6 +1473,7 @@ export function BetTrackerPage() {
               <option value="pending">Pending</option>
               <option value="win">Win</option>
               <option value="loss">Loss</option>
+              <option value="cashed_out">Cashed out</option>
             </select>
           </label>
           <label>
@@ -1461,8 +1576,18 @@ export function BetTrackerPage() {
                   ? "bet-tracker-page__bet-card is-win"
                   : b.status === "loss"
                     ? "bet-tracker-page__bet-card is-loss"
-                    : "bet-tracker-page__bet-card";
+                    : b.status === "cashed_out"
+                      ? "bet-tracker-page__bet-card is-cashed-out"
+                      : "bet-tracker-page__bet-card";
               const deleting = deletingBetIds.has(b.id);
+              const cashOutOpen = cashOutOpenIds.has(b.id);
+              const cashOutError = cashOutErrors[b.id];
+              const cashOutConfirm = cashOutConfirmIds.has(b.id);
+              const cashOutInput = cashOutValues[b.id] ?? "";
+              const cashOutAmount = b.cashOutAmount ?? b.returnAmount;
+              const cashOutInputValue = Number(cashOutInput);
+              const hasCashOutInput = Number.isFinite(cashOutInputValue) && cashOutInputValue > 0;
+              const cashOutProfit = hasCashOutInput ? cashOutInputValue - b.stake : 0;
 
                   const canonicalUnitSize =
                     Number.isFinite(b.unitSizeAtBet as number) && (b.unitSizeAtBet as number) > 0
@@ -1520,12 +1645,14 @@ export function BetTrackerPage() {
                             className={`bet-tracker-page__status-chip status-${b.status}${statusPulseBetIds.has(b.id) ? " is-pulse" : ""}`}
                             onClick={async (e) => {
                               e.stopPropagation();
+                              if (b.status === "cashed_out") return;
                               const next = getNextStatus(b.status);
                               await onStatusChange(b.id, next);
                             }}
                             title="Cycle status: pending → win → loss"
+                            disabled={b.status === "cashed_out"}
                           >
-                            {b.status}
+                            {getStatusLabel(b.status)}
                           </button>
                         </div>
                         <div className={`bet-tracker-page__chevron${isExpanded ? " is-expanded" : ""}`} aria-hidden="true">
@@ -1573,6 +1700,18 @@ export function BetTrackerPage() {
                           <span className="bet-tracker-page__bet-badge">
                             Return £{fmtMoney(b.returnAmount)}{displayReturnUnits != null ? ` (${displayReturnUnits.toFixed(2)}u)` : ""}
                           </span>
+                        )}{b.status === "cashed_out" && (
+                          <span className="bet-tracker-page__bet-badge bet-tracker-page__bet-badge--cashout">
+                            Cashed Out
+                          </span>
+                        )}{b.status === "cashed_out" && (
+                          <span className="bet-tracker-page__bet-badge bet-tracker-page__bet-badge--cashout">
+                            Cashed Out: £{fmtMoney(cashOutAmount)}
+                          </span>
+                        )}{b.status === "cashed_out" && (
+                          <span className="bet-tracker-page__bet-badge bet-tracker-page__bet-badge--cashout">
+                            Profit: {fmtSignedMoney(getBetProfit(b))}
+                          </span>
                         )}</div>
                         <div className="bet-tracker-page__bet-controls">
                           <select
@@ -1580,11 +1719,25 @@ export function BetTrackerPage() {
                             value={b.status}
                             onClick={(e) => e.stopPropagation()}
                             onChange={(e) => onStatusChange(b.id, e.target.value as TrackedBetStatus)}
+                            disabled={b.status === "cashed_out"}
                           >
                             <option value="pending">pending</option>
                             <option value="win">win</option>
                             <option value="loss">loss</option>
+                            {b.status === "cashed_out" ? <option value="cashed_out">cashed out</option> : null}
                           </select>
+                          {b.status === "pending" && (
+                            <button
+                              type="button"
+                              className="bet-tracker-page__cashout-btn"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onOpenCashOut(b.id);
+                              }}
+                            >
+                              Cash Out
+                            </button>
+                          )}
                           <button
                             type="button"
                             className="bet-tracker-page__delete-btn"
@@ -1597,6 +1750,87 @@ export function BetTrackerPage() {
                           </button>
                         </div>
                       </footer>
+                      )}
+                      {isExpanded && b.status === "pending" && cashOutOpen && (
+                        <div
+                          className="bet-tracker-page__cashout-panel"
+                          onClick={(e) => e.stopPropagation()}
+                          role="group"
+                          aria-label="Cash out bet"
+                        >
+                          <label>
+                            Cash out amount (£)
+                            <input
+                              type="number"
+                              min={0.01}
+                              step={0.01}
+                              placeholder="Enter cash out amount"
+                              value={cashOutInput}
+                              onChange={(e) => {
+                                const v = sanitizeCashOutInput(e.target.value);
+                                setCashOutValues((prev) => ({ ...prev, [b.id]: v }));
+                                setCashOutErrors((prev) => {
+                                  if (!prev[b.id]) return prev;
+                                  const next = { ...prev };
+                                  delete next[b.id];
+                                  return next;
+                                });
+                              }}
+                              onBlur={(e) => {
+                                const v = sanitizeCashOutInput(e.target.value);
+                                const n = Number(v);
+                                if (Number.isFinite(n)) {
+                                  setCashOutValues((prev) => ({ ...prev, [b.id]: n.toFixed(2) }));
+                                }
+                              }}
+                            />
+                          </label>
+                          {hasCashOutInput && (
+                            <div className="bet-tracker-page__cashout-preview">
+                              {cashOutProfit >= 0 ? "Profit" : "Loss"}: {fmtSignedMoney(cashOutProfit)}
+                            </div>
+                          )}
+                          {cashOutError && <span className="bet-tracker-page__error-inline">{cashOutError}</span>}
+                          {cashOutConfirm ? (
+                            <div className="bet-tracker-page__cashout-confirm">
+                              <p>
+                                Are you sure you want to cash out this bet for{" "}
+                                <strong>{hasCashOutInput ? toMoneyString(cashOutInputValue) : "£0.00"}</strong>?
+                              </p>
+                              <div className="bet-tracker-page__cashout-actions">
+                                <button
+                                  type="button"
+                                  className="secondary"
+                                  onClick={() => onCancelCashOutConfirm(b.id)}
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void onConfirmCashOut(b)}
+                                >
+                                  Confirm Cash Out
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="bet-tracker-page__cashout-actions">
+                              <button
+                                type="button"
+                                className="secondary"
+                                onClick={() => onCloseCashOut(b.id)}
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => onRequestCashOutConfirm(b)}
+                              >
+                                Confirm
+                              </button>
+                            </div>
+                          )}
+                        </div>
                       )}
                     </article>
                   );
