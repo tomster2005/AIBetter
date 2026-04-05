@@ -448,22 +448,27 @@ export function BetTrackerPage() {
 
   useEffect(() => {
     let cancelled = false;
-    const pull = async () => {
+    const pull = async (markLoaded: boolean) => {
       await refreshTrackedBetsFromServer();
       if (cancelled) return;
       await settlePendingTrackedBets();
       if (!cancelled) {
         refresh();
-        setInitialSyncLoading(false);
+        if (markLoaded) setInitialSyncLoading(false);
       }
     };
-    void pull();
+    void pull(true);
     const t = window.setInterval(() => {
-      void pull();
+      void pull(false);
     }, 5000);
+    const onSocketRefresh = () => {
+      void pull(false);
+    };
+    window.addEventListener("app:bets-updated", onSocketRefresh as EventListener);
     return () => {
       cancelled = true;
       window.clearInterval(t);
+      window.removeEventListener("app:bets-updated", onSocketRefresh as EventListener);
     };
   }, [refresh]);
 

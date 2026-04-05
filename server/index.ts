@@ -7,6 +7,8 @@ import "dotenv/config";
 import cors from "cors";
 import express from "express";
 import session from "express-session";
+import { createServer } from "http";
+import { Server as SocketIOServer } from "socket.io";
 import { getFixturesBetween } from "../src/api/sportmonks.js";
 
 const token = process.env.SPORTMONKS_API_TOKEN ?? process.env.SPORTMONKS_TOKEN;
@@ -146,6 +148,7 @@ function poissonAtLeast(lambda: number, line: number): number {
 const app = express();
 /** Render sets PORT; API_PORT remains available for local override. */
 const PORT = Number(process.env.PORT || process.env.API_PORT) || 3001;
+const httpServer = createServer(app);
 
 const allowedOrigins =
   process.env.NODE_ENV !== "production"
@@ -176,6 +179,24 @@ app.use(
     },
   })
 );
+
+const io = new SocketIOServer(httpServer, {
+  cors: {
+    origin: allowedOrigins.length > 0 ? allowedOrigins : true,
+    credentials: true,
+  },
+});
+
+io.on("connection", (socket) => {
+  if (process.env.NODE_ENV !== "production") {
+    console.log("[socket] client connected", { id: socket.id });
+  }
+  socket.on("disconnect", () => {
+    if (process.env.NODE_ENV !== "production") {
+      console.log("[socket] client disconnected", { id: socket.id });
+    }
+  });
+});
 
 app.post("/api/auth/login", (req, res) => {
   const body = req.body as { username?: unknown; password?: unknown };
@@ -849,6 +870,7 @@ app.post("/api/bets", (req, res) => {
     }
     betsStore.upsert(body);
     console.log("[api/bets] POST saved", { id: body.id, totalCount: betsStore.count() });
+    io.emit("bets_updated");
     res.status(201).json(body);
   } catch {
     res.status(500).json({ error: "Failed to save bet." });
@@ -868,6 +890,7 @@ app.put("/api/bets/:id", (req, res) => {
       return;
     }
     console.log("[api/bets] PUT updated", { id, totalCount: betsStore.count() });
+    io.emit("bets_updated");
     res.json(updated);
   } catch {
     res.status(500).json({ error: "Failed to update bet." });
@@ -887,6 +910,7 @@ app.delete("/api/bets/:id", (req, res) => {
       return;
     }
     console.log("[api/bets] DELETE removed", { id, totalCount: betsStore.count() });
+    io.emit("bets_updated");
     res.status(204).end();
   } catch {
     res.status(500).json({ error: "Failed to delete bet." });
@@ -914,7 +938,7 @@ if (existsSync(SPA_INDEX)) {
   });
 }
 
-app.listen(PORT, "0.0.0.0", () => {
+httpServer.listen(PORT, "0.0.0.0", () => {
   const servingUi = existsSync(SPA_INDEX);
   console.log(
     servingUi

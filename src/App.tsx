@@ -1,4 +1,5 @@
-import { useState, useEffect, useMemo, type FormEvent } from "react";
+import { useState, useEffect, useMemo, useRef, type FormEvent } from "react";
+import { io, type Socket } from "socket.io-client";
 import { CalendarPage } from "./pages/CalendarPage.js";
 import { BetTrackerPage } from "./pages/BetTrackerPage.js";
 import { StakeCalculatorPage } from "./pages/StakeCalculatorPage.js";
@@ -18,6 +19,8 @@ export default function App() {
   const [authError, setAuthError] = useState<string | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
   const [sidebarTick, setSidebarTick] = useState(0);
+  const socketRef = useRef<Socket | null>(null);
+  const socketDebounceRef = useRef<number | null>(null);
 
   useEffect(() => {
     const onStorage = () => setSidebarTick((v) => v + 1);
@@ -122,6 +125,46 @@ export default function App() {
       .catch(() => setAuthenticated(false))
       .finally(() => setAuthChecked(true));
   }, []);
+
+  useEffect(() => {
+    if (!authenticated) {
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+        socketRef.current = null;
+      }
+      if (socketDebounceRef.current != null) {
+        window.clearTimeout(socketDebounceRef.current);
+        socketDebounceRef.current = null;
+      }
+      return;
+    }
+    if (socketRef.current) return;
+    const base = typeof import.meta.env !== "undefined" ? import.meta.env?.VITE_API_ORIGIN : undefined;
+    const socket = typeof base === "string" && base.trim() !== ""
+      ? io(base, { withCredentials: true, transports: ["websocket"] })
+      : io({ withCredentials: true, transports: ["websocket"] });
+    socketRef.current = socket;
+    const onBetsUpdated = () => {
+      if (socketDebounceRef.current != null) return;
+      socketDebounceRef.current = window.setTimeout(() => {
+        socketDebounceRef.current = null;
+        window.dispatchEvent(new CustomEvent("app:bets-updated"));
+        if (import.meta.env.DEV) {
+          console.log("[socket] bets_updated received");
+        }
+      }, 250);
+    };
+    socket.on("bets_updated", onBetsUpdated);
+    return () => {
+      socket.off("bets_updated", onBetsUpdated);
+      socket.disconnect();
+      socketRef.current = null;
+      if (socketDebounceRef.current != null) {
+        window.clearTimeout(socketDebounceRef.current);
+        socketDebounceRef.current = null;
+      }
+    };
+  }, [authenticated]);
 
   useEffect(() => {
     if (!authenticated) return;
