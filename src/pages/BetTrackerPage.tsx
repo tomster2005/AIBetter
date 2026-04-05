@@ -18,15 +18,19 @@ import {
   getTrackedBets,
   adjustBalance,
   deleteTrackedBetShared,
+  findDuplicateTrackedBet,
   updateTrackedBetStatusShared,
   updateTrackedBetCashOutShared,
+  type AddManualMultiBetInput,
   type BookmakerStats,
+  type DuplicateMatch,
   type ManualTrackedSelectionInput,
   type ScoreBandAnalysisRow,
   type BalanceAdjustment,
   type BalanceAdjustmentType,
   type TrackedBetRecord,
   type TrackedBetStatus,
+  type TrackedBetLeg,
 } from "../services/betTrackerService.js";
 import { formatBetLegDisplayLabel } from "../lib/betLegDisplayLabel.js";
 import { BankrollChart } from "../components/BankrollChart.js";
@@ -95,6 +99,23 @@ function sanitizeCashOutInput(value: string): string {
 
 function toMoneyString(value: number): string {
   return `£${value.toFixed(2)}`;
+}
+
+function normalizeDuplicateText(value: unknown): string {
+  return String(value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function normalizeDuplicateLine(value?: number): string | null {
+  return Number.isFinite(value as number) ? Number(value).toFixed(2) : null;
+}
+
+function buildDuplicateSignature(bet: TrackedBetRecord, leg: TrackedBetLeg): string {
+  const fixtureKey = Number.isFinite(bet.fixtureId as number) ? `fid:${bet.fixtureId}` : `match:${normalizeDuplicateText(bet.matchLabel)}`;
+  const playerKey = normalizeDuplicateText(leg.playerName);
+  const marketKey = normalizeDuplicateText(leg.marketName || leg.marketFamily);
+  const lineKey = normalizeDuplicateLine(leg.line) ?? "";
+  const outcomeKey = leg.outcome ?? "";
+  return [bet.bookmakerId, fixtureKey, playerKey, marketKey, lineKey, outcomeKey].join("|");
 }
 
 export type QuickAddSelectionDraft = {
@@ -364,6 +385,7 @@ export function BetTrackerPage() {
   const [cashOutValues, setCashOutValues] = useState<Record<string, string>>({});
   const [cashOutErrors, setCashOutErrors] = useState<Record<string, string>>({});
   const [cashOutConfirmIds, setCashOutConfirmIds] = useState<Set<string>>(new Set());
+  const [quickAddDuplicate, setQuickAddDuplicate] = useState<{ match: DuplicateMatch; payload: AddManualMultiBetInput } | null>(null);
   const [toast, setToast] = useState<{ id: number; text: string } | null>(null);
   const [initialSyncLoading, setInitialSyncLoading] = useState(true);
   const [evalPlayerName, setEvalPlayerName] = useState("");
@@ -466,6 +488,26 @@ export function BetTrackerPage() {
   );
   const scoreBands = useMemo<ScoreBandAnalysisRow[]>(() => getScoreBandAnalysis(), [bets]);
   const settledBets = useMemo(() => bets.filter((b) => b.status !== "pending"), [bets]);
+  const duplicateBetIds = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const bet of bets) {
+      for (const leg of bet.legs) {
+        const sig = buildDuplicateSignature(bet, leg);
+        counts.set(sig, (counts.get(sig) ?? 0) + 1);
+      }
+    }
+    const duplicates = new Set<string>();
+    for (const bet of bets) {
+      for (const leg of bet.legs) {
+        const sig = buildDuplicateSignature(bet, leg);
+        if ((counts.get(sig) ?? 0) > 1) {
+          duplicates.add(bet.id);
+          break;
+        }
+      }
+    }
+    return duplicates;
+  }, [bets]);
   const totals = useMemo(() => {
     const totalStaked = settledBets.reduce((sum, b) => sum + b.stake, 0);
     const totalReturned = settledBets.reduce((sum, b) => sum + (b.status === "win" || b.status === "cashed_out" ? b.returnAmount : 0), 0);
@@ -892,6 +934,7 @@ export function BetTrackerPage() {
     setQuickAddNotes("");
     setQuickAddSelections([createSelectionDraft()]);
     setQuickAddErrors({});
+    setQuickAddDuplicate(null);
   }, []);
 
   const onOpenQuickAdd = useCallback(() => {
@@ -1061,6 +1104,52 @@ export function BetTrackerPage() {
     });
   }, []);
 
+  const performQuickAddSave = useCallback(async (savePayload: AddManualMultiBetInput) => {
+    let created: Awaited<ReturnType<typeof addManualMultiBetShared>>;
+    try {
+      created = await addManualMultiBetShared(savePayload);
+    } catch (err) {
+      setQuickAddErrors({ selections: err instanceof Error ? err.message : "Save failed unexpectedly. Try again." });
+      return;
+    }
+    if (!created) {
+      const expl = explainManualMultiBetFailure(savePayload);
+      const selectionRowsFromService: NonNullable<QuickAddErrors["selectionRows"]> = {};
+      if (expl.selectionRowsByIndex) {
+        for (const [idxStr, errs] of Object.entries(expl.selectionRowsByIndex)) {
+          const idx = Number(idxStr);
+          const row = quickAddSelections[idx];
+          if (row) {
+            selectionRowsFromService[row.id] = {
+              ...selectionRowsFromService[row.id],
+              matchLabel: errs.matchLabel,
+              marketName: errs.marketName,
+              selectionLabel: errs.selectionLabel,
+              outcome: errs.outcome,
+            };
+          }
+        }
+      }
+      setQuickAddErrors({
+        bookmakerId: expl.bookmakerId,
+        stake: expl.stake,
+        oddsTaken: expl.oddsTaken,
+        selections: expl.selections,
+        selectionRows: Object.keys(selectionRowsFromService).length > 0 ? selectionRowsFromService : undefined,
+      });
+      setQuickAddErrors((prev) => ({
+        ...prev,
+        selections: prev.selections || "Save failed (server unavailable).",
+      }));
+      return;
+    }
+    refresh();
+    setMessage(`Quick add saved: ${created.legs.length} selections.`);
+    setToast({ id: Date.now(), text: "Bet added" });
+    setShowQuickAdd(false);
+    resetQuickAdd();
+  }, [quickAddSelections, refresh, resetQuickAdd]);
+
   const onSaveQuickAdd = useCallback(async () => {
     const nextErrors: QuickAddErrors = {};
     if (!quickAddBookmakerId) nextErrors.bookmakerId = "Select a bookmaker.";
@@ -1105,58 +1194,34 @@ export function BetTrackerPage() {
       notes: quickAddNotes.trim() || undefined,
       selections: mappedSelections,
     };
-    let created: Awaited<ReturnType<typeof addManualMultiBetShared>>;
-    try {
-      created = await addManualMultiBetShared(savePayload);
-    } catch (err) {
-      setQuickAddErrors({ selections: err instanceof Error ? err.message : "Save failed unexpectedly. Try again." });
-      return;
-    }
-    if (!created) {
-      const expl = explainManualMultiBetFailure(savePayload);
-      const selectionRowsFromService: NonNullable<QuickAddErrors["selectionRows"]> = {};
-      if (expl.selectionRowsByIndex) {
-        for (const [idxStr, errs] of Object.entries(expl.selectionRowsByIndex)) {
-          const idx = Number(idxStr);
-          const row = quickAddSelections[idx];
-          if (row) {
-            selectionRowsFromService[row.id] = {
-              ...selectionRowsFromService[row.id],
-              matchLabel: errs.matchLabel,
-              marketName: errs.marketName,
-              selectionLabel: errs.selectionLabel,
-              outcome: errs.outcome,
-            };
-          }
-        }
+    const matchLabels = new Set(mappedSelections.map((s) => normalizeDuplicateText(s.matchLabel)).filter(Boolean));
+    const matchLabel = matchLabels.size === 1 ? mappedSelections[0]?.matchLabel : undefined;
+    const duplicate = findDuplicateTrackedBet({
+      bookmakerId: quickAddBookmakerId,
+      matchLabel,
+      legs: mappedSelections.map((s) => ({
+        marketName: s.marketName,
+        playerName: s.playerName,
+        line: s.line,
+        outcome: s.outcome,
+      })),
+    });
+    if (duplicate) {
+      setQuickAddDuplicate({ match: duplicate, payload: savePayload });
+      if (import.meta.env.DEV) {
+        console.log("[duplicate-check]", { incomingBet: savePayload, matchFound: duplicate });
       }
-      setQuickAddErrors({
-        bookmakerId: expl.bookmakerId,
-        stake: expl.stake,
-        oddsTaken: expl.oddsTaken,
-        selections: expl.selections,
-        selectionRows: Object.keys(selectionRowsFromService).length > 0 ? selectionRowsFromService : undefined,
-      });
-      setQuickAddErrors((prev) => ({
-        ...prev,
-        selections: prev.selections || "Save failed (server unavailable).",
-      }));
       return;
     }
-    refresh();
-    setMessage(`Quick add saved: ${created.legs.length} selections.`);
-    setToast({ id: Date.now(), text: "Bet added" });
-    setShowQuickAdd(false);
-    resetQuickAdd();
+    await performQuickAddSave(savePayload);
   }, [
+    performQuickAddSave,
     quickAddBookmakerId,
     quickAddStake,
     quickAddOddsTaken,
     quickAddSelections,
     quickAddStatus,
     quickAddNotes,
-    refresh,
-    resetQuickAdd,
   ]);
 
   const onEvaluateValueBet = useCallback(async () => {
@@ -1712,6 +1777,10 @@ export function BetTrackerPage() {
                           <span className="bet-tracker-page__bet-badge bet-tracker-page__bet-badge--cashout">
                             Profit: {fmtSignedMoney(getBetProfit(b))}
                           </span>
+                        )}{duplicateBetIds.has(b.id) && (
+                          <span className="bet-tracker-page__bet-badge bet-tracker-page__bet-badge--duplicate">
+                            Duplicate
+                          </span>
                         )}</div>
                         <div className="bet-tracker-page__bet-controls">
                           <select
@@ -2060,6 +2129,29 @@ export function BetTrackerPage() {
             </div>
 
             <div className="bet-tracker-page__quick-add-actions">
+              {quickAddDuplicate && (
+                <div className="bet-tracker-page__duplicate-warning">
+                  <p className="bet-tracker-page__duplicate-title">⚠️ You already have a similar bet tracked.</p>
+                  <p className="bet-tracker-page__duplicate-sub">
+                    Existing: £{fmtMoney(quickAddDuplicate.match.existingBet.stake)} @ {quickAddDuplicate.match.existingBet.oddsTaken.toFixed(2)} • {quickAddDuplicate.match.existingBet.bookmakerName}
+                  </p>
+                  <div className="bet-tracker-page__duplicate-actions">
+                    <button type="button" className="secondary" onClick={() => setQuickAddDuplicate(null)}>
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const payload = quickAddDuplicate.payload;
+                        setQuickAddDuplicate(null);
+                        void performQuickAddSave(payload);
+                      }}
+                    >
+                      Add Anyway
+                    </button>
+                  </div>
+                </div>
+              )}
               <button type="button" className="secondary" onClick={onCloseQuickAdd}>Cancel</button>
               <button type="button" onClick={onSaveQuickAdd}>Save Bet</button>
             </div>

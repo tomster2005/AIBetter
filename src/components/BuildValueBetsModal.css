@@ -229,6 +229,45 @@
   cursor: not-allowed;
 }
 
+.build-value-bets-modal__tracker-duplicate {
+  grid-column: 1 / -1;
+  border: 1px solid #fcd34d;
+  background: #fffbeb;
+  border-radius: 8px;
+  padding: 0.45rem 0.55rem;
+  display: grid;
+  gap: 0.3rem;
+  font-size: 0.75rem;
+  color: #92400e;
+}
+
+.build-value-bets-modal__tracker-duplicate p {
+  margin: 0;
+}
+
+.build-value-bets-modal__tracker-duplicate-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+
+.build-value-bets-modal__tracker-duplicate-actions button {
+  border: none;
+  background: #d97706;
+  color: #fff;
+  border-radius: 6px;
+  padding: 0.25rem 0.55rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.build-value-bets-modal__tracker-duplicate-actions button.secondary {
+  background: #fff;
+  color: #92400e;
+  border: 1px solid #fbbf24;
+}
+
 .build-value-bets-modal__tracker-return {
   grid-column: 1 / -1;
   margin: 0;

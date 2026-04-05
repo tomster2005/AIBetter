@@ -21,7 +21,16 @@ import { loadHeadToHeadContext } from "../services/headToHeadContextService.js";
 import { loadFixtureTeamFormContext } from "../services/teamRecentFormContextService.js";
 import { saveGeneratedCombosForFixture, getBetPerformanceSummary, resolveStoredCombosForFixture } from "../services/comboPerformanceService.js";
 import { fetchFixtureResolutionData } from "../services/comboResolutionDataService.js";
-import { addTrackedBetShared, getBookmakers, getBookmakerStats, getUnitSize, settleTrackedBetsForFixture, type TrackedBookmaker } from "../services/betTrackerService.js";
+import {
+  addTrackedBetShared,
+  findDuplicateTrackedBet,
+  getBookmakers,
+  getBookmakerStats,
+  getUnitSize,
+  settleTrackedBetsForFixture,
+  type DuplicateMatch,
+  type TrackedBookmaker,
+} from "../services/betTrackerService.js";
 import "./BuildValueBetsModal.css";
 
 function getApiOrigin(): string {
@@ -203,6 +212,7 @@ export function BuildValueBetsModal({
     candidateCount: number;
     legCount: number;
   } | null>(null);
+  const [trackerDuplicate, setTrackerDuplicate] = useState<{ match: DuplicateMatch; comboIdx: number } | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -393,6 +403,7 @@ export function BuildValueBetsModal({
     setTrackerStakeTouched(false);
     setTrackerAvailableBalance(null);
     setResult(null);
+    setTrackerDuplicate(null);
     onClose();
   }, [onClose]);
 
@@ -401,6 +412,7 @@ export function BuildValueBetsModal({
     setBookmakers(current);
     setTrackerError(null);
     setTrackerSuccess(null);
+    setTrackerDuplicate(null);
     setTrackerOpenIdx(idx);
     setTrackerOddsTaken(combo.combinedOdds.toFixed(2));
     setUnitSizeState(getUnitSize());
@@ -419,7 +431,7 @@ export function BuildValueBetsModal({
     }
   }, []);
 
-  const handleAddTrackedBet = useCallback(async (combo: BuildCombo) => {
+  const handleAddTrackedBet = useCallback(async (combo: BuildCombo, force = false) => {
     if (!fixture) return;
     if (bookmakers.length === 0) {
       setTrackerError("Add a bookmaker first in Bet Tracker.");
@@ -444,6 +456,27 @@ export function BuildValueBetsModal({
       setTrackerError("Odds taken must be greater than 1.");
       return;
     }
+    if (!force) {
+      const duplicate = findDuplicateTrackedBet({
+        bookmakerId: trackerBookmakerId,
+        fixtureId: fixture.id,
+        matchLabel: `${fixture.homeTeam?.name ?? "Home"} v ${fixture.awayTeam?.name ?? "Away"}`,
+        legs: combo.legs.map((leg) => ({
+          marketName: leg.marketName,
+          marketFamily: leg.marketFamily,
+          playerName: leg.playerName,
+          line: leg.line,
+          outcome: leg.outcome,
+        })),
+      });
+      if (duplicate) {
+        setTrackerDuplicate({ match: duplicate, comboIdx: trackerOpenIdx ?? -1 });
+        if (import.meta.env.DEV) {
+          console.log("[duplicate-check]", { incomingBet: combo, matchFound: duplicate });
+        }
+        return;
+      }
+    }
     const record = await addTrackedBetShared({
       bookmakerId: trackerBookmakerId,
       stake,
@@ -462,7 +495,8 @@ export function BuildValueBetsModal({
     setTrackerSuccess("Added to Bet Tracker.");
     setTrackerError(null);
     setTrackerOpenIdx(null);
-  }, [fixture, bookmakers.length, trackerBookmakerId, trackerStake, trackerOddsTaken]);
+    setTrackerDuplicate(null);
+  }, [fixture, bookmakers.length, trackerBookmakerId, trackerStake, trackerOddsTaken, trackerOpenIdx]);
 
   if (!open) return null;
 
@@ -674,6 +708,29 @@ export function BuildValueBetsModal({
                                 })()}
                               </p>
                               {trackerStakeTouched && <p className="build-value-bets-modal__tracker-override">Manual override</p>}
+                              {trackerDuplicate && trackerDuplicate.comboIdx === i && (
+                                <div className="build-value-bets-modal__tracker-duplicate">
+                                  <p>⚠️ You already have a similar bet tracked.</p>
+                                  <p>
+                                    Existing: £{trackerDuplicate.match.existingBet.stake.toFixed(2)} @ {trackerDuplicate.match.existingBet.oddsTaken.toFixed(2)} • {trackerDuplicate.match.existingBet.bookmakerName}
+                                  </p>
+                                  <div className="build-value-bets-modal__tracker-duplicate-actions">
+                                    <button
+                                      type="button"
+                                      className="secondary"
+                                      onClick={() => setTrackerDuplicate(null)}
+                                    >
+                                      Cancel
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleAddTrackedBet(combo, true)}
+                                    >
+                                      Add Anyway
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
                               <button
                                 type="button"
                                 className="build-value-bets-modal__tracker-save-btn"

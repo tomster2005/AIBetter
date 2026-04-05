@@ -1051,6 +1051,82 @@ export interface ManualTrackedSelectionInput {
   legNotes?: string;
 }
 
+export type DuplicateCheckLeg = {
+  marketName?: string;
+  marketFamily?: string;
+  playerName?: string;
+  line?: number;
+  outcome?: BuildLeg["outcome"];
+};
+
+export type DuplicateCheckInput = {
+  bookmakerId?: string;
+  fixtureId?: number;
+  matchLabel?: string;
+  legs: DuplicateCheckLeg[];
+};
+
+export type DuplicateMatch = {
+  existingBet: TrackedBetRecord;
+  existingLeg: TrackedBetLeg;
+  incomingLegIndex: number;
+};
+
+function normalizeDupText(value: unknown): string {
+  return String(value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function normalizeDupLine(value?: number): string | null {
+  return Number.isFinite(value as number) ? Number(value).toFixed(2) : null;
+}
+
+function isSameFixture(existing: TrackedBetRecord, fixtureId?: number, matchLabel?: string): boolean {
+  if (fixtureId != null && Number.isFinite(fixtureId) && existing.fixtureId != null && Number.isFinite(existing.fixtureId)) {
+    return existing.fixtureId === fixtureId;
+  }
+  if (matchLabel) {
+    return normalizeDupText(existing.matchLabel) === normalizeDupText(matchLabel);
+  }
+  return false;
+}
+
+function isSameLeg(existing: TrackedBetLeg, incoming: DuplicateCheckLeg): boolean {
+  const incomingMarket = normalizeDupText(incoming.marketName || incoming.marketFamily);
+  const existingMarket = normalizeDupText(existing.marketName || existing.marketFamily);
+  if (incomingMarket && existingMarket && incomingMarket !== existingMarket) return false;
+
+  const incomingLine = normalizeDupLine(incoming.line);
+  const existingLine = normalizeDupLine(existing.line);
+  if (incomingLine && existingLine && incomingLine !== existingLine) return false;
+
+  if (incoming.playerName) {
+    const incomingPlayer = normalizeDupText(incoming.playerName);
+    const existingPlayer = normalizeDupText(existing.playerName);
+    if (incomingPlayer && existingPlayer && incomingPlayer !== existingPlayer) return false;
+  }
+
+  if (incoming.outcome && existing.outcome !== incoming.outcome) return false;
+  return true;
+}
+
+export function findDuplicateTrackedBet(input: DuplicateCheckInput, existingBets?: TrackedBetRecord[]): DuplicateMatch | null {
+  const bets = existingBets ?? readTrackedBets();
+  if (!Array.isArray(input.legs) || input.legs.length === 0) return null;
+  for (const bet of bets) {
+    if (input.bookmakerId && bet.bookmakerId !== input.bookmakerId) continue;
+    if (!isSameFixture(bet, input.fixtureId, input.matchLabel)) continue;
+    for (let i = 0; i < input.legs.length; i++) {
+      const incoming = input.legs[i];
+      for (const leg of bet.legs) {
+        if (isSameLeg(leg, incoming)) {
+          return { existingBet: bet, existingLeg: leg, incomingLegIndex: i };
+        }
+      }
+    }
+  }
+  return null;
+}
+
 export interface AddManualMultiBetInput {
   bookmakerId: string;
   stake: number;

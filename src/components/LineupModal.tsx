@@ -20,7 +20,7 @@ import {
   type PlayerOddsResponse as ServicePlayerOddsResponse,
 } from "../services/playerPropsService.js";
 import { appendBacktestSnapshots } from "../services/backtestSnapshotService.js";
-import { addManualMultiBet, getBookmakers, getUnitSize } from "../services/betTrackerService.js";
+import { addManualMultiBet, findDuplicateTrackedBet, getBookmakers, getUnitSize, type DuplicateMatch } from "../services/betTrackerService.js";
 import { useAutoResolveCombos } from "../hooks/useAutoResolveCombos.js";
 import {
   loadPlayerSeasonStats,
@@ -273,6 +273,11 @@ function LineupContent({
   const [matchOddsExpanded, setMatchOddsExpanded] = useState(false);
   const [addingRowKey, setAddingRowKey] = useState<string | null>(null);
   const [addRowMessage, setAddRowMessage] = useState<string | null>(null);
+  const [duplicateRowWarning, setDuplicateRowWarning] = useState<{
+    match: DuplicateMatch;
+    row: ValueBetRow;
+    bookmaker: { id: string; name: string };
+  } | null>(null);
 
   const strongSourceRows = useMemo(
     () => (valueBetRows ?? []).filter((r) => r.isStrongBet === true),
@@ -343,22 +348,14 @@ function LineupContent({
     return filtered;
   }, [weakSourceRows, selectedBookmaker, hideNegativeEdge, sortConfig?.key, sortConfig?.direction]);
 
-  const handleAddSingleValueBet = useCallback((row: ValueBetRow) => {
+  const getValueBetRowKey = (row: ValueBetRow) => `${row.playerName}-${row.marketName}-${row.outcome}-${row.line}-${row.bookmakerName}`;
+
+  const saveSingleValueBet = useCallback((row: ValueBetRow, selectedBookmaker: { id: string; name: string }) => {
     if (!fixture) return;
-    const rowKey = `${row.playerName}-${row.marketName}-${row.outcome}-${row.line}-${row.bookmakerName}`;
-    setAddingRowKey(rowKey);
-    setAddRowMessage(null);
     try {
-      const bookmakers = getBookmakers();
-      if (bookmakers.length === 0) {
-        setAddRowMessage("Add a bookmaker in Bet Tracker first.");
-        return;
-      }
-      const fallbackBookmaker = bookmakers[0];
-      const preferredBookmaker = bookmakers.find(
-        (b) => b.name.trim().toLowerCase() === (row.bookmakerName ?? "").trim().toLowerCase()
-      );
-      const selectedBookmaker = preferredBookmaker ?? fallbackBookmaker;
+      const rowKey = getValueBetRowKey(row);
+      setAddingRowKey(rowKey);
+      setAddRowMessage(null);
       const stake = getUnitSize();
       const saved = addManualMultiBet({
         bookmakerId: selectedBookmaker.id,
@@ -388,6 +385,54 @@ function LineupContent({
       setAddingRowKey(null);
     }
   }, [fixture]);
+
+  const handleAddSingleValueBet = useCallback((row: ValueBetRow) => {
+    if (!fixture) return;
+    const rowKey = getValueBetRowKey(row);
+    setAddingRowKey(rowKey);
+    setAddRowMessage(null);
+    setDuplicateRowWarning(null);
+    try {
+      const bookmakers = getBookmakers();
+      if (bookmakers.length === 0) {
+        setAddRowMessage("Add a bookmaker in Bet Tracker first.");
+        return;
+      }
+      const fallbackBookmaker = bookmakers[0];
+      const preferredBookmaker = bookmakers.find(
+        (b) => b.name.trim().toLowerCase() === (row.bookmakerName ?? "").trim().toLowerCase()
+      );
+      const selectedBookmaker = preferredBookmaker ?? fallbackBookmaker;
+
+      const duplicate = findDuplicateTrackedBet({
+        bookmakerId: selectedBookmaker.id,
+        fixtureId: fixture.id,
+        matchLabel: `${fixture.homeTeam?.name ?? "Home"} v ${fixture.awayTeam?.name ?? "Away"}`,
+        legs: [
+          {
+            marketName: row.marketName,
+            playerName: row.playerName,
+            line: row.line,
+            outcome: row.outcome,
+          },
+        ],
+      });
+      if (duplicate) {
+        setDuplicateRowWarning({
+          match: duplicate,
+          row,
+          bookmaker: { id: selectedBookmaker.id, name: selectedBookmaker.name },
+        });
+        if (import.meta.env.DEV) {
+          console.log("[duplicate-check]", { incomingBet: row, matchFound: duplicate });
+        }
+        return;
+      }
+      saveSingleValueBet(row, selectedBookmaker);
+    } finally {
+      setAddingRowKey(null);
+    }
+  }, [fixture, saveSingleValueBet]);
 
   const bookmakerOptions = useMemo(() => {
     const rows = valueBetRows ?? [];
@@ -520,9 +565,9 @@ function LineupContent({
               e.stopPropagation();
               handleAddSingleValueBet(row);
             }}
-            disabled={addingRowKey === `${row.playerName}-${row.marketName}-${row.outcome}-${row.line}-${row.bookmakerName}`}
+            disabled={addingRowKey === getValueBetRowKey(row)}
           >
-            {addingRowKey === `${row.playerName}-${row.marketName}-${row.outcome}-${row.line}-${row.bookmakerName}` ? "Adding..." : "Add"}
+            {addingRowKey === getValueBetRowKey(row) ? "Adding..." : "Add"}
           </button>
         </td>
       </tr>
@@ -700,6 +745,29 @@ function LineupContent({
             <p className="lineup-modal__message">{noComputedRowsMessage}</p>
           )}
           {addRowMessage && <p className="lineup-content__value-analysis-note">{addRowMessage}</p>}
+          {duplicateRowWarning && (
+            <div className="lineup-content__duplicate-warning">
+              <p className="lineup-content__duplicate-title">⚠️ You already have a similar bet tracked.</p>
+              <p className="lineup-content__duplicate-sub">
+                Existing: £{duplicateRowWarning.match.existingBet.stake.toFixed(2)} @ {duplicateRowWarning.match.existingBet.oddsTaken.toFixed(2)} • {duplicateRowWarning.match.existingBet.bookmakerName}
+              </p>
+              <div className="lineup-content__duplicate-actions">
+                <button type="button" className="secondary" onClick={() => setDuplicateRowWarning(null)}>
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const { row, bookmaker } = duplicateRowWarning;
+                    setDuplicateRowWarning(null);
+                    saveSingleValueBet(row, bookmaker);
+                  }}
+                >
+                  Add Anyway
+                </button>
+              </div>
+            </div>
+          )}
           {!loadingValueBets && valueBetRows != null && valueBetRows.length > 0 && (
               <>
                 <div className="lineup-content__value-controls">
