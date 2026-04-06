@@ -215,6 +215,7 @@ export function BuildValueBetsModal({
     candidateCount: number;
     legCount: number;
   } | null>(null);
+  const [playerTeamByName, setPlayerTeamByName] = useState<Record<string, string>>({});
   const [trackerDuplicate, setTrackerDuplicate] = useState<{ match: DuplicateMatch; comboIdx: number } | null>(null);
 
   useEffect(() => {
@@ -306,6 +307,23 @@ export function BuildValueBetsModal({
           awayTeamName: fixture.awayTeam.name,
         }),
       ]);
+      const teamNameForId = (teamId?: number): string | null => {
+        if (teamId == null || !fixture) return null;
+        if (teamId === fixture.homeTeam.id) return fixture.homeTeam.name ?? null;
+        if (teamId === fixture.awayTeam.id) return fixture.awayTeam.name ?? null;
+        return null;
+      };
+      const normalizePlayerKey = (name: string): string =>
+        name.trim().toLowerCase().replace(/\s+/g, " ");
+      const teamMap: Record<string, string> = {};
+      for (const row of playerRows) {
+        if (!row.playerName) continue;
+        const key = normalizePlayerKey(row.playerName);
+        if (!key || teamMap[key]) continue;
+        const teamName = teamNameForId(row.sportmonksTeamId);
+        if (teamName) teamMap[key] = teamName;
+      }
+      setPlayerTeamByName(teamMap);
       const recentStatsByNormalizedName = await fetchRecentPlayerStats(playerRows, fixture.id);
       const fromRows = buildEvidenceContextFromRows(playerRows, fixture, recentStatsByNormalizedName);
       const evidenceContext: BuildEvidenceContext | null = {
@@ -433,6 +451,7 @@ export function BuildValueBetsModal({
     setTrackerStakeTouched(false);
     setTrackerAvailableBalance(null);
     setResult(null);
+    setPlayerTeamByName({});
     setTrackerDuplicate(null);
     onClose();
   }, [onClose]);
@@ -539,6 +558,13 @@ export function BuildValueBetsModal({
     Number.isFinite(trackerAvailableBalance) &&
     Number.isFinite(parsedStake) &&
     parsedStake > trackerAvailableBalance;
+  const normalizePlayerKey = (name: string): string => name.trim().toLowerCase().replace(/\s+/g, " ");
+  const formatLegLabel = (leg: BuildCombo["legs"][number]): string => {
+    if (leg.type !== "player" || !leg.playerName) return formatBetLegDisplayLabel(leg);
+    const teamName = playerTeamByName[normalizePlayerKey(leg.playerName)];
+    if (!teamName) return formatBetLegDisplayLabel(leg);
+    return formatBetLegDisplayLabel({ ...leg, playerName: `${leg.playerName} (${teamName})` });
+  };
 
   return (
     <div
@@ -806,7 +832,7 @@ export function BuildValueBetsModal({
                       <ul className="build-value-bets-modal__leg-list">
                         {combo.legs.map((leg) => (
                           <li key={leg.id} className="build-value-bets-modal__leg">
-                            <span className="build-value-bets-modal__leg-label">{formatBetLegDisplayLabel(leg)}</span>
+                            <span className="build-value-bets-modal__leg-label">{formatLegLabel(leg)}</span>
                             <span className="build-value-bets-modal__leg-odds">{leg.odds.toFixed(2)}</span>
                             {leg.reason && (
                               <span className="build-value-bets-modal__leg-reason">{leg.reason}</span>

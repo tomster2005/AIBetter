@@ -499,8 +499,19 @@ function LineupContent({
     return "Not enough data to generate value bets for this fixture.";
   }, [valueBetDiagnostics, valueBetStartingCount]);
 
+  const getValueBetPlayerLabel = (row: ValueBetRow): string => {
+    const teamId = row.sportmonksTeamId;
+    if (fixture && teamId != null) {
+      if (teamId === fixture.homeTeam.id) return `${row.playerName} (${fixture.homeTeam.name ?? "Home"})`;
+      if (teamId === fixture.awayTeam.id) return `${row.playerName} (${fixture.awayTeam.name ?? "Away"})`;
+    }
+    return row.playerName;
+  };
+
   const renderValueBetRow = (row: ValueBetRow, i: number, rowList: ValueBetRow[], keyPrefix: string) => {
-    const isNewPlayer = i === 0 || rowList[i - 1].playerName !== row.playerName;
+    const playerLabel = getValueBetPlayerLabel(row);
+    const prevLabel = i > 0 ? getValueBetPlayerLabel(rowList[i - 1]) : "";
+    const isNewPlayer = i === 0 || prevLabel !== playerLabel;
     const edge = row.modelEdge ?? row.edge;
     const isStrong = row.isStrongBet === true;
     const tooltipParts: string[] = [];
@@ -536,7 +547,7 @@ function LineupContent({
       >
         <td className="lineup-content__value-td">
           <div className="lineup-content__value-player-market">
-            <span className="lineup-content__value-td--player">{row.playerName}</span>
+            <span className="lineup-content__value-td--player">{playerLabel}</span>
             <span className="lineup-content__value-td--market">
               {row.outcome} {row.line} {row.marketName}
             </span>
