@@ -134,6 +134,8 @@ export interface BuildLeg {
   probability?: number;
   reason?: string;
   playerName?: string;
+  h2hContextLine?: string;
+  opponentContextLine?: string;
   /** Optional extra stat row in combo explanations only (real data; never fabricated). */
   opponentStatSeries?: { label: string; values: number[] };
 }
@@ -469,6 +471,22 @@ export function positionRoleFromSportmonksId(positionId: number | undefined | nu
   if (id === 6 || id === 7) return "MID";
   if (id === 2 || id === 3 || id === 4 || id === 5) return "DEF";
   return null;
+}
+
+function positionLabelFromSportmonksId(positionId: number | undefined | null): string {
+  if (positionId == null || !Number.isFinite(positionId)) return "";
+  const id = Math.trunc(positionId);
+  if (id === 1) return "Goalkeeper";
+  if (id === 2) return "Centre Back";
+  if (id === 3) return "Fullback";
+  if (id === 4) return "Wingback";
+  if (id === 5) return "Defender";
+  if (id === 6) return "Defensive Midfielder";
+  if (id === 7) return "Central Midfielder";
+  if (id === 8) return "Attacking Midfielder";
+  if (id === 9) return "Forward";
+  if (id === 10) return "Striker";
+  return "";
 }
 
 /**
@@ -1244,6 +1262,9 @@ function applyFoulMatchupBoost(
 
     let bonus = 0;
     let reasonSuffix = "";
+    let opponentContextLine = "";
+    const opponentRole = positionLabelFromSportmonksId(opponent.positionId);
+    const opponentLabel = opponentRole ? `${opponent.playerName} (${opponentRole})` : opponent.playerName;
 
     if (cat === "foulsCommitted") {
       const ourFoulsCommitted = getFoulsCommittedPer90FromRows(leg.playerName, playerRows);
@@ -1256,6 +1277,7 @@ function applyFoulMatchupBoost(
       bonus = 8;
       reasonSuffix = "strong flank foul matchup";
       if (oppFoulsWon >= 1.2) reasonSuffix = "opponent draws fouls at a high rate";
+      opponentContextLine = `${opponentLabel} draws ${oppFoulsWon.toFixed(1)} fouls per 90.`;
     } else {
       const ourFoulsWon = getFoulsWonPer90FromRows(leg.playerName, playerRows);
       const oppFoulsCommitted = getFoulsCommittedPer90FromRows(opponent.playerName, playerRows);
@@ -1267,6 +1289,7 @@ function applyFoulMatchupBoost(
       bonus = 8;
       reasonSuffix = "role matchup supports foul volume";
       if (oppFoulsCommitted >= 1.5) reasonSuffix = "opponent commits fouls at high rate";
+      opponentContextLine = `${opponentLabel} commits ${oppFoulsCommitted.toFixed(1)} fouls per 90.`;
     }
 
     const cappedBonus = Math.min(FOUL_MATCHUP_MAX_BONUS, bonus);
@@ -1274,6 +1297,9 @@ function applyFoulMatchupBoost(
     leg.score += cappedBonus;
     const existing = leg.reason ?? "";
     leg.reason = existing ? `${existing}; ${reasonSuffix}` : reasonSuffix;
+    if (opponentContextLine) {
+      leg.opponentContextLine = opponentContextLine;
+    }
 
     if (import.meta.env?.DEV) {
       console.log("[build-value-bets] foul matchup boost", {
@@ -1361,6 +1387,52 @@ function applyShotMatchupBoost(
       }
     }
   }
+}
+
+function applyH2hContextToPlayerLegs(
+  legs: BuildLeg[],
+  headToHeadContext: HeadToHeadFixtureContext | null | undefined
+): void {
+  if (!headToHeadContext) return;
+  if (headToHeadContext.sampleSize < MIN_H2H_SAMPLE_SIZE) return;
+  const avgGoals = headToHeadContext.averageTotalGoals;
+  const h2hLine = buildFixtureH2hContextLine(headToHeadContext);
+  if (!h2hLine) return;
+
+  const tempoHigh = avgGoals != null && Number.isFinite(avgGoals) && avgGoals >= 2.9;
+  const tempoLow = avgGoals != null && Number.isFinite(avgGoals) && avgGoals <= 2.1;
+  for (const leg of legs) {
+    if (leg.type !== "player" || !leg.playerName) continue;
+    const cat = getMarketCategory(leg.marketName);
+    if (cat == null) continue;
+
+    let delta = 0;
+    if (cat === "shots" || cat === "shotsOnTarget") {
+      if (tempoHigh) delta = 2;
+      if (tempoLow) delta = -2;
+    } else if (cat === "foulsCommitted" || cat === "foulsWon" || cat === "tackles") {
+      if (tempoHigh) delta = 1;
+      if (tempoLow) delta = -1;
+    }
+
+    if (delta !== 0) {
+      leg.score = Math.max(0, leg.score + delta);
+    }
+
+    leg.h2hContextLine = h2hLine;
+  }
+}
+
+function buildFixtureH2hContextLine(headToHeadContext: HeadToHeadFixtureContext): string | null {
+  const bits: string[] = [];
+  if (headToHeadContext.averageTotalGoals != null && Number.isFinite(headToHeadContext.averageTotalGoals)) {
+    bits.push(`avg goals ~${headToHeadContext.averageTotalGoals.toFixed(1)}`);
+  }
+  if (headToHeadContext.bttsRate != null && Number.isFinite(headToHeadContext.bttsRate)) {
+    bits.push(`BTTS ${(headToHeadContext.bttsRate * 100).toFixed(0)}%`);
+  }
+  if (bits.length === 0) return null;
+  return `Fixture H2H (${headToHeadContext.sampleSize} meetings): ${bits.join(", ")}.`;
 }
 
 /** Filter and convert player rows to build legs. */
@@ -2610,6 +2682,8 @@ function buildPlayerLegTipsterExplanation(
 
   const fromReason = extractTipsterContextFromReason(leg.reason);
   out.push(fromReason ?? shortFallbackContextLine(cat));
+  if (leg.opponentContextLine) out.push(leg.opponentContextLine);
+  if (leg.h2hContextLine) out.push(leg.h2hContextLine);
 
   const opp = leg.opponentStatSeries;
   if (
@@ -3029,6 +3103,7 @@ export function buildValueBetCombos(
   const playerLegs = filterPlayerCandidates(playerRows, evidenceContext, lineupContext);
   applyFoulMatchupBoost(playerLegs, playerRows, lineupContext);
   applyShotMatchupBoost(playerLegs, playerRows, lineupContext);
+  applyH2hContextToPlayerLegs(playerLegs, headToHeadContext);
   const teamLegs =
     fixtureOddsBookmakers != null
       ? getTeamLegsFromOdds(
