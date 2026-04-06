@@ -3128,6 +3128,11 @@ export function buildValueBetCombos(
   let combos = generateCombos(playerOnlyLegs, targetOdds, { maxCombos: internalMax, maxLegs: COMBO_MAX_LEGS_CAP, sortMode });
   if (combos.length === 0 && teamLegs.length > 0) {
     combos = generateCombos(allLegs, targetOdds, { maxCombos: internalMax, maxLegs: COMBO_MAX_LEGS_CAP, sortMode });
+    const playerCounts = combos.map((c) => c.legs.filter((l) => l.type === "player").length);
+    const maxPlayerLegs = Math.max(0, ...playerCounts);
+    if (maxPlayerLegs > 0) {
+      combos = combos.filter((c) => c.legs.filter((l) => l.type === "player").length === maxPlayerLegs);
+    }
   }
   const generatedCount = combos.length;
 
