@@ -1030,7 +1030,7 @@ function LineupContent({
                 onClick={onBuildValueBets}
                 disabled={loadingValueBets || !valueBetRows || valueBetRows.length === 0}
               >
-                Add to Bet Tracker
+                Find value bets
               </button>
             </div>
           )}

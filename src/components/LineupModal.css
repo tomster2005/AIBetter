@@ -271,6 +271,9 @@
   background: #eff6ff;
   border-color: #bfdbfe;
   color: #1d4ed8;
+  font-size: 0.875rem;
+  font-weight: 700;
+  padding: 0.6rem 1.25rem;
 }
 
 .lineup-content__build-value-btn:hover {
