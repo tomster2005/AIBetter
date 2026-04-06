@@ -2838,9 +2838,9 @@ function compareBuilderLegsForSearch(a: BuildLeg, b: BuildLeg): number {
 export function generateCombos(
   legs: BuildLeg[],
   targetOdds: number,
-  options: { maxCombos?: number; maxLegs?: number; sortMode?: "target" | "ev" } = {}
+  options: { maxCombos?: number; maxLegs?: number; sortMode?: "target" | "ev"; allowBelowTarget?: boolean } = {}
 ): BuildCombo[] {
-  const { maxCombos = 50, maxLegs: maxLegsOpt, sortMode = "target" } = options;
+  const { maxCombos = 50, maxLegs: maxLegsOpt, sortMode = "target", allowBelowTarget = false } = options;
   const MAX_LEGS = Math.max(COMBO_MIN_LEGS, Math.min(maxLegsOpt ?? COMBO_MAX_LEGS_CAP, COMBO_MAX_LEGS_CAP));
   const MIN_LEGS = COMBO_MIN_LEGS;
   const combos: BuildCombo[] = [];
@@ -2926,6 +2926,14 @@ export function generateCombos(
       return;
     }
 
+    if (allowBelowTarget && L >= MAX_LEGS) {
+      pushCombo(
+        indices.map((i) => legs[i]!),
+        indices
+      );
+      return;
+    }
+
     if (L >= MAX_LEGS) return;
 
     if (L + (n - start) < MIN_LEGS) return;
@@ -2943,7 +2951,7 @@ export function generateCombos(
       const cand = P * ext;
       if (cand > maxAchievable) maxAchievable = cand;
     }
-    if (maxAchievable < targetOdds - pruneEps) return;
+    if (!allowBelowTarget && maxAchievable < targetOdds - pruneEps) return;
 
     for (let i = start; i < n; i++) {
       const cand = legs[i]!;
@@ -3126,8 +3134,24 @@ export function buildValueBetCombos(
   const finalMax = Math.min(6, finalMaxRequested);
   const internalMax = Math.max(finalMax, finalMax * DIVERSITY_INTERNAL_MULTIPLIER);
   let combos = generateCombos(playerOnlyLegs, targetOdds, { maxCombos: internalMax, maxLegs: COMBO_MAX_LEGS_CAP, sortMode });
+  if (combos.length === 0) {
+    combos = generateCombos(playerOnlyLegs, targetOdds, {
+      maxCombos: internalMax,
+      maxLegs: COMBO_MAX_LEGS_CAP,
+      sortMode,
+      allowBelowTarget: true,
+    });
+  }
   if (combos.length === 0 && teamLegs.length > 0) {
     combos = generateCombos(allLegs, targetOdds, { maxCombos: internalMax, maxLegs: COMBO_MAX_LEGS_CAP, sortMode });
+    if (combos.length === 0) {
+      combos = generateCombos(allLegs, targetOdds, {
+        maxCombos: internalMax,
+        maxLegs: COMBO_MAX_LEGS_CAP,
+        sortMode,
+        allowBelowTarget: true,
+      });
+    }
     const playerCounts = combos.map((c) => c.legs.filter((l) => l.type === "player").length);
     const maxPlayerLegs = Math.max(0, ...playerCounts);
     if (maxPlayerLegs > 0) {
