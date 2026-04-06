@@ -788,7 +788,13 @@ function LineupContent({
             </p>
           )}
           {loadingValueBets && (
-            <p className="lineup-modal__message">Loading analysis...</p>
+            <div className="lineup-content__value-skeleton" aria-label="Loading value bet analysis">
+              <div className="lineup-content__value-skeleton-row" />
+              <div className="lineup-content__value-skeleton-row" />
+              <div className="lineup-content__value-skeleton-row" />
+              <div className="lineup-content__value-skeleton-row" />
+              <div className="lineup-content__value-skeleton-row" />
+            </div>
           )}
           {!loadingValueBets && valueBetRows != null && valueBetRows.length === 0 && (
             <p className="lineup-modal__message">{noComputedRowsMessage}</p>

@@ -10,6 +10,16 @@
   z-index: 110;
   padding: 4vh 2vw;
   box-sizing: border-box;
+  animation: buildModalOverlayFade 160ms ease-out;
+}
+
+@keyframes buildModalOverlayFade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 .build-value-bets-modal {
@@ -21,6 +31,18 @@
   max-height: 85vh;
   display: flex;
   flex-direction: column;
+  animation: buildModalSlideIn 220ms ease-out;
+}
+
+@keyframes buildModalSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .build-value-bets-modal__header {
@@ -74,6 +96,35 @@
   gap: 0.5rem;
   flex-wrap: wrap;
   margin-bottom: 0.75rem;
+}
+
+.build-value-bets-modal__progress {
+  position: relative;
+  height: 4px;
+  border-radius: 999px;
+  background: #e5e7eb;
+  overflow: hidden;
+  margin: 0 0 0.75rem;
+}
+
+.build-value-bets-modal__progress span {
+  position: absolute;
+  inset: 0;
+  transform: translateX(-60%);
+  background: linear-gradient(90deg, rgba(37, 99, 235, 0.2), rgba(37, 99, 235, 0.8), rgba(37, 99, 235, 0.2));
+  animation: buildModalProgress 1.2s ease-in-out infinite;
+}
+
+@keyframes buildModalProgress {
+  0% {
+    transform: translateX(-60%);
+  }
+  50% {
+    transform: translateX(10%);
+  }
+  100% {
+    transform: translateX(60%);
+  }
 }
 
 .build-value-bets-modal__range {
@@ -171,6 +222,40 @@
   background: #f9fafb;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
+  animation: buildComboFadeUp 260ms ease-out both;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.build-value-bets-modal__combo-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.12);
+}
+
+.build-value-bets-modal__combo-card.is-new {
+  animation: buildComboPulse 900ms ease-out 1;
+}
+
+@keyframes buildComboFadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes buildComboPulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.35);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(37, 99, 235, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0);
+  }
 }
 
 .build-value-bets-modal__combo-header {
@@ -367,6 +452,7 @@
   background: #eef2ff;
   color: #3730a3;
   white-space: nowrap;
+  animation: buildBadgePop 220ms ease-out;
 }
 
 .build-value-bets-modal__confidence-badge.is-low {
@@ -444,6 +530,18 @@
   border: 1px solid transparent;
   background: #eef2ff;
   color: #3730a3;
+  animation: buildBadgePop 220ms ease-out;
+}
+
+@keyframes buildBadgePop {
+  from {
+    transform: scale(0.96);
+    opacity: 0.7;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
 
 .build-value-bets-modal__leg-confidence.is-low {
@@ -475,6 +573,13 @@
   border-top: 1px solid #e5e7eb;
 }
 
+.build-value-bets-modal__why-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
 .build-value-bets-modal__why-title {
   margin: 0 0 0.35rem;
   font-size: 0.6875rem;
@@ -482,6 +587,23 @@
   text-transform: uppercase;
   letter-spacing: 0.03em;
   color: #6b7280;
+}
+
+.build-value-bets-modal__why-toggle {
+  border: 1px solid #e5e7eb;
+  border-radius: 999px;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.7rem;
+  color: #374151;
+  background: #f9fafb;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.build-value-bets-modal__why-toggle:hover {
+  background: #eef2ff;
+  border-color: #c7d2fe;
+  color: #3730a3;
 }
 
 .build-value-bets-modal__why-blocks {

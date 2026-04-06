@@ -234,6 +234,8 @@ export function BuildValueBetsModal({
   } | null>(null);
   const [playerTeamByName, setPlayerTeamByName] = useState<Record<string, string>>({});
   const [trackerDuplicate, setTrackerDuplicate] = useState<{ match: DuplicateMatch; comboIdx: number } | null>(null);
+  const [expandedWhy, setExpandedWhy] = useState<Record<string, boolean>>({});
+  const [lastAddedComboKey, setLastAddedComboKey] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -546,6 +548,8 @@ export function BuildValueBetsModal({
     setResult(null);
     setPlayerTeamByName({});
     setTrackerDuplicate(null);
+    setExpandedWhy({});
+    setLastAddedComboKey(null);
     onClose();
   }, [onClose]);
 
@@ -635,6 +639,11 @@ export function BuildValueBetsModal({
       return;
     }
     setTrackerSuccess("Added to Bet Tracker.");
+    const comboKey = combo.fingerprint ?? `${combo.combinedOdds}-${trackerOpenIdx ?? 0}`;
+    setLastAddedComboKey(comboKey);
+    window.setTimeout(() => {
+      setLastAddedComboKey((prev) => (prev === comboKey ? null : prev));
+    }, 1600);
     setTrackerError(null);
     setTrackerOpenIdx(null);
     setTrackerDuplicate(null);
@@ -658,6 +667,8 @@ export function BuildValueBetsModal({
     if (!teamName) return formatBetLegDisplayLabel(leg);
     return formatBetLegDisplayLabel({ ...leg, playerName: `${leg.playerName} (${teamName})` });
   };
+  const getComboKey = (combo: BuildCombo, index: number): string =>
+    combo.fingerprint ?? `${combo.combinedOdds}-${index}`;
 
   return (
     <div
@@ -739,6 +750,11 @@ export function BuildValueBetsModal({
               {building ? "Building…" : "Build"}
             </button>
           </div>
+          {building && (
+            <div className="build-value-bets-modal__progress" role="progressbar" aria-label="Building combos">
+              <span />
+            </div>
+          )}
           {error && (
             <p className="build-value-bets-modal__error" role="alert">
               {error}
@@ -762,7 +778,11 @@ export function BuildValueBetsModal({
               ) : (
                 <ul className="build-value-bets-modal__combo-list">
                   {result.combos.map((combo, i) => (
-                    <li key={combo.fingerprint ?? `${combo.combinedOdds}-${i}`} className="build-value-bets-modal__combo-card">
+                    <li
+                      key={getComboKey(combo, i)}
+                      className={`build-value-bets-modal__combo-card${lastAddedComboKey === getComboKey(combo, i) ? " is-new" : ""}`}
+                      style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }}
+                    >
                       <div className="build-value-bets-modal__combo-header">
                         <span className="build-value-bets-modal__combo-leg-count" title="Legs in this combo">
                           {combo.legs.length} pick{combo.legs.length !== 1 ? "s" : ""}
@@ -960,45 +980,63 @@ export function BuildValueBetsModal({
                       </ul>
                       {combo.explanation?.lines?.some((x) => x.length > 0) && (
                         <div className="build-value-bets-modal__why">
-                          <h4 className="build-value-bets-modal__why-title">Why this build</h4>
-                          <div className="build-value-bets-modal__why-blocks">
-                            {splitWhyLinesIntoLegBlocks(combo.explanation.lines).map((block, bi) => {
-                              const headerLine = block[0]?.startsWith("✍️") ? block[0] : null;
-                              const bodyLines = headerLine != null ? block.slice(1) : block;
-                              const firstBodyIdx = bodyLines.findIndex((l) => l.trim() !== "");
-                              return (
-                                <div key={bi} className="why-leg-block">
-                                  {headerLine != null && (
-                                    <div className="why-leg-header">{headerLine}</div>
-                                  )}
-                                  {bodyLines.map((line, li) => {
-                                    const kind =
-                                      headerLine != null ? classifyWhyBodyLine(line) : "line";
-                                    const teamPrimary =
-                                      kind === "line" &&
-                                      headerLine != null &&
-                                      firstBodyIdx === li &&
-                                      isCompressedTeamInsightPrimaryLine(line);
-                                    const lineClass =
-                                      kind === "stats"
-                                        ? "why-leg-stats"
-                                        : kind === "context"
-                                          ? "why-leg-context"
-                                          : kind === "spacer"
-                                            ? "why-leg-spacer"
-                                            : teamPrimary
-                                              ? "why-leg-line why-leg-line--team-primary"
-                                              : "why-leg-line";
-                                    return (
-                                      <div key={li} className={lineClass}>
-                                        {line}
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              );
-                            })}
+                          <div className="build-value-bets-modal__why-header">
+                            <h4 className="build-value-bets-modal__why-title">Why this build</h4>
+                            <button
+                              type="button"
+                              className="build-value-bets-modal__why-toggle"
+                              onClick={() => {
+                                const comboKey = getComboKey(combo, i);
+                                setExpandedWhy((prev) => ({
+                                  ...prev,
+                                  [comboKey]: !(prev[comboKey] ?? true),
+                                }));
+                              }}
+                              aria-expanded={expandedWhy[getComboKey(combo, i)] ?? true}
+                            >
+                              {(expandedWhy[getComboKey(combo, i)] ?? true) ? "Hide" : "Show"}
+                            </button>
                           </div>
+                          {(expandedWhy[getComboKey(combo, i)] ?? true) && (
+                            <div className="build-value-bets-modal__why-blocks">
+                              {splitWhyLinesIntoLegBlocks(combo.explanation.lines).map((block, bi) => {
+                                const headerLine = block[0]?.startsWith("✍️") ? block[0] : null;
+                                const bodyLines = headerLine != null ? block.slice(1) : block;
+                                const firstBodyIdx = bodyLines.findIndex((l) => l.trim() !== "");
+                                return (
+                                  <div key={bi} className="why-leg-block">
+                                    {headerLine != null && (
+                                      <div className="why-leg-header">{headerLine}</div>
+                                    )}
+                                    {bodyLines.map((line, li) => {
+                                      const kind =
+                                        headerLine != null ? classifyWhyBodyLine(line) : "line";
+                                      const teamPrimary =
+                                        kind === "line" &&
+                                        headerLine != null &&
+                                        firstBodyIdx === li &&
+                                        isCompressedTeamInsightPrimaryLine(line);
+                                      const lineClass =
+                                        kind === "stats"
+                                          ? "why-leg-stats"
+                                          : kind === "context"
+                                            ? "why-leg-context"
+                                            : kind === "spacer"
+                                              ? "why-leg-spacer"
+                                              : teamPrimary
+                                                ? "why-leg-line why-leg-line--team-primary"
+                                                : "why-leg-line";
+                                      return (
+                                        <div key={li} className={lineClass}>
+                                          {line}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
                         </div>
                       )}
                     </li>
