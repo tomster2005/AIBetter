@@ -2742,6 +2742,23 @@ function buildPlayerLegTipsterExplanation(
     out.push("");
   }
 
+  if (rawSeries.length >= 3) {
+    const recentGames = rawSeries.slice(-PLAYER_PROP_RECENT_WINDOW);
+    const avg = recentGames.reduce((s, v) => s + v, 0) / recentGames.length;
+    out.push(`Recent avg (last ${recentGames.length}): ${avg.toFixed(2)} ${statLabel}.`);
+  }
+  if (evidenceEntry?.per90 != null && Number.isFinite(evidenceEntry.per90)) {
+    const expMin = getExpectedMinutesForPlayer(leg.playerName, playerRows);
+    if (expMin != null && expMin >= 30) {
+      const expectedCount = (evidenceEntry.per90 * expMin) / 90;
+      out.push(
+        `Season rate: ${evidenceEntry.per90.toFixed(2)} ${statLabel} per90; ~${expectedCount.toFixed(2)} at ${Math.round(expMin)} mins.`
+      );
+    } else {
+      out.push(`Season rate: ${evidenceEntry.per90.toFixed(2)} ${statLabel} per90.`);
+    }
+  }
+
   const fromReason = extractTipsterContextFromReason(leg.reason);
   out.push(fromReason ?? shortFallbackContextLine(cat));
   if (h2hEntry && Array.isArray(h2hEntry.values) && h2hEntry.values.length > 0) {
