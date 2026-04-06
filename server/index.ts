@@ -23,6 +23,8 @@ import { getLeagueCurrentSeason } from "../src/api/leagueSearch.js";
 import { getStatsContext } from "../src/api/statsContext.js";
 import { getPlayerSeasonStatsForProps } from "../src/api/playerSeasonStats.js";
 import { getHeadToHeadFixtureContext } from "../src/api/headToHeadContext.js";
+import { getHeadToHeadPlayerStats } from "../src/api/headToHeadPlayers.js";
+import { searchTeamsByName } from "../src/api/teamSearch.js";
 import * as cache from "./cache.js";
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
 import { join, dirname, resolve } from "path";
@@ -334,6 +336,59 @@ app.get("/api/head-to-head/:team1/:team2/context", async (req, res) => {
       });
     }
     res.json({ data: { team1Id: team1, team2Id: team2, context: null } });
+  }
+});
+
+/**
+ * H2H fixtures with player stats (lineups.details) for last-meeting context.
+ */
+app.get("/api/head-to-head/:team1/:team2/players", async (req, res) => {
+  const team1 = parseInt(req.params.team1, 10);
+  const team2 = parseInt(req.params.team2, 10);
+  if (Number.isNaN(team1) || team1 <= 0 || Number.isNaN(team2) || team2 <= 0) {
+    res.status(400).json({ error: "Invalid team IDs." });
+    return;
+  }
+  const limitRaw = typeof req.query.limit === "string" ? parseInt(req.query.limit, 10) : 1;
+  const leagueIdRaw = typeof req.query.leagueId === "string" ? parseInt(req.query.leagueId, 10) : NaN;
+  try {
+    const data = await getHeadToHeadPlayerStats(team1, team2, {
+      limit: Number.isFinite(limitRaw) ? limitRaw : 1,
+      leagueId: Number.isFinite(leagueIdRaw) ? leagueIdRaw : undefined,
+    });
+    res.json({ data });
+  } catch (err) {
+    if (process.env.NODE_ENV !== "production") {
+      console.error("[h2h] GET /api/head-to-head/:team1/:team2/players failed", {
+        team1,
+        team2,
+        errorMessage: err instanceof Error ? err.message : String(err),
+      });
+    }
+    res.status(500).json({ error: "Failed to load head-to-head player stats." });
+  }
+});
+
+/**
+ * Team search by name (Sportmonks teams/search).
+ */
+app.get("/api/teams/search", async (req, res) => {
+  const name = typeof req.query.name === "string" ? req.query.name : "";
+  if (!name.trim()) {
+    res.status(400).json({ error: "Query param 'name' is required." });
+    return;
+  }
+  try {
+    const data = await searchTeamsByName(name);
+    res.json({ data });
+  } catch (err) {
+    if (process.env.NODE_ENV !== "production") {
+      console.error("[teams] GET /api/teams/search failed", {
+        name,
+        errorMessage: err instanceof Error ? err.message : String(err),
+      });
+    }
+    res.status(500).json({ error: "Failed to search teams." });
   }
 });
 

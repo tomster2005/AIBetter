@@ -18,6 +18,7 @@ import {
 } from "../lib/valueBetBuilder.js";
 import { formatBetLegDisplayLabel } from "../lib/betLegDisplayLabel.js";
 import { loadHeadToHeadContext } from "../services/headToHeadContextService.js";
+import { loadHeadToHeadPlayerStats } from "../services/headToHeadPlayerStatsService.js";
 import { loadFixtureTeamFormContext } from "../services/teamRecentFormContextService.js";
 import { saveGeneratedCombosForFixture, getBetPerformanceSummary, resolveStoredCombosForFixture } from "../services/comboPerformanceService.js";
 import { fetchFixtureResolutionData } from "../services/comboResolutionDataService.js";
@@ -297,10 +298,14 @@ export function BuildValueBetsModal({
     setResult(null);
     setBuilding(true);
     try {
-      const [playerRows, bookmakers, h2h, teamFormRes] = await Promise.all([
+      const [playerRows, bookmakers, h2h, h2hPlayers, teamFormRes] = await Promise.all([
         getCandidates(),
         fetchFixtureOddsBookmakers(fixture.id),
         loadHeadToHeadContext(fixture.homeTeam.id, fixture.awayTeam.id),
+        loadHeadToHeadPlayerStats(fixture.homeTeam.id, fixture.awayTeam.id, {
+          limit: 5,
+          leagueId: fixture.league?.id,
+        }),
         loadFixtureTeamFormContext(fixture.homeTeam.id, fixture.awayTeam.id, {
           excludeFixtureId: fixture.id,
           homeTeamName: fixture.homeTeam.name,
@@ -325,11 +330,68 @@ export function BuildValueBetsModal({
       }
       setPlayerTeamByName(teamMap);
       const recentStatsByNormalizedName = await fetchRecentPlayerStats(playerRows, fixture.id);
+      const h2hPlayerStats: BuildEvidenceContext["playerH2hStats"] = [];
+      if (h2hPlayers?.fixtures?.length) {
+        type H2hMarketCategory = NonNullable<BuildEvidenceContext["playerH2hStats"]>[number]["marketCategory"];
+        const maxFixtures = 5;
+        const fixtureRows = h2hPlayers.fixtures.slice(0, maxFixtures);
+        const byPlayerMarket = new Map<string, { values: number[]; startingAt: string[]; playerName: string }>();
+
+        const addValue = (playerName: string, marketCategory: H2hMarketCategory, value?: number, startingAt?: string) => {
+          if (value == null || !Number.isFinite(value)) return;
+          const key = `${playerName.trim().toLowerCase()}|${marketCategory}`;
+          const row = byPlayerMarket.get(key) ?? { values: [], startingAt: [], playerName };
+          if (row.values.length >= maxFixtures) return;
+          row.values.push(value);
+          row.startingAt.push(startingAt ?? "");
+          byPlayerMarket.set(key, row);
+        };
+
+        const playerRowsById = new Map<number, ValueBetRow>();
+        for (const row of playerRows) {
+          const pid = row.sportmonksPlayerId;
+          if (typeof pid === "number" && Number.isFinite(pid)) {
+            playerRowsById.set(pid, row);
+          }
+        }
+
+        for (const fixtureRow of fixtureRows) {
+          const byId = new Map<number, (typeof fixtureRow.playerStats)[number]>();
+          for (const row of fixtureRow.playerStats ?? []) {
+            if (typeof row.playerId === "number" && Number.isFinite(row.playerId)) {
+              byId.set(row.playerId, row);
+            }
+          }
+          for (const [pid, playerRow] of playerRowsById.entries()) {
+            const statRow = byId.get(pid);
+            if (!statRow) continue;
+            const playerName = playerRow.playerName;
+            if (!playerName) continue;
+            addValue(playerName, "shots", statRow.shots, fixtureRow.startingAt);
+            addValue(playerName, "shotsOnTarget", statRow.shotsOnTarget, fixtureRow.startingAt);
+            addValue(playerName, "foulsCommitted", statRow.foulsCommitted, fixtureRow.startingAt);
+            addValue(playerName, "foulsWon", statRow.foulsWon, fixtureRow.startingAt);
+            addValue(playerName, "tackles", statRow.tackles, fixtureRow.startingAt);
+          }
+        }
+
+        for (const [key, row] of byPlayerMarket.entries()) {
+          const [, marketCategory] = key.split("|");
+          if (!marketCategory) continue;
+          h2hPlayerStats.push({
+            playerName: row.playerName,
+            marketCategory: marketCategory as H2hMarketCategory,
+            values: row.values,
+            startingAt: row.startingAt,
+          });
+        }
+      }
       const fromRows = buildEvidenceContextFromRows(playerRows, fixture, recentStatsByNormalizedName);
       const evidenceContext: BuildEvidenceContext | null = {
         ...fromRows,
         ...evidenceContextProp,
         playerRecentStats: evidenceContextProp?.playerRecentStats ?? fromRows.playerRecentStats,
+        ...(h2hPlayerStats.length > 0 ? { playerH2hStats: h2hPlayerStats } : {}),
       };
       const headToHeadContext = h2h?.context ?? null;
       const teamFormContext = teamFormRes?.context ?? null;

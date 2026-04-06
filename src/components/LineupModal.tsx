@@ -515,11 +515,11 @@ function LineupContent({
   const noComputedRowsMessage = useMemo(() => {
     if (valueBetStartingCount === 0) return "Lineup not confirmed yet — using predicted players.";
     const d = valueBetDiagnostics;
-    if (!d) return "Not enough data to generate value bets for this fixture.";
+    if (!d) return "Data is limited for this fixture — showing what we can.";
     const thinData =
       d.supportedMarketsFound === 0 || d.playersWithOdds === 0 || d.playersWithStats === 0;
-    if (thinData) return "Not enough data to generate value bets for this fixture.";
-    return "Not enough data to generate value bets for this fixture.";
+    if (thinData) return "Data is limited for this fixture — value bets may be sparse.";
+    return "Data is limited for this fixture — value bets may be sparse.";
   }, [valueBetDiagnostics, valueBetStartingCount]);
 
   const getValueBetPlayerLabel = (row: ValueBetRow): string => {

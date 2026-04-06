@@ -321,7 +321,7 @@ function isWeakOrPlaceholderReasonText(r: string): boolean {
 /** Max lines shown for team prop “Why this build” copy (display-only). */
 export const MAX_TEAM_PROP_EXPLANATION_LINES = 3;
 
-/** H2H samples with fewer meetings are labelled “limited sample” in copy. */
+/** H2H samples with fewer meetings are still shown (no “limited sample” wording). */
 const H2H_STRONG_MIN_N = 3;
 
 /**
@@ -329,7 +329,7 @@ const H2H_STRONG_MIN_N = 3;
  * - Avg total goals ~2.5 (last 5 matches each)
  * - 4/5 Como & 3/5 Pisa over 1.5
  * - H2H (5): ~2.8 avg, 4/5 over 1.5
- * - H2H (2): limited sample, 1/2 over 1.5
+ * - H2H (2): 1/2 over 1.5
  * (Never emit a bare `H2H (n)` with no stat.)
  */
 
@@ -503,13 +503,13 @@ function formatH2hTotalsLine(leg: TeamLegReasoningTarget, h2h: HeadToHeadFixture
 
   if (weak) {
     if (ag != null && ratePart) {
-      return `H2H (${n}): limited sample, ~${fmt1(ag)} avg, ${ratePart}`;
+      return `H2H (${n}): ~${fmt1(ag)} avg, ${ratePart}`;
     }
     if (ratePart) {
-      return `H2H (${n}): limited sample, ${ratePart}`;
+      return `H2H (${n}): ${ratePart}`;
     }
     if (ag != null) {
-      return `H2H (${n}): ~${fmt1(ag)} avg goals, limited sample`;
+      return `H2H (${n}): ~${fmt1(ag)} avg goals`;
     }
     return null;
   }
@@ -573,13 +573,13 @@ function formatH2hBttsLine(h2h: HeadToHeadFixtureContext): string | null {
   const yes = h2h.bttsYesCount;
   if (yes != null && typeof yes === "number" && denom > 0) {
     if (weak) {
-      return `H2H (${n}): limited sample, ${yes}/${denom} BTTS`;
+      return `H2H (${n}): ${yes}/${denom} BTTS`;
     }
     return `H2H (${n}): ${yes}/${denom} BTTS`;
   }
   if (h2h.bttsRate != null && Number.isFinite(h2h.bttsRate)) {
     if (weak) {
-      return `H2H (${n}): limited sample, ${pct0(h2h.bttsRate)} BTTS rate`;
+      return `H2H (${n}): ${pct0(h2h.bttsRate)} BTTS rate`;
     }
     return `H2H (${n}): ${pct0(h2h.bttsRate)} BTTS rate`;
   }
@@ -692,7 +692,7 @@ function formatH2hResultsLine(h2h: HeadToHeadFixtureContext, hn: string, an: str
   if (body == null) return null;
 
   if (weak) {
-    return `H2H (${n}): limited sample, ${body}`;
+    return `H2H (${n}): ${body}`;
   }
   return `H2H (${n}): ${body}`;
 }

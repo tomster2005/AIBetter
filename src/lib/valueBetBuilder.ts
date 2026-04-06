@@ -179,6 +179,13 @@ export interface BuildEvidenceContext {
   /** Team names for corners sentence: "X average ... and Y average ...". */
   homeTeamName?: string;
   awayTeamName?: string;
+  /** Player H2H stats from last meeting (per-player, per-market). */
+  playerH2hStats?: Array<{
+    playerName: string;
+    marketCategory: "shots" | "shotsOnTarget" | "foulsCommitted" | "foulsWon" | "tackles";
+    values: number[];
+    startingAt?: string[];
+  }>;
 }
 
 /** Row shape needed to build evidence (subset of ValueBetRow). */
@@ -1394,25 +1401,30 @@ function applyH2hContextToPlayerLegs(
   headToHeadContext: HeadToHeadFixtureContext | null | undefined
 ): void {
   if (!headToHeadContext) return;
-  if (headToHeadContext.sampleSize < MIN_H2H_SAMPLE_SIZE) return;
+  const sampleSize = headToHeadContext.sampleSize ?? 0;
+  if (sampleSize <= 0) return;
   const avgGoals = headToHeadContext.averageTotalGoals;
   const h2hLine = buildFixtureH2hContextLine(headToHeadContext);
   if (!h2hLine) return;
 
-  const tempoHigh = avgGoals != null && Number.isFinite(avgGoals) && avgGoals >= 2.9;
-  const tempoLow = avgGoals != null && Number.isFinite(avgGoals) && avgGoals <= 2.1;
+  const canScore =
+    sampleSize >= MIN_H2H_SAMPLE_SIZE && avgGoals != null && Number.isFinite(avgGoals);
+  const tempoHigh = canScore && avgGoals >= 2.9;
+  const tempoLow = canScore && avgGoals <= 2.1;
   for (const leg of legs) {
     if (leg.type !== "player" || !leg.playerName) continue;
     const cat = getMarketCategory(leg.marketName);
     if (cat == null) continue;
 
     let delta = 0;
-    if (cat === "shots" || cat === "shotsOnTarget") {
-      if (tempoHigh) delta = 2;
-      if (tempoLow) delta = -2;
-    } else if (cat === "foulsCommitted" || cat === "foulsWon" || cat === "tackles") {
-      if (tempoHigh) delta = 1;
-      if (tempoLow) delta = -1;
+    if (canScore) {
+      if (cat === "shots" || cat === "shotsOnTarget") {
+        if (tempoHigh) delta = 2;
+        if (tempoLow) delta = -2;
+      } else if (cat === "foulsCommitted" || cat === "foulsWon" || cat === "tackles") {
+        if (tempoHigh) delta = 1;
+        if (tempoLow) delta = -1;
+      }
     }
 
     if (delta !== 0) {
@@ -2516,6 +2528,31 @@ function lookupPlayerEvidenceForExplanation(
   return { per90: found.per90, recentValues: rv };
 }
 
+function lookupPlayerH2hStatForExplanation(
+  playerName: string,
+  marketCategory: string,
+  evidence: BuildEvidenceContext["playerH2hStats"]
+): { values: number[]; startingAt?: string[] } | null {
+  if (!evidence?.length) return null;
+  const key = `${normalizePlayerNameForMatch(playerName)}|${marketCategory}`;
+  for (const row of evidence) {
+    const rowKey = `${normalizePlayerNameForMatch(row.playerName)}|${row.marketCategory}`;
+    if (rowKey !== key) continue;
+    if (!Array.isArray(row.values) || row.values.length === 0) continue;
+    return {
+      values: row.values.filter((v) => typeof v === "number" && Number.isFinite(v)),
+      startingAt: Array.isArray(row.startingAt) ? row.startingAt : undefined,
+    };
+  }
+  return null;
+}
+
+function formatPlayerH2hLine(values: number[], statLabel: string): string {
+  const trimmed = values.filter((v) => typeof v === "number" && Number.isFinite(v)).slice(0, 5);
+  if (trimmed.length === 0) return "";
+  return `Last H2H (${trimmed.length}): ${trimmed.join(", ")} ${statLabel}.`;
+}
+
 function getExpectedMinutesForPlayer(playerName: string, rows: PlayerCandidateInput[]): number | null {
   const key = normalizePlayerNameForMatch(playerName);
   for (const r of rows) {
@@ -2627,6 +2664,7 @@ function buildPlayerLegTipsterExplanation(
   cat: MarketCat | null,
   statLabel: string,
   evidenceEntry: { per90: number; recentValues: number[] } | null,
+  h2hEntry: { values: number[]; startingAt?: string[] } | null,
   playerRows: PlayerCandidateInput[]
 ): string[] {
   if (!leg.playerName) return [];
@@ -2682,6 +2720,10 @@ function buildPlayerLegTipsterExplanation(
 
   const fromReason = extractTipsterContextFromReason(leg.reason);
   out.push(fromReason ?? shortFallbackContextLine(cat));
+  if (h2hEntry && Array.isArray(h2hEntry.values) && h2hEntry.values.length > 0) {
+    const line = formatPlayerH2hLine(h2hEntry.values, statLabel);
+    if (line) out.push(line);
+  }
   if (leg.opponentContextLine) out.push(leg.opponentContextLine);
   if (leg.h2hContextLine) out.push(leg.h2hContextLine);
 
@@ -2737,11 +2779,15 @@ function buildComboExplanation(
         evidenceContext?.playerRecentStats?.length && cat != null
           ? lookupPlayerEvidenceForExplanation(leg.playerName!, cat, evidenceContext.playerRecentStats)
           : null;
+      const h2hEntry =
+        evidenceContext?.playerH2hStats?.length && cat != null
+          ? lookupPlayerH2hStatForExplanation(leg.playerName!, cat, evidenceContext.playerH2hStats)
+          : null;
       const data = getPer90AndLabelForLeg(leg, playerRows);
       const statLabel = data?.statLabel || statLabelForCategory(cat);
 
       if (!leg.playerName) continue;
-      const legLines = buildPlayerLegTipsterExplanation(leg, cat, statLabel, evidenceEntry, playerRows);
+      const legLines = buildPlayerLegTipsterExplanation(leg, cat, statLabel, evidenceEntry, h2hEntry, playerRows);
       if (legLines.length > 0) {
         if (lines.length > 0) lines.push("");
         lines.push(...legLines);
