@@ -213,17 +213,26 @@ export function computeDataConfidenceScore(params: {
   confirmedStarter: boolean;
   matchedById: boolean;
   lineupConfirmed: boolean;
-  recentSampleSize?: number;
 }): number {
-  const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
-  const appearancesScore = clamp01(params.appearances / 20) * 30;
-  const minutesScore = clamp01(params.minutesPlayed / 1200) * 30;
-  const starterScore = params.confirmedStarter ? 15 : params.lineupConfirmed ? 8 : 0;
-  const matchedScore = params.matchedById ? 5 : 0;
-  const expectedMinutesScore = clamp01(params.expectedMinutes / 90) * 15;
-  const recentSampleScore = clamp01((params.recentSampleSize ?? 0) / 8) * 5;
-  const score = appearancesScore + minutesScore + starterScore + matchedScore + expectedMinutesScore + recentSampleScore;
-  return Math.max(0, Math.min(100, Math.round(score)));
+  let score = 0;
+  if (params.appearances >= 15) score += 25;
+  else if (params.appearances >= 10) score += 15;
+  else if (params.appearances >= 5) score += 5;
+
+  if (params.minutesPlayed >= 900) score += 25;
+  else if (params.minutesPlayed >= 600) score += 15;
+  else if (params.minutesPlayed >= 300) score += 5;
+
+  if (params.confirmedStarter) score += 20;
+  else if (params.lineupConfirmed) score += 10;
+
+  if (params.matchedById) score += 15;
+
+  if (params.expectedMinutes >= 60) score += 15;
+  else if (params.expectedMinutes >= 45) score += 10;
+  else if (params.expectedMinutes >= 35) score += 5;
+
+  return Math.max(0, Math.min(100, score));
 }
 
 /** @deprecated Use computeDataConfidenceScore. */

@@ -220,7 +220,6 @@ export function generateBacktestRows(
         confirmedStarter: false,
         matchedById: sel.matchedById ?? false,
         lineupConfirmed: ctx.lineupConfirmed ?? false,
-        recentSampleSize: 0,
       });
       const dataConfidence = dataConfidenceBucket(dataConfidenceScore);
       const modelEdge = calibratedProbability - bookmakerProb;
