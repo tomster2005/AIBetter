@@ -2853,7 +2853,7 @@ export function generateCombos(
   }
 
   const suffixDp = buildSuffixMaxLegProducts(legs, MAX_LEGS);
-  const targetCap = targetOdds * COMBO_MAX_ODDS_MULTIPLIER;
+  const targetCap = sortMode === "target" ? targetOdds * COMBO_MAX_ODDS_MULTIPLIER : Number.POSITIVE_INFINITY;
   const pruneEps = 1e-9;
   let verboseComboLogCount = 0;
 
