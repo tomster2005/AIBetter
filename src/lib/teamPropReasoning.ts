@@ -80,26 +80,28 @@ export function applyFixtureTeamFormToLegScore(
   h2h: HeadToHeadFixtureContext | null | undefined,
   names: { home: string; away: string }
 ): void {
-  if (!isFormContextStrong(form) || leg.type !== "team") return;
+  if (leg.type !== "team") return;
+  const useForm = isFormContextStrong(form);
 
   const hn = names.home.trim() || "Home";
   const an = names.away.trim() || "Away";
   let delta = 0;
   const notes: string[] = [];
 
-  const exp = blendedExpectedTotalGoals(form!);
-  const h = form!.home;
-  const a = form!.away;
+  const exp = useForm ? blendedExpectedTotalGoals(form!) : null;
+  const h = useForm ? form!.home : null;
+  const a = useForm ? form!.away : null;
 
   if (
+    useForm &&
     (leg.marketFamily === "team:match-goals" || leg.marketFamily === "team:alternative-total-goals") &&
     Number.isFinite(leg.line)
   ) {
     const line = leg.line;
-    const hOver = countOverUnder(h.recentMatchTotals, line, true);
-    const aOver = countOverUnder(a.recentMatchTotals, line, true);
-    const hN = h.recentMatchTotals.length;
-    const aN = a.recentMatchTotals.length;
+    const hOver = countOverUnder(h!.recentMatchTotals, line, true);
+    const aOver = countOverUnder(a!.recentMatchTotals, line, true);
+    const hN = h!.recentMatchTotals.length;
+    const aN = a!.recentMatchTotals.length;
 
     if (leg.outcome === "Over") {
       if (exp != null) {
@@ -118,8 +120,8 @@ export function applyFixtureTeamFormToLegScore(
         else if (combinedRate <= 0.35) delta -= 5;
       }
     } else if (leg.outcome === "Under") {
-      const hUnder = countOverUnder(h.recentMatchTotals, line, false);
-      const aUnder = countOverUnder(a.recentMatchTotals, line, false);
+      const hUnder = countOverUnder(h!.recentMatchTotals, line, false);
+      const aUnder = countOverUnder(a!.recentMatchTotals, line, false);
       if (exp != null) {
         if (exp <= line - 0.35) {
           delta += 6;
@@ -138,18 +140,18 @@ export function applyFixtureTeamFormToLegScore(
     }
   }
 
-  if (leg.marketFamily === "team:btts") {
-    const hr = h.bttsRate;
-    const ar = a.bttsRate;
-    const sr = h.scoredInRate;
-    const cr = h.concededInRate;
-    const srA = a.scoredInRate;
-    const crA = a.concededInRate;
+  if (useForm && leg.marketFamily === "team:btts") {
+    const hr = h!.bttsRate;
+    const ar = a!.bttsRate;
+    const sr = h!.scoredInRate;
+    const cr = h!.concededInRate;
+    const srA = a!.scoredInRate;
+    const crA = a!.concededInRate;
     if (leg.outcome === "Yes") {
       if (hr != null && ar != null) {
         const bothHigh = hr >= 0.5 && ar >= 0.5;
         if (bothHigh) delta += 5;
-        notes.push(`${hn} BTTS in ${h.bttsHits}/${h.sampleSize} recent; ${an} in ${a.bttsHits}/${a.sampleSize}`);
+        notes.push(`${hn} BTTS in ${h!.bttsHits}/${h!.sampleSize} recent; ${an} in ${a!.bttsHits}/${a!.sampleSize}`);
       }
       if (sr != null && cr != null && srA != null && crA != null) {
         notes.push(
@@ -159,26 +161,26 @@ export function applyFixtureTeamFormToLegScore(
       if (hr != null && ar != null && (hr + ar) / 2 < 0.35) delta -= 7;
     } else if (leg.outcome === "No") {
       if (hr != null && ar != null) {
-        notes.push(`${hn} BTTS ${h.bttsHits}/${h.sampleSize}; ${an} ${a.bttsHits}/${a.sampleSize}`);
+        notes.push(`${hn} BTTS ${h!.bttsHits}/${h!.sampleSize}; ${an} ${a!.bttsHits}/${a!.sampleSize}`);
         if (hr <= 0.35 && ar <= 0.35) delta += 5;
         if (hr >= 0.65 || ar >= 0.65) delta -= 6;
       }
     }
   }
 
-  if (leg.marketFamily === "team:match-results") {
-    const hw = h.recentMatchTotals.length
-      ? h.recentGoalsFor.filter((g, i) => g > (h.recentGoalsAgainst[i] ?? -1)).length
+  if (useForm && leg.marketFamily === "team:match-results") {
+    const hw = h!.recentMatchTotals.length
+      ? h!.recentGoalsFor.filter((g, i) => g > (h!.recentGoalsAgainst[i] ?? -1)).length
       : 0;
-    const aw = a.recentMatchTotals.length
-      ? a.recentGoalsFor.filter((g, i) => g > (a.recentGoalsAgainst[i] ?? -1)).length
+    const aw = a!.recentMatchTotals.length
+      ? a!.recentGoalsFor.filter((g, i) => g > (a!.recentGoalsAgainst[i] ?? -1)).length
       : 0;
-    const hN = h.sampleSize;
-    const aN = a.sampleSize;
-    const hGF = h.avgGoalsFor;
-    const hGA = h.avgGoalsAgainst;
-    const aGF = a.avgGoalsFor;
-    const aGA = a.avgGoalsAgainst;
+    const hN = h!.sampleSize;
+    const aN = a!.sampleSize;
+    const hGF = h!.avgGoalsFor;
+    const hGA = h!.avgGoalsAgainst;
+    const aGF = a!.avgGoalsFor;
+    const aGA = a!.avgGoalsAgainst;
     if (hGF != null && hGA != null && aGF != null && aGA != null) {
       notes.push(
         `${hn} last-${hN}: ${fmt1(hGF)} for / ${fmt1(hGA)} against; ${an} last-${aN}: ${fmt1(aGF)} for / ${fmt1(aGA)} against`
@@ -186,16 +188,16 @@ export function applyFixtureTeamFormToLegScore(
     }
     if (leg.outcome === "Home") {
       notes.push(`${hn} won ${hw}/${hN} in sample (all opponents)`);
-      if (h.homeSplit.n >= 2 && h.homeSplit.avgGoalsFor != null) {
-        notes.push(`${hn} at home: ${fmt1(h.homeSplit.avgGoalsFor)} for / ${fmt1(h.homeSplit.avgGoalsAgainst)} against`);
+      if (h!.homeSplit.n >= 2 && h!.homeSplit.avgGoalsFor != null) {
+        notes.push(`${hn} at home: ${fmt1(h!.homeSplit.avgGoalsFor)} for / ${fmt1(h!.homeSplit.avgGoalsAgainst)} against`);
       }
-      if (a.awaySplit.n >= 2 && a.awaySplit.avgGoalsAgainst != null) {
-        notes.push(`${an} away conceded avg ${fmt1(a.awaySplit.avgGoalsAgainst)}`);
+      if (a!.awaySplit.n >= 2 && a!.awaySplit.avgGoalsAgainst != null) {
+        notes.push(`${an} away conceded avg ${fmt1(a!.awaySplit.avgGoalsAgainst)}`);
       }
     } else if (leg.outcome === "Away") {
       notes.push(`${an} won ${aw}/${aN} in sample (all opponents)`);
-      if (a.awaySplit.n >= 2 && a.awaySplit.avgGoalsFor != null) {
-        notes.push(`${an} away: ${fmt1(a.awaySplit.avgGoalsFor)} for / ${fmt1(a.awaySplit.avgGoalsAgainst)} against`);
+      if (a!.awaySplit.n >= 2 && a!.awaySplit.avgGoalsFor != null) {
+        notes.push(`${an} away: ${fmt1(a!.awaySplit.avgGoalsFor)} for / ${fmt1(a!.awaySplit.avgGoalsAgainst)} against`);
       }
     } else if (leg.outcome === "Draw") {
       const close =
@@ -214,19 +216,39 @@ export function applyFixtureTeamFormToLegScore(
   if (h2h && (h2h.sampleSize ?? 0) >= MIN_H2H_FOR_SOLO_SUPPORT) {
     if (leg.marketFamily === "team:match-goals" || leg.marketFamily === "team:alternative-total-goals") {
       const ag = h2h.averageTotalGoals;
-      if (ag != null && Number.isFinite(leg.line)) {
-        if (leg.outcome === "Over" && ag > leg.line + 0.25) {
-          delta += 2;
+      const line = leg.line;
+      if (ag != null && Number.isFinite(line)) {
+        if (leg.outcome === "Over" && ag > line + 0.25) {
+          delta += 5;
           notes.push(`H2H avg ${fmt1(ag)} goals (${h2h.sampleSize} meetings) supports higher totals`);
         }
-        if (leg.outcome === "Under" && ag < leg.line - 0.25) {
-          delta += 2;
+        if (leg.outcome === "Under" && ag < line - 0.25) {
+          delta += 5;
           notes.push(`H2H avg ${fmt1(ag)} goals (${h2h.sampleSize} meetings) supports lower totals`);
+        }
+      }
+      if (Number.isFinite(line) && Array.isArray(h2h.goalsLineCounts)) {
+        const row = h2h.goalsLineCounts.find((r) => Math.abs(r.line - line) < EPS);
+        if (row && row.sampleSize > 0) {
+          const overRate = row.over / row.sampleSize;
+          const underRate = row.under / row.sampleSize;
+          if (leg.outcome === "Over") {
+            notes.push(`H2H ${row.over}/${row.sampleSize} over ${line}`);
+            if (overRate >= 0.65) delta += 4;
+            else if (overRate <= 0.35) delta -= 4;
+          }
+          if (leg.outcome === "Under") {
+            notes.push(`H2H ${row.under}/${row.sampleSize} under ${line}`);
+            if (underRate >= 0.65) delta += 4;
+            else if (underRate <= 0.35) delta -= 4;
+          }
         }
       }
     }
     if (leg.marketFamily === "team:btts" && h2h.bttsRate != null) {
       notes.push(`H2H BTTS rate ${(h2h.bttsRate * 100).toFixed(0)}% (${h2h.bttsSampleSize ?? h2h.sampleSize} games)`);
+      if (leg.outcome === "Yes" && h2h.bttsRate >= 0.6) delta += 4;
+      if (leg.outcome === "No" && h2h.bttsRate <= 0.45) delta += 4;
     }
   }
 
@@ -264,9 +286,9 @@ export function applyThinRecentFormPenalty(
 ): void {
   if (!h2hWasApplied || leg.type !== "team") return;
   if (isFormContextStrong(form)) return;
-  leg.score = Math.max(0, leg.score - 5);
+  leg.score = Math.max(0, leg.score - 2);
   const note =
-    "Down-ranked: fewer than 3 recent scored games per side in league — leaning mainly on H2H.";
+    "Recent league form sample thin — leaning mainly on H2H.";
   leg.reason = leg.reason?.trim() ? `${leg.reason}; ${note}` : note;
 }
 
