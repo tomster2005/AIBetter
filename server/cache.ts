@@ -27,6 +27,8 @@ const TTL = {
   H2H_CONTEXT: 30 * 60 * 1000,
   /** Per-team recent form (all opponents): 20 minutes */
   TEAM_FORM_CONTEXT: 20 * 60 * 1000,
+  /** Team season stats (goal-line): 30 minutes */
+  TEAM_STATS: 30 * 60 * 1000,
   /** Past fixtures: never expire (use a very large number for "indefinite") */
   INDEFINITE: Number.MAX_SAFE_INTEGER,
 } as const;
@@ -108,6 +110,10 @@ export function getTeamRecentFormContextTtlMs(): number {
   return TTL.TEAM_FORM_CONTEXT;
 }
 
+export function getTeamStatsTtlMs(): number {
+  return TTL.TEAM_STATS;
+}
+
 /** Order-independent key; include excludeFixtureId so current-fixture builds stay correct. */
 export function getTeamRecentFormContextCacheKey(
   team1Id: number,
@@ -118,6 +124,11 @@ export function getTeamRecentFormContextCacheKey(
   const b = Math.max(team1Id, team2Id);
   const ex = excludeFixtureId != null && Number.isFinite(excludeFixtureId) ? excludeFixtureId : 0;
   return `team-recent-form-${a}-${b}-${ex}`;
+}
+
+export function getTeamStatsCacheKey(teamId: number, seasonId?: number): string {
+  const season = seasonId != null && Number.isFinite(seasonId) ? seasonId : 0;
+  return `team-stats-${teamId}-${season}`;
 }
 
 export function get<T>(key: string): T | null {

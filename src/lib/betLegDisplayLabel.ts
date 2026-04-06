@@ -7,8 +7,10 @@ import {
   MARKET_ID_ALTERNATIVE_CORNERS,
   MARKET_ID_ALTERNATIVE_TOTAL_GOALS,
   MARKET_ID_BTTS,
+  MARKET_ID_HOME_TEAM_GOALS,
   MARKET_ID_MATCH_GOALS,
   MARKET_ID_MATCH_RESULTS,
+  MARKET_ID_AWAY_TEAM_GOALS,
   MARKET_ID_TEAM_TOTAL_GOALS,
 } from "../constants/marketIds.js";
 import { inferPlayerPropStatCategoryFromLeg } from "./betSettlementHelpers.js";
@@ -164,16 +166,20 @@ function formatTeamLegStructured(leg: BetLegDisplayInput): string | null {
     return `Total Corners ${dw} ${formatLineNum(leg.line!)}`;
   }
 
-  const isTeamTotal = mid === MARKET_ID_TEAM_TOTAL_GOALS || mn.includes("team total");
+  const isTeamTotal =
+    mid === MARKET_ID_TEAM_TOTAL_GOALS ||
+    mid === MARKET_ID_HOME_TEAM_GOALS ||
+    mid === MARKET_ID_AWAY_TEAM_GOALS ||
+    mn.includes("team total");
   if (isTeamTotal && (dw === "Over" || dw === "Under")) {
     const lineOk = typeof leg.line === "number" && Number.isFinite(leg.line);
     if (!lineOk) return null;
     const raw = (leg.label ?? "").trim();
     const lower = raw.toLowerCase();
-    if (/\bhome\b/.test(lower) && !/\baway\b/.test(lower)) {
+    if (mid === MARKET_ID_HOME_TEAM_GOALS || (/\bhome\b/.test(lower) && !/\baway\b/.test(lower))) {
       return `Home Team Goals ${dw} ${formatLineNum(leg.line!)}`;
     }
-    if (/\baway\b/.test(lower) && !/\bhome\b/.test(lower)) {
+    if (mid === MARKET_ID_AWAY_TEAM_GOALS || (/\baway\b/.test(lower) && !/\bhome\b/.test(lower))) {
       return `Away Team Goals ${dw} ${formatLineNum(leg.line!)}`;
     }
     return `Team Total Goals ${dw} ${formatLineNum(leg.line!)}`;
@@ -260,10 +266,16 @@ export function formatMatchMarketSelectionDisplay(marketId: number, marketName: 
     return `${mn} ${label}`.trim();
   }
 
-  if (marketId === MARKET_ID_TEAM_TOTAL_GOALS) {
+  if (marketId === MARKET_ID_TEAM_TOTAL_GOALS || marketId === MARKET_ID_HOME_TEAM_GOALS || marketId === MARKET_ID_AWAY_TEAM_GOALS) {
     const line = parseLineFromText(label);
     const over = selectionIsOver(label);
     if (line != null && over != null) {
+      if (marketId === MARKET_ID_HOME_TEAM_GOALS) {
+        return `Home Team Goals ${over ? "Over" : "Under"} ${formatLineNum(line)}`;
+      }
+      if (marketId === MARKET_ID_AWAY_TEAM_GOALS) {
+        return `Away Team Goals ${over ? "Over" : "Under"} ${formatLineNum(line)}`;
+      }
       return `Team Total Goals ${over ? "Over" : "Under"} ${formatLineNum(line)}`;
     }
     return `${mn}${SEP}${label}`;

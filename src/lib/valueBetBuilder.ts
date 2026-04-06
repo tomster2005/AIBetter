@@ -10,8 +10,10 @@ import {
   MARKET_ID_ALTERNATIVE_CORNERS,
   MARKET_ID_ALTERNATIVE_TOTAL_GOALS,
   MARKET_ID_BTTS,
+  MARKET_ID_HOME_TEAM_GOALS,
   MARKET_ID_MATCH_GOALS,
   MARKET_ID_MATCH_RESULTS,
+  MARKET_ID_AWAY_TEAM_GOALS,
   MARKET_ID_PLAYER_FOULS_COMMITTED,
   MARKET_ID_PLAYER_FOULS_WON,
   MARKET_ID_PLAYER_SHOTS,
@@ -22,6 +24,7 @@ import {
 } from "../constants/marketIds.js";
 import type { HeadToHeadFixtureContext } from "../types/headToHeadContext.js";
 import type { FixtureTeamFormContext } from "../types/teamRecentFormContext.js";
+import type { TeamSeasonGoalLineStats } from "../types/teamSeasonStats.js";
 import {
   applyFixtureTeamFormToLegScore,
   applyThinRecentFormPenalty,
@@ -387,6 +390,7 @@ function isSensibleMatchTotalGoalsLine(line: number): boolean {
  */
 function isMatchTotalGoalsOuMarket(marketId: number, marketName: string): boolean {
   if (marketId === MARKET_ID_TEAM_TOTAL_GOALS) return false;
+  if (marketId === MARKET_ID_HOME_TEAM_GOALS || marketId === MARKET_ID_AWAY_TEAM_GOALS) return false;
   if (marketId === MARKET_ID_ALTERNATIVE_CORNERS || marketId === MARKET_ID_TOTAL_CORNERS) return false;
   if (marketId === MARKET_ID_MATCH_GOALS || marketId === MARKET_ID_ALTERNATIVE_TOTAL_GOALS) return true;
 
@@ -2165,6 +2169,23 @@ function applyH2HAdjustmentsToTeamLeg(
     }
   }
 
+  // Team-specific goals lean (home/away team goals markets).
+  if (leg.marketFamily === "team:home-goals" || leg.marketFamily === "team:away-goals") {
+    const teamAvgGoals =
+      leg.marketFamily === "team:home-goals"
+        ? headToHeadContext.team1AvgGoalsScored
+        : headToHeadContext.team2AvgGoalsScored;
+    if (teamAvgGoals != null && Number.isFinite(leg.line)) {
+      if (leg.outcome === "Over" && teamAvgGoals >= leg.line + 0.25) {
+        delta += 4;
+        notes.push("H2H team goals lean Over");
+      } else if (leg.outcome === "Under" && teamAvgGoals <= leg.line - 0.25) {
+        delta += 4;
+        notes.push("H2H team goals lean Under");
+      }
+    }
+  }
+
   // BTTS lean.
   if (leg.marketFamily === "team:btts" && bttsRate != null) {
     if (bttsRate >= 0.6) {
@@ -2265,7 +2286,8 @@ export function getTeamLegsFromOdds(
   fixtureCornersContext: FixtureCornersContext | null,
   headToHeadContext?: HeadToHeadFixtureContext | null,
   teamFormContext?: FixtureTeamFormContext | null,
-  teamNames: { home: string; away: string } = { home: "Home", away: "Away" }
+  teamNames: { home: string; away: string } = { home: "Home", away: "Away" },
+  teamIds: { home: number | null; away: number | null } = { home: null, away: null }
 ): BuildLeg[] {
   const byMarketIdRaw = new Map<number, number>();
   const allowedRaw: Array<{ marketId: number; marketName: string; selectionLabel: string }> = [];
@@ -2353,6 +2375,59 @@ export function getTeamLegsFromOdds(
             bookmakerName: b.bookmakerName,
             score: base.score,
             reason: base.reason,
+          };
+          if (h2hApplied) {
+            const adj = applyH2HAdjustmentsToTeamLeg(leg, headToHeadContext);
+            if (adj.delta !== 0) {
+              leg.score = Math.max(0, leg.score + adj.delta);
+              if (adj.note) leg.reason = leg.reason ? `${leg.reason}; ${adj.note}` : adj.note;
+              if (adj.delta > 0) h2hBoosted += 1;
+              if (adj.delta < 0) h2hPenalised += 1;
+              if (import.meta.env?.DEV && h2hSamples.length < 6) h2hSamples.push({ delta: adj.delta, label: leg.label, family: leg.marketFamily, note: adj.note });
+            }
+          }
+          applyThinRecentFormPenalty(leg, teamFormContext ?? null, h2hApplied);
+          if (!shouldIncludeNonCornerTeamLegInPool(leg, headToHeadContext, teamFormContext ?? null)) {
+            logTeamLegExclusion(leg, "needs 3+ recent league games per side or H2H sample ≥4");
+            continue;
+          }
+          applyFixtureTeamFormToLegScore(leg, teamFormContext ?? null, headToHeadContext, teamNames);
+          const arr = candidatesByMarketId.get(m.marketId) ?? [];
+          arr.push(leg);
+          candidatesByMarketId.set(m.marketId, arr);
+          continue;
+        }
+
+        if (m.marketId === MARKET_ID_HOME_TEAM_GOALS || m.marketId === MARKET_ID_AWAY_TEAM_GOALS || m.marketId === MARKET_ID_TEAM_TOTAL_GOALS) {
+          const line = parseOverUnderLine(rawLabel);
+          if (line == null) continue;
+          const outcome: "Over" | "Under" = isOverLabel(rawLabel) ? "Over" : "Under";
+          const base = scoreTeamLegNoModel({
+            marketId: m.marketId,
+            odds,
+            line,
+            outcomeLabel: `${outcome} ${line}`,
+            marketName: m.marketName,
+          });
+          const isHome = m.marketId === MARKET_ID_HOME_TEAM_GOALS;
+          const isAway = m.marketId === MARKET_ID_AWAY_TEAM_GOALS;
+          const teamName = isHome ? teamNames.home : isAway ? teamNames.away : "Team";
+          const teamId = isHome ? teamIds.home : isAway ? teamIds.away : null;
+          const marketFamily = isHome ? "team:home-goals" : isAway ? "team:away-goals" : "team:team-goals";
+          const leg: BuildLeg = {
+            id: `team-tg-${m.marketId}-${b.bookmakerId}-${outcome}-${line}-${odds}`,
+            type: "team",
+            marketId: m.marketId,
+            marketFamily,
+            label: `${teamName} ${m.marketName} ${line} ${outcome}`,
+            marketName: m.marketName,
+            line,
+            outcome,
+            odds,
+            bookmakerName: b.bookmakerName,
+            score: base.score,
+            reason: base.reason,
+            ...(teamId != null ? { teamId: String(teamId) } : {}),
           };
           if (h2hApplied) {
             const adj = applyH2HAdjustmentsToTeamLeg(leg, headToHeadContext);
@@ -2792,7 +2867,8 @@ function buildComboExplanation(
   fixtureCornersContext: FixtureCornersContext | null,
   evidenceContext: BuildEvidenceContext | null,
   headToHeadContext?: HeadToHeadFixtureContext | null,
-  teamFormContext?: FixtureTeamFormContext | null
+  teamFormContext?: FixtureTeamFormContext | null,
+  teamGoalLineStats?: Record<number, TeamSeasonGoalLineStats | null | undefined>
 ): ComboExplanation {
   const lines: string[] = [];
 
@@ -2864,7 +2940,7 @@ function buildComboExplanation(
       const teamLines = buildTeamPropExplanationLines(leg, teamFormContext ?? null, headToHeadContext ?? null, {
         home: homeName,
         away: awayName,
-      });
+      }, teamGoalLineStats);
       const structuredTeamWhy =
         isTeamMatchTotalGoalsLeg(leg) ||
         leg.marketFamily === "team:btts" ||
@@ -3177,6 +3253,8 @@ export function buildValueBetCombos(
     evidenceContext?: BuildEvidenceContext | null;
     headToHeadContext?: HeadToHeadFixtureContext | null;
     teamFormContext?: FixtureTeamFormContext | null;
+    teamGoalLineStats?: Record<number, TeamSeasonGoalLineStats | null | undefined>;
+    teamIds?: { home: number | null; away: number | null };
     sortMode?: "target" | "ev";
   } = {}
 ): { combos: BuildCombo[]; candidateCount: number; legCount: number } {
@@ -3186,6 +3264,8 @@ export function buildValueBetCombos(
     evidenceContext = null,
     headToHeadContext = null,
     teamFormContext = null,
+    teamGoalLineStats = undefined,
+    teamIds = { home: null, away: null },
   } = options;
   const playerLegs = filterPlayerCandidates(playerRows, evidenceContext, lineupContext);
   applyFoulMatchupBoost(playerLegs, playerRows, lineupContext);
@@ -3201,7 +3281,8 @@ export function buildValueBetCombos(
           {
             home: evidenceContext?.homeTeamName?.trim() || "Home",
             away: evidenceContext?.awayTeamName?.trim() || "Away",
-          }
+          },
+          teamIds
         )
       : [];
   const sortMode = options.sortMode ?? "target";
@@ -3957,7 +4038,8 @@ export function buildValueBetCombos(
       fixtureCornersContext,
       evidenceContext,
       headToHeadContext,
-      teamFormContext
+      teamFormContext,
+      teamGoalLineStats
     ),
   }));
 

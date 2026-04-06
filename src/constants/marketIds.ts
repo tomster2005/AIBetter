@@ -28,6 +28,10 @@ export const MARKET_ID_TOTAL_CORNERS = 68;
 export const MARKET_ID_TEAM_CORNERS = 74;
 
 export const MARKET_ID_PLAYER_TACKLES = 340;
+/** Team Goals (Home/Away) markets. */
+export const MARKET_ID_HOME_TEAM_GOALS = 20;
+export const MARKET_ID_AWAY_TEAM_GOALS = 21;
+/** Legacy Team Total Goals market (kept for compatibility). */
 export const MARKET_ID_TEAM_TOTAL_GOALS = 86;
 
 /** Core match markets: Match Results, BTTS, main Over/Under Goals (80), Alternative Total Goals (81). */
@@ -41,6 +45,8 @@ export const CORE_MARKET_IDS = [
 /** Team prop markets supported in odds UI (first wave: alternative corners, team total goals). */
 export const TEAM_PROP_MARKET_IDS = [
   MARKET_ID_ALTERNATIVE_CORNERS,
+  MARKET_ID_HOME_TEAM_GOALS,
+  MARKET_ID_AWAY_TEAM_GOALS,
   MARKET_ID_TEAM_TOTAL_GOALS,
   MARKET_ID_TEAM_SHOTS,
   MARKET_ID_TEAM_SHOTS_ON_TARGET,
@@ -53,6 +59,8 @@ export const TEAM_PROP_MARKET_IDS = [
 export const ACTIVE_ODDS_MARKET_IDS: readonly number[] = [
   ...CORE_MARKET_IDS,
   MARKET_ID_ALTERNATIVE_CORNERS,
+  MARKET_ID_HOME_TEAM_GOALS,
+  MARKET_ID_AWAY_TEAM_GOALS,
   MARKET_ID_TEAM_TOTAL_GOALS,
 ];
 

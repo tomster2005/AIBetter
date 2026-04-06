@@ -5,6 +5,7 @@
 
 import type { HeadToHeadFixtureContext } from "../types/headToHeadContext.js";
 import type { FixtureTeamFormContext } from "../types/teamRecentFormContext.js";
+import type { TeamSeasonGoalLineStats } from "../types/teamSeasonStats.js";
 
 /** Structural subset of `BuildLeg` — avoids circular import with valueBetBuilder. */
 export type TeamLegReasoningTarget = {
@@ -15,6 +16,7 @@ export type TeamLegReasoningTarget = {
   score: number;
   reason?: string;
   label: string;
+  teamId?: string;
 };
 
 /** Minimum finished matches with scores per side to treat recent form as usable. */
@@ -136,6 +138,36 @@ export function applyFixtureTeamFormToLegScore(
         const combinedRate = (hUnder + aUnder) / (hN + aN);
         if (combinedRate >= 0.65) delta += 4;
         else if (combinedRate <= 0.35) delta -= 5;
+      }
+    }
+  }
+
+  if (useForm && (leg.marketFamily === "team:home-goals" || leg.marketFamily === "team:away-goals") && Number.isFinite(leg.line)) {
+    const line = leg.line;
+    const side = leg.marketFamily === "team:home-goals" ? h : a;
+    const opp = leg.marketFamily === "team:home-goals" ? a : h;
+    const teamName = leg.marketFamily === "team:home-goals" ? hn : an;
+    const recentGF = side?.recentGoalsFor ?? [];
+    const n = recentGF.length;
+    if (n > 0) {
+      const over = countOverUnder(recentGF, line, true);
+      const under = countOverUnder(recentGF, line, false);
+      if (leg.outcome === "Over") {
+        notes.push(`${teamName} goals: ${over}/${n} over ${line} (recent)`);
+      } else if (leg.outcome === "Under") {
+        notes.push(`${teamName} goals: ${under}/${n} under ${line} (recent)`);
+      }
+    }
+    const avgFor = side?.avgGoalsFor;
+    const oppAvgAgainst = opp?.avgGoalsAgainst;
+    if (avgFor != null && oppAvgAgainst != null) {
+      const expected = (avgFor + oppAvgAgainst) / 2;
+      if (leg.outcome === "Over" && expected >= line + 0.3) {
+        delta += 5;
+        notes.push(`${teamName} expected goals ~${fmt1(expected)} vs ${line} line`);
+      } else if (leg.outcome === "Under" && expected <= line - 0.3) {
+        delta += 5;
+        notes.push(`${teamName} expected goals ~${fmt1(expected)} vs ${line} line`);
       }
     }
   }
@@ -336,6 +368,9 @@ const H2H_STRONG_MIN_N = 3;
 const STRUCTURED_TEAM_MARKETS = new Set([
   "team:match-goals",
   "team:alternative-total-goals",
+  "team:home-goals",
+  "team:away-goals",
+  "team:team-goals",
   "team:btts",
   "team:match-results",
 ]);
@@ -656,6 +691,58 @@ function buildCompressedMatchResultLines(
   return mergeWithReservedH2h([l1, l2], h2hLine);
 }
 
+function teamGoalLineSeasonLine(
+  leg: TeamLegReasoningTarget,
+  stats: TeamSeasonGoalLineStats | null | undefined,
+  teamName: string,
+  scope: "all" | "home" | "away"
+): string | null {
+  if (!stats || !Number.isFinite(leg.line)) return null;
+  const line = leg.line;
+  const rows = stats.goalLineStats.filter((r) => Math.abs(r.line - line) < EPS);
+  if (rows.length === 0) return null;
+  const primary = rows.find((r) => r.scope === scope) ?? rows.find((r) => r.scope === "all") ?? rows[0]!;
+  const total = primary.total ?? null;
+  if (total == null || !Number.isFinite(total) || total <= 0) return null;
+  const over = primary.over ?? null;
+  const under = primary.under ?? null;
+  if (leg.outcome === "Over" && over != null && Number.isFinite(over)) {
+    return `${teamName} over ${line}: ${over}/${total} this season`;
+  }
+  if (leg.outcome === "Under" && under != null && Number.isFinite(under)) {
+    return `${teamName} under ${line}: ${under}/${total} this season`;
+  }
+  return null;
+}
+
+function recentGoalsSeriesLine(goals: number[], teamName: string): string | null {
+  if (!Array.isArray(goals) || goals.length === 0) return null;
+  return `${teamName} recent goals: ${goals.join(",")}`;
+}
+
+function buildTeamSpecificGoalsLines(
+  leg: TeamLegReasoningTarget,
+  form: FixtureTeamFormContext | null | undefined,
+  stats: TeamSeasonGoalLineStats | null | undefined,
+  teamName: string,
+  scope: "home" | "away"
+): string[] {
+  const lines: Array<string | null> = [];
+  lines.push(teamGoalLineSeasonLine(leg, stats, teamName, scope));
+  if (stats?.goalLineStats?.length) {
+    const allLine = teamGoalLineSeasonLine(leg, stats, teamName, "all");
+    if (allLine) lines.push(allLine);
+  }
+  const recentGoals =
+    form && leg.marketFamily === "team:home-goals"
+      ? form.home.recentGoalsFor
+      : form && leg.marketFamily === "team:away-goals"
+        ? form.away.recentGoalsFor
+        : [];
+  lines.push(recentGoalsSeriesLine(recentGoals ?? [], teamName));
+  return capUniqueLines(lines, MAX_TEAM_PROP_EXPLANATION_LINES);
+}
+
 /** W/D/L counts or win/draw/loss rates — never `—` placeholders only, never bare `H2H (n)`. */
 function formatH2hResultsLine(h2h: HeadToHeadFixtureContext, hn: string, an: string): string | null {
   let n = h2h.resultSampleSize ?? 0;
@@ -709,7 +796,8 @@ export function buildTeamPropExplanationLines(
   leg: TeamLegReasoningTarget,
   form: FixtureTeamFormContext | null | undefined,
   h2h: HeadToHeadFixtureContext | null | undefined,
-  names: { home: string; away: string }
+  names: { home: string; away: string },
+  teamGoalLineStats?: Record<number, TeamSeasonGoalLineStats | null | undefined>
 ): string[] {
   const hn = names.home.trim() || "Home";
   const an = names.away.trim() || "Away";
@@ -719,6 +807,15 @@ export function buildTeamPropExplanationLines(
     const fromReason =
       r && r.length >= 12 && !isWeakOrPlaceholderReasonText(r) ? [r] : ([] as string[]);
     return capUniqueLines(fromReason, MAX_TEAM_PROP_EXPLANATION_LINES);
+  }
+
+  if (leg.marketFamily === "team:home-goals" || leg.marketFamily === "team:away-goals") {
+    const teamIdNum = leg.teamId != null ? parseInt(leg.teamId, 10) : NaN;
+    const teamStats = Number.isFinite(teamIdNum) ? teamGoalLineStats?.[teamIdNum] ?? null : null;
+    const teamName = leg.marketFamily === "team:home-goals" ? hn : an;
+    const scope = leg.marketFamily === "team:home-goals" ? "home" : "away";
+    const lines = buildTeamSpecificGoalsLines(leg, form ?? null, teamStats, teamName, scope);
+    if (lines.length > 0) return lines;
   }
 
   if (isFormContextStrong(form) && leg.marketFamily !== "team:alternative-corners") {

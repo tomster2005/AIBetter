@@ -25,6 +25,7 @@ import { getPlayerSeasonStatsForProps } from "../src/api/playerSeasonStats.js";
 import { getHeadToHeadFixtureContext } from "../src/api/headToHeadContext.js";
 import { getHeadToHeadPlayerStats } from "../src/api/headToHeadPlayers.js";
 import { searchTeamsByName } from "../src/api/teamSearch.js";
+import { getTeamSeasonGoalLineStats } from "../src/api/teamStats.js";
 import * as cache from "./cache.js";
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
 import { join, dirname, resolve } from "path";
@@ -389,6 +390,38 @@ app.get("/api/teams/search", async (req, res) => {
       });
     }
     res.status(500).json({ error: "Failed to search teams." });
+  }
+});
+
+/**
+ * Team season stats (goal-line over/under counts).
+ */
+app.get("/api/teams/:teamId/stats", async (req, res) => {
+  const teamId = parseInt(req.params.teamId, 10);
+  const seasonIdRaw = typeof req.query.seasonId === "string" ? parseInt(req.query.seasonId, 10) : NaN;
+  if (Number.isNaN(teamId) || teamId <= 0) {
+    res.status(400).json({ error: "Invalid team ID." });
+    return;
+  }
+  const cacheKey = cache.getTeamStatsCacheKey(teamId, Number.isFinite(seasonIdRaw) ? seasonIdRaw : undefined);
+  const cached = cache.get<unknown>(cacheKey);
+  if (cached != null) return res.json({ data: cached });
+  try {
+    const data = await getTeamSeasonGoalLineStats(teamId, Number.isFinite(seasonIdRaw) ? seasonIdRaw : undefined);
+    if (data == null) {
+      res.status(404).json({ error: "No team stats returned." });
+      return;
+    }
+    cache.set(cacheKey, data, cache.getTeamStatsTtlMs());
+    res.json({ data });
+  } catch (err) {
+    if (process.env.NODE_ENV !== "production") {
+      console.error("[team-stats] GET /api/teams/:teamId/stats failed", {
+        teamId,
+        errorMessage: err instanceof Error ? err.message : String(err),
+      });
+    }
+    res.status(500).json({ error: "Failed to load team stats." });
   }
 });
 

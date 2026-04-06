@@ -13,8 +13,10 @@ import {
   MARKET_ID_ALTERNATIVE_CORNERS,
   MARKET_ID_ALTERNATIVE_TOTAL_GOALS,
   MARKET_ID_BTTS,
+  MARKET_ID_HOME_TEAM_GOALS,
   MARKET_ID_MATCH_GOALS,
   MARKET_ID_MATCH_RESULTS,
+  MARKET_ID_AWAY_TEAM_GOALS,
   MARKET_ID_TEAM_TOTAL_GOALS,
 } from "../constants/marketIds";
 
@@ -411,7 +413,8 @@ function isCornersOverUnderMarket(row: SportmonksOdd): boolean {
 
 /** Team Total Goals (market 86): classify by market id only. */
 function isTeamTotalGoalsMarket(row: SportmonksOdd): boolean {
-  return getMarketMeta(row).marketId === MARKET_ID_TEAM_TOTAL_GOALS;
+  const mid = getMarketMeta(row).marketId;
+  return mid === MARKET_ID_TEAM_TOTAL_GOALS || mid === MARKET_ID_HOME_TEAM_GOALS || mid === MARKET_ID_AWAY_TEAM_GOALS;
 }
 
 /**
@@ -683,6 +686,8 @@ type SupportedMarketConfig = {
 
 const MARKET_NAME_ALTERNATIVE_CORNERS = "Alternative Corners";
 const MARKET_NAME_TEAM_TOTAL_GOALS = "Team Total Goals";
+const MARKET_NAME_HOME_TEAM_GOALS = "Home Team Goals";
+const MARKET_NAME_AWAY_TEAM_GOALS = "Away Team Goals";
 
 const SUPPORTED_MARKET_CONFIGS: SupportedMarketConfig[] = [
   {
@@ -733,10 +738,30 @@ const SUPPORTED_MARKET_CONFIGS: SupportedMarketConfig[] = [
     getOutcomeOrder: (selections) => sortOverUnderOutcomeOrder(selections.map((s) => s.label)),
   },
   {
+    marketId: MARKET_ID_HOME_TEAM_GOALS,
+    marketName: MARKET_NAME_HOME_TEAM_GOALS,
+    bucketKey: "teamTotalGoals",
+    classifier: (row) => getMarketMeta(row).marketId === MARKET_ID_HOME_TEAM_GOALS,
+    normaliser: normaliseOverUnderLabel as MarketLabelNormaliser,
+    outcomeOrder: [],
+    outcomeKeyFn: (label) => label,
+    getOutcomeOrder: (selections) => sortOverUnderOutcomeOrder(selections.map((s) => s.label)),
+  },
+  {
+    marketId: MARKET_ID_AWAY_TEAM_GOALS,
+    marketName: MARKET_NAME_AWAY_TEAM_GOALS,
+    bucketKey: "teamTotalGoals",
+    classifier: (row) => getMarketMeta(row).marketId === MARKET_ID_AWAY_TEAM_GOALS,
+    normaliser: normaliseOverUnderLabel as MarketLabelNormaliser,
+    outcomeOrder: [],
+    outcomeKeyFn: (label) => label,
+    getOutcomeOrder: (selections) => sortOverUnderOutcomeOrder(selections.map((s) => s.label)),
+  },
+  {
     marketId: MARKET_ID_TEAM_TOTAL_GOALS,
     marketName: MARKET_NAME_TEAM_TOTAL_GOALS,
     bucketKey: "teamTotalGoals",
-    classifier: isTeamTotalGoalsMarket,
+    classifier: (row) => getMarketMeta(row).marketId === MARKET_ID_TEAM_TOTAL_GOALS,
     normaliser: normaliseOverUnderLabel as MarketLabelNormaliser,
     outcomeOrder: [],
     outcomeKeyFn: (label) => label,

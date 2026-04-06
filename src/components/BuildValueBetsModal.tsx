@@ -20,6 +20,8 @@ import { formatBetLegDisplayLabel } from "../lib/betLegDisplayLabel.js";
 import { loadHeadToHeadContext } from "../services/headToHeadContextService.js";
 import { loadHeadToHeadPlayerStats } from "../services/headToHeadPlayerStatsService.js";
 import { loadFixtureTeamFormContext } from "../services/teamRecentFormContextService.js";
+import { loadTeamSeasonGoalLineStats } from "../services/teamStatsService.js";
+import { fetchLeagueCurrentSeason } from "../services/playerStatsService.js";
 import { saveGeneratedCombosForFixture, getBetPerformanceSummary, resolveStoredCombosForFixture } from "../services/comboPerformanceService.js";
 import { fetchFixtureResolutionData } from "../services/comboResolutionDataService.js";
 import {
@@ -298,7 +300,7 @@ export function BuildValueBetsModal({
     setResult(null);
     setBuilding(true);
     try {
-      const [playerRows, bookmakers, h2h, h2hPlayers, teamFormRes] = await Promise.all([
+      const [playerRows, bookmakers, h2h, h2hPlayers, teamFormRes, leagueSeason] = await Promise.all([
         getCandidates(),
         fetchFixtureOddsBookmakers(fixture.id),
         loadHeadToHeadContext(fixture.homeTeam.id, fixture.awayTeam.id),
@@ -311,6 +313,7 @@ export function BuildValueBetsModal({
           homeTeamName: fixture.homeTeam.name,
           awayTeamName: fixture.awayTeam.name,
         }),
+        fixture.league?.name ? fetchLeagueCurrentSeason(fixture.league.name) : Promise.resolve(null),
       ]);
       const teamNameForId = (teamId?: number): string | null => {
         if (teamId == null || !fixture) return null;
@@ -395,6 +398,15 @@ export function BuildValueBetsModal({
       };
       const headToHeadContext = h2h?.context ?? null;
       const teamFormContext = teamFormRes?.context ?? null;
+      const seasonId = leagueSeason?.currentSeasonId;
+      const [homeTeamStats, awayTeamStats] = await Promise.all([
+        loadTeamSeasonGoalLineStats(fixture.homeTeam.id, seasonId),
+        loadTeamSeasonGoalLineStats(fixture.awayTeam.id, seasonId),
+      ]);
+      const teamGoalLineStats = {
+        [fixture.homeTeam.id]: homeTeamStats,
+        [fixture.awayTeam.id]: awayTeamStats,
+      };
       if (import.meta.env.DEV) {
         console.log("[build-value-bets] headToHeadContext", {
           fixtureId: fixture.id,
@@ -443,6 +455,11 @@ export function BuildValueBetsModal({
           evidenceContext,
           headToHeadContext,
           teamFormContext,
+          teamGoalLineStats,
+          teamIds: {
+            home: fixture.homeTeam.id,
+            away: fixture.awayTeam.id,
+          },
           sortMode,
         }
       );
