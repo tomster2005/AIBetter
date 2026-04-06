@@ -358,6 +358,35 @@
   white-space: nowrap;
 }
 
+.build-value-bets-modal__confidence-badge {
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: #eef2ff;
+  color: #3730a3;
+  white-space: nowrap;
+}
+
+.build-value-bets-modal__confidence-badge.is-low {
+  background: #fef2f2;
+  color: #b91c1c;
+  border-color: #fecaca;
+}
+
+.build-value-bets-modal__confidence-badge.is-medium {
+  background: #fff7ed;
+  color: #9a3412;
+  border-color: #fed7aa;
+}
+
+.build-value-bets-modal__confidence-badge.is-high {
+  background: #ecfdf3;
+  color: #166534;
+  border-color: #bbf7d0;
+}
+
 .build-value-bets-modal__combo-kelly {
   font-size: 0.75rem;
   color: #6b7280;
@@ -405,6 +434,34 @@
 .build-value-bets-modal__leg-odds {
   font-weight: 500;
   color: #111827;
+}
+
+.build-value-bets-modal__leg-confidence {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 0.12rem 0.35rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: #eef2ff;
+  color: #3730a3;
+}
+
+.build-value-bets-modal__leg-confidence.is-low {
+  background: #fef2f2;
+  color: #b91c1c;
+  border-color: #fecaca;
+}
+
+.build-value-bets-modal__leg-confidence.is-medium {
+  background: #fff7ed;
+  color: #9a3412;
+  border-color: #fed7aa;
+}
+
+.build-value-bets-modal__leg-confidence.is-high {
+  background: #ecfdf3;
+  color: #166534;
+  border-color: #bbf7d0;
 }
 
 .build-value-bets-modal__leg-reason {

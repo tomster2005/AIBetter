@@ -17,6 +17,7 @@ import {
   type RecentStatsByNormalizedName,
 } from "../lib/valueBetBuilder.js";
 import { formatBetLegDisplayLabel } from "../lib/betLegDisplayLabel.js";
+import { dataConfidenceBucket } from "../lib/valueBetModel.js";
 import { loadHeadToHeadContext } from "../services/headToHeadContextService.js";
 import { loadHeadToHeadPlayerStats } from "../services/headToHeadPlayerStatsService.js";
 import { loadFixtureTeamFormContext } from "../services/teamRecentFormContextService.js";
@@ -69,6 +70,19 @@ function formatComboEvPercentLabel(comboEVPercent: number): string {
   if (pct > 0) return `+${pct.toFixed(1)}% EV`;
   if (pct < 0) return `(−${Math.abs(pct).toFixed(1)}% EV)`;
   return `0.0% EV`;
+}
+
+function formatConfidenceLabel(score: number): string {
+  const bucket = dataConfidenceBucket(score);
+  return `${bucket.charAt(0).toUpperCase()}${bucket.slice(1)}`;
+}
+
+function getComboConfidenceScore(combo: BuildCombo): number | null {
+  const scores = combo.legs
+    .map((leg) => leg.dataConfidenceScore)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  if (scores.length === 0) return null;
+  return Math.min(...scores);
 }
 
 /**
@@ -768,6 +782,20 @@ export function BuildValueBetsModal({
                         >
                           {formatComboEvPercentLabel(combo.comboEVPercent)}
                         </span>
+                        {(() => {
+                          const score = getComboConfidenceScore(combo);
+                          if (score == null) return null;
+                          const label = formatConfidenceLabel(score);
+                          const bucket = dataConfidenceBucket(score);
+                          return (
+                            <span
+                              className={`build-value-bets-modal__confidence-badge is-${bucket}`}
+                              title={`Lowest leg data confidence: ${score.toFixed(0)}`}
+                            >
+                              {`Conf ${label} ${score.toFixed(0)}`}
+                            </span>
+                          );
+                        })()}
                         <span
                           className="build-value-bets-modal__combo-kelly"
                           title="Suggested stake (½ Kelly)"
@@ -913,6 +941,17 @@ export function BuildValueBetsModal({
                           <li key={leg.id} className="build-value-bets-modal__leg">
                             <span className="build-value-bets-modal__leg-label">{formatLegLabel(leg)}</span>
                             <span className="build-value-bets-modal__leg-odds">{leg.odds.toFixed(2)}</span>
+                            {(() => {
+                              const score = leg.dataConfidenceScore;
+                              if (typeof score !== "number" || !Number.isFinite(score)) return null;
+                              const label = formatConfidenceLabel(score);
+                              const bucket = dataConfidenceBucket(score);
+                              return (
+                                <span className={`build-value-bets-modal__leg-confidence is-${bucket}`}>
+                                  {`Conf ${label} ${score.toFixed(0)}`}
+                                </span>
+                              );
+                            })()}
                             {leg.reason && (
                               <span className="build-value-bets-modal__leg-reason">{leg.reason}</span>
                             )}

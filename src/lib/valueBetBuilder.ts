@@ -133,6 +133,8 @@ export interface BuildLeg {
   odds: number;
   bookmakerName: string;
   score: number;
+  dataConfidenceScore?: number;
+  betQualityScore?: number;
   edge?: number;
   probability?: number;
   reason?: string;
@@ -1659,6 +1661,8 @@ export function filterPlayerCandidates(
       odds: r.odds,
       bookmakerName: r.bookmakerName,
       score,
+      dataConfidenceScore,
+      betQualityScore,
       edge: r.modelEdge,
       probability,
       reason,
