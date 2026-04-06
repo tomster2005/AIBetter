@@ -494,6 +494,88 @@
   margin-top: 0.6rem;
 }
 
+.lineup-content__recent-form {
+  margin-top: 0.75rem;
+  border: 1px solid #e5e7eb;
+  border-radius: var(--lineup-radius-md);
+  background: #f8fafc;
+  padding: 0.65rem 0.75rem;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.lineup-content__recent-form-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.lineup-content__recent-form-title {
+  margin: 0;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #64748b;
+  font-weight: 700;
+}
+
+.lineup-content__recent-form-player {
+  margin: 0.15rem 0 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #111827;
+}
+
+.lineup-content__recent-form-market {
+  margin: 0.15rem 0 0;
+  font-size: 0.75rem;
+  color: #6b7280;
+}
+
+.lineup-content__recent-form-close {
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  color: #475569;
+  border-radius: 999px;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.lineup-content__recent-form-close:hover {
+  background: #e2e8f0;
+}
+
+.lineup-content__recent-form-note {
+  margin: 0;
+  font-size: 0.75rem;
+  color: #6b7280;
+}
+
+.lineup-content__recent-form-note--error {
+  color: #b91c1c;
+}
+
+.lineup-content__recent-form-values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.lineup-content__recent-form-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: #e0f2fe;
+  color: #0c4a6e;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
 @media (max-width: 760px) {
   .lineup-content__key-info {
     grid-template-columns: 1fr;
@@ -630,6 +712,20 @@
 .lineup-content__value-td--player {
   font-weight: 600;
   color: #111827;
+}
+
+.lineup-content__value-player-btn {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.lineup-content__value-player-btn:hover {
+  text-decoration: underline;
 }
 
 .lineup-content__value-td--market {

@@ -14,7 +14,7 @@ import type { BenchPlayer } from "./lineup/index.js";
 import { PlayerProfileModal } from "./player-profile/index.js";
 import { FixtureOddsPanel } from "./FixtureOddsPanel.js";
 import { BuildValueBetsModal } from "./BuildValueBetsModal.js";
-import type { LineupContext } from "../lib/valueBetBuilder.js";
+import type { LineupContext, RecentStatsByNormalizedName, ValueBetPlayerMarketCategory } from "../lib/valueBetBuilder.js";
 import {
   loadPlayerPropsForFixture,
   type PlayerOddsResponse as ServicePlayerOddsResponse,
@@ -132,6 +132,38 @@ function formatKickoff(startingAt: string): string {
 
 /** type_id 11 = starting XI in Sportmonks */
 const TYPE_ID_STARTER = 11;
+
+function getApiOrigin(): string {
+  const base =
+    typeof import.meta.env !== "undefined" && import.meta.env?.VITE_API_ORIGIN;
+  return typeof base === "string" && base !== "" ? base.replace(/\/$/, "") : "";
+}
+
+function getRecentPlayerStatsApiUrl(): string {
+  return `${getApiOrigin()}/api/recent-player-stats`;
+}
+
+function normalizeRecentPlayerKey(name: string): string {
+  return name.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function getMarketCategoryForRecent(marketName: string): ValueBetPlayerMarketCategory | null {
+  const n = (marketName || "").toLowerCase();
+  if (n.includes("shots on target")) return "shotsOnTarget";
+  if (n.includes("fouls committed")) return "foulsCommitted";
+  if (n.includes("fouls won")) return "foulsWon";
+  if (n.includes("player tackles") || (n.includes("tackles") && !n.includes("foul"))) return "tackles";
+  if (n.includes("shots") && !n.includes("on target")) return "shots";
+  return null;
+}
+
+const RECENT_FORM_LABELS: Record<ValueBetPlayerMarketCategory, string> = {
+  shots: "Shots",
+  shotsOnTarget: "Shots On Target",
+  foulsCommitted: "Fouls Committed",
+  foulsWon: "Fouls Won",
+  tackles: "Tackles",
+};
 
 function getPlayerImage(entry: RawLineupEntry): string | null {
   const player = entry.player as { image_path?: string } | undefined;
@@ -273,11 +305,22 @@ function LineupContent({
   const [matchOddsExpanded, setMatchOddsExpanded] = useState(false);
   const [addingRowKey, setAddingRowKey] = useState<string | null>(null);
   const [addRowMessage, setAddRowMessage] = useState<string | null>(null);
+  const [recentPanelRow, setRecentPanelRow] = useState<ValueBetRow | null>(null);
+  const [recentStatsByName, setRecentStatsByName] = useState<RecentStatsByNormalizedName>({});
+  const [recentStatsLoading, setRecentStatsLoading] = useState(false);
+  const [recentStatsError, setRecentStatsError] = useState<string | null>(null);
   const [duplicateRowWarning, setDuplicateRowWarning] = useState<{
     match: DuplicateMatch;
     row: ValueBetRow;
     bookmaker: { id: string; name: string };
   } | null>(null);
+
+  useEffect(() => {
+    setRecentPanelRow(null);
+    setRecentStatsByName({});
+    setRecentStatsError(null);
+    setRecentStatsLoading(false);
+  }, [fixture?.id]);
 
   const strongSourceRows = useMemo(
     () => (valueBetRows ?? []).filter((r) => r.isStrongBet === true),
@@ -286,6 +329,50 @@ function LineupContent({
   const weakSourceRows = useMemo(
     () => (valueBetRows ?? []).filter((r) => r.isStrongBet !== true),
     [valueBetRows]
+  );
+
+  const handleRecentPanelOpen = useCallback(
+    async (row: ValueBetRow) => {
+      setRecentPanelRow(row);
+      setRecentStatsError(null);
+      if (!fixture) return;
+      const category = getMarketCategoryForRecent(row.marketName);
+      if (!category) {
+        setRecentStatsError("Recent form is available for player prop markets only.");
+        return;
+      }
+      const key = normalizeRecentPlayerKey(row.playerName);
+      if (recentStatsByName[key]) return;
+      const pid = row.sportmonksPlayerId;
+      const tid = row.sportmonksTeamId;
+      if (typeof pid !== "number" || typeof tid !== "number" || !Number.isFinite(pid) || !Number.isFinite(tid)) {
+        setRecentStatsError("Recent form unavailable (missing player/team id).");
+        return;
+      }
+      setRecentStatsLoading(true);
+      try {
+        const payload = {
+          players: [{ playerName: row.playerName, playerId: pid, teamId: tid }],
+          excludeFixtureId: fixture.id,
+          limit: 10,
+        };
+        const res = await fetch(getRecentPlayerStatsApiUrl(), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) throw new Error("Recent stats fetch failed");
+        const data = (await res.json()) as RecentStatsByNormalizedName;
+        if (data && typeof data === "object") {
+          setRecentStatsByName((prev) => ({ ...prev, ...data }));
+        }
+      } catch {
+        setRecentStatsError("Recent form unavailable.");
+      } finally {
+        setRecentStatsLoading(false);
+      }
+    },
+    [fixture, recentStatsByName]
   );
 
   const displayRows = useMemo(() => {
@@ -547,7 +634,18 @@ function LineupContent({
       >
         <td className="lineup-content__value-td">
           <div className="lineup-content__value-player-market">
-            <span className="lineup-content__value-td--player">{playerLabel}</span>
+            <span className="lineup-content__value-td--player">
+              <button
+                type="button"
+                className="lineup-content__value-player-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void handleRecentPanelOpen(row);
+                }}
+              >
+                {playerLabel}
+              </button>
+            </span>
             <span className="lineup-content__value-td--market">
               {row.outcome} {row.line} {row.marketName}
             </span>
@@ -592,6 +690,9 @@ function LineupContent({
   const leagueName = fixture?.league?.name ?? "—";
   const kickoffLabel = fixture != null ? formatKickoff(fixture.startingAt) : "—";
   const lineupStateLabel = hasLineups ? "Lineups available" : "Waiting for lineups";
+  const recentPanelCategory = recentPanelRow ? getMarketCategoryForRecent(recentPanelRow.marketName) : null;
+  const recentPanelStats = recentPanelRow ? recentStatsByName[normalizeRecentPlayerKey(recentPanelRow.playerName)] : null;
+  const recentPanelValues = recentPanelCategory ? recentPanelStats?.[recentPanelCategory] : null;
 
   if (!lineup || !hasLineups) {
     return (
@@ -882,6 +983,41 @@ function LineupContent({
                         </tbody>
                       </table>
                     </div>
+                  </div>
+                )}
+                {recentPanelRow && (
+                  <div className="lineup-content__recent-form" role="region" aria-label="Recent form">
+                    <div className="lineup-content__recent-form-head">
+                      <div>
+                        <p className="lineup-content__recent-form-title">Recent form</p>
+                        <p className="lineup-content__recent-form-player">{getValueBetPlayerLabel(recentPanelRow)}</p>
+                        <p className="lineup-content__recent-form-market">
+                          {recentPanelCategory ? RECENT_FORM_LABELS[recentPanelCategory] : recentPanelRow.marketName}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        className="lineup-content__recent-form-close"
+                        onClick={() => setRecentPanelRow(null)}
+                      >
+                        Close
+                      </button>
+                    </div>
+                    {recentStatsLoading ? (
+                      <p className="lineup-content__recent-form-note">Loading recent form…</p>
+                    ) : recentStatsError ? (
+                      <p className="lineup-content__recent-form-note lineup-content__recent-form-note--error">{recentStatsError}</p>
+                    ) : Array.isArray(recentPanelValues) && recentPanelValues.length > 0 ? (
+                      <div className="lineup-content__recent-form-values">
+                        {recentPanelValues.map((value, idx) => (
+                          <span key={`${value}-${idx}`} className="lineup-content__recent-form-chip">
+                            {value}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="lineup-content__recent-form-note">Recent form unavailable.</p>
+                    )}
                   </div>
                 )}
               </>
