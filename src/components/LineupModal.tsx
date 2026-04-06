@@ -1232,6 +1232,7 @@ function buildValueBetRowFields(
   fixture: { homeTeam: { id: number }; awayTeam: { id: number } } | null,
   lineupConfirmed: boolean,
   matchedById: boolean,
+  recentSampleSize: number,
   playerName?: string,
   onFoulsReject?: (reason: string) => void
 ): {
@@ -1308,6 +1309,7 @@ function buildValueBetRowFields(
     confirmedStarter: lineupInfo?.confirmedStarter ?? false,
     matchedById,
     lineupConfirmed,
+    recentSampleSize,
   });
   const dataConfidence = dataConfidenceBucket(dataConfidenceScore);
   const originalCalibratedProbability = calibrateProbability(rawModelProbability, {
@@ -1780,6 +1782,13 @@ export function buildValueBetRows(
                   skipReasonsBreakdown[reason] = (skipReasonsBreakdown[reason] ?? 0) + 1;
                 }
               : undefined;
+            const recentSampleSize = (() => {
+              const category = getMarketCategoryForRecent(marketName);
+              if (!category) return 0;
+              const recent = recentStatsByName[normalizeRecentPlayerKey(playerName)];
+              const values = recent?.[category];
+              return Array.isArray(values) ? values.length : 0;
+            })();
             const built = buildValueBetRowFields(
               stats,
               marketId,
@@ -1790,6 +1799,7 @@ export function buildValueBetRows(
               fixture,
               lineupConfirmed,
               matchedById,
+              recentSampleSize,
               playerName,
               onFoulsReject
             );

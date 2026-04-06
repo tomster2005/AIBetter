@@ -213,14 +213,16 @@ export function computeDataConfidenceScore(params: {
   confirmedStarter: boolean;
   matchedById: boolean;
   lineupConfirmed: boolean;
+  recentSampleSize?: number;
 }): number {
   const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
-  const appearancesScore = clamp01(params.appearances / 15) * 25;
-  const minutesScore = clamp01(params.minutesPlayed / 900) * 25;
-  const starterScore = params.confirmedStarter ? 20 : params.lineupConfirmed ? 10 : 0;
-  const matchedScore = params.matchedById ? 15 : 0;
-  const expectedMinutesScore = clamp01(params.expectedMinutes / 75) * 15;
-  const score = appearancesScore + minutesScore + starterScore + matchedScore + expectedMinutesScore;
+  const appearancesScore = clamp01(params.appearances / 20) * 30;
+  const minutesScore = clamp01(params.minutesPlayed / 1200) * 30;
+  const starterScore = params.confirmedStarter ? 15 : params.lineupConfirmed ? 8 : 0;
+  const matchedScore = params.matchedById ? 5 : 0;
+  const expectedMinutesScore = clamp01(params.expectedMinutes / 90) * 15;
+  const recentSampleScore = clamp01((params.recentSampleSize ?? 0) / 8) * 5;
+  const score = appearancesScore + minutesScore + starterScore + matchedScore + expectedMinutesScore + recentSampleScore;
   return Math.max(0, Math.min(100, Math.round(score)));
 }
 
