@@ -39,6 +39,23 @@ describe("Quick Add preset mapping", () => {
     expect(mapped?.selectionLabel).toBe("Bukayo Saka Shots Over 1.5");
     expect(mapped?.outcome).toBe("Over");
   });
+
+  it("maps player tackles over preset with expected label and outcome", () => {
+    const rowError: Record<string, string> = {};
+    const mapped = buildSelectionFromPreset(
+      makeDraft({
+        preset: "playerTacklesOver",
+        matchLabel: "Arsenal v Liverpool",
+        playerName: "Declan Rice",
+        line: "2.5",
+      }),
+      rowError
+    );
+
+    expect(mapped).not.toBeNull();
+    expect(mapped?.selectionLabel).toBe("Declan Rice Tackles Over 2.5");
+    expect(mapped?.outcome).toBe("Over");
+  });
 });
 
 describe("manualLegRejectReason", () => {

@@ -125,6 +125,7 @@ export type QuickAddSelectionDraft = {
     | "playerShotsOnTargetOver"
     | "playerFoulsCommittedOver"
     | "playerFoulsWonOver"
+    | "playerTacklesOver"
     | "overGoals"
     | "teamCornersOver"
     | "teamCardsOver"
@@ -169,7 +170,8 @@ const QUICK_ADD_PRESETS: Array<{ value: Exclude<QuickAddSelectionDraft["preset"]
   { value: "playerShotsOnTargetOver", label: "Player Shots on Target Over" },
   { value: "playerFoulsCommittedOver", label: "Player Fouls Committed Over" },
   { value: "playerFoulsWonOver", label: "Player Fouls Won Over" },
-  { value: "overGoals", label: "Over Goals" },
+  { value: "playerTacklesOver", label: "Player Tackles Over" },
+  { value: "overGoals", label: "Under/Over Goals" },
   { value: "teamCornersOver", label: "Team Corners Over" },
   { value: "teamCardsOver", label: "Team Cards Over" },
   { value: "btts", label: "BTTS" },
@@ -235,6 +237,8 @@ function getPresetMarketName(preset: QuickAddSelectionDraft["preset"]): string {
       return "Player Fouls Committed";
     case "playerFoulsWonOver":
       return "Player Fouls Won";
+    case "playerTacklesOver":
+      return "Player Tackles";
     case "overGoals":
       return "Total Goals";
     case "teamCornersOver":
@@ -295,7 +299,7 @@ export function buildSelectionFromPreset(
   let playerName: string | undefined;
   let line: number | undefined;
 
-  if (row.preset === "playerShotsOver" || row.preset === "playerShotsOnTargetOver" || row.preset === "playerFoulsCommittedOver" || row.preset === "playerFoulsWonOver") {
+  if (row.preset === "playerShotsOver" || row.preset === "playerShotsOnTargetOver" || row.preset === "playerFoulsCommittedOver" || row.preset === "playerFoulsWonOver" || row.preset === "playerTacklesOver") {
     if (!player) rowError.playerName = "Player is required.";
     if (!Number.isFinite(lineVal)) rowError.line = "Line is required.";
     if (rowError.matchLabel || rowError.playerName || rowError.line) return null;
@@ -308,15 +312,18 @@ export function buildSelectionFromPreset(
           ? "Shots on Target"
           : row.preset === "playerFoulsCommittedOver"
             ? "Fouls Committed"
-            : "Fouls Won";
+            : row.preset === "playerFoulsWonOver"
+              ? "Fouls Won"
+              : "Tackles";
     selectionLabel = `${player} ${metric} Over ${lineVal}`;
     selectionOutcome = "Over";
   } else if (row.preset === "overGoals") {
     if (!Number.isFinite(lineVal)) rowError.line = "Line is required.";
-    if (rowError.matchLabel || rowError.line) return null;
+    if (row.outcome !== "Over" && row.outcome !== "Under") rowError.outcome = "Choose Over or Under.";
+    if (rowError.matchLabel || rowError.line || rowError.outcome) return null;
     line = lineVal;
-    selectionLabel = `Over ${lineVal} Goals`;
-    selectionOutcome = "Over";
+    selectionLabel = `${row.outcome} ${lineVal} Goals`;
+    selectionOutcome = row.outcome;
   } else if (row.preset === "teamCornersOver" || row.preset === "teamCardsOver") {
     if (!team) rowError.teamName = "Team is required.";
     if (!Number.isFinite(lineVal)) rowError.line = "Line is required.";
@@ -2002,7 +2009,8 @@ export function BetTrackerPage() {
                       {(row.preset === "playerShotsOver" ||
                         row.preset === "playerShotsOnTargetOver" ||
                         row.preset === "playerFoulsCommittedOver" ||
-                        row.preset === "playerFoulsWonOver") && (
+                        row.preset === "playerFoulsWonOver" ||
+                        row.preset === "playerTacklesOver") && (
                         <>
                           <label>
                             Player
@@ -2017,11 +2025,21 @@ export function BetTrackerPage() {
                         </>
                       )}
                       {row.preset === "overGoals" && (
-                        <label>
-                          Line
-                          <input type="number" step={0.01} value={row.line} onChange={(e) => onChangeSelectionRow(row.id, "line", e.target.value)} placeholder="2.5" />
-                          {rowErr?.line && <span className="bet-tracker-page__error-inline">{rowErr.line}</span>}
-                        </label>
+                        <>
+                          <label>
+                            Line
+                            <input type="number" step={0.01} value={row.line} onChange={(e) => onChangeSelectionRow(row.id, "line", e.target.value)} placeholder="2.5" />
+                            {rowErr?.line && <span className="bet-tracker-page__error-inline">{rowErr.line}</span>}
+                          </label>
+                          <label>
+                            Side
+                            <select value={row.outcome} onChange={(e) => onChangeSelectionRow(row.id, "outcome", e.target.value)}>
+                              <option value="Over">Over</option>
+                              <option value="Under">Under</option>
+                            </select>
+                            {rowErr?.outcome && <span className="bet-tracker-page__error-inline">{rowErr.outcome}</span>}
+                          </label>
+                        </>
                       )}
                       {(row.preset === "teamCornersOver" || row.preset === "teamCardsOver") && (
                         <>
