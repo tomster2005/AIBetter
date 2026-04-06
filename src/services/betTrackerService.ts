@@ -571,15 +571,6 @@ export function replaceTrackedBets(records: unknown): TrackedBetRecord[] {
   return next;
 }
 
-export async function refreshTrackedBetsFromServer(): Promise<TrackedBetRecord[] | null> {
-  if (typeof window === "undefined") return null;
-  const local = readTrackedBets();
-  lastSyncTimestamp = Date.now();
-  lastSyncServerCount = local.length;
-  lastSyncSource = "local-fallback";
-  return local;
-}
-
 export function restoreTrackedBetsFromBackup(): { restored: boolean; count: number } {
   if (!canUseStorage()) return { restored: false, count: 0 };
   try {

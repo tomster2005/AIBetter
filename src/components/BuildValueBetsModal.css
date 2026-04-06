@@ -76,6 +76,23 @@
   margin-bottom: 0.75rem;
 }
 
+.build-value-bets-modal__range {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.build-value-bets-modal__range-sep {
+  font-size: 0.8rem;
+  color: #6b7280;
+}
+
+.build-value-bets-modal__hint {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: #6b7280;
+}
+
 .build-value-bets-modal__label {
   font-size: 0.875rem;
   font-weight: 500;

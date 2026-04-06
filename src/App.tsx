@@ -18,6 +18,11 @@ export default function App() {
   const [authBusy, setAuthBusy] = useState(false);
   const [sidebarTick, setSidebarTick] = useState(0);
 
+  const getConfiguredPassword = (): string => {
+    if (typeof import.meta.env === "undefined") return "";
+    return String(import.meta.env?.VITE_SITE_PASSWORD ?? "").trim();
+  };
+
   useEffect(() => {
     const onStorage = () => setSidebarTick((v) => v + 1);
     const onTrackerEvent = () => setSidebarTick((v) => v + 1);
@@ -124,9 +129,7 @@ export default function App() {
 
 
   useEffect(() => {
-    const configured = typeof import.meta.env !== "undefined"
-      ? String(import.meta.env?.VITE_SITE_PASSWORD ?? "").trim()
-      : "";
+    const configured = getConfiguredPassword();
     if (!configured) {
       setAuthenticated(true);
       setAuthChecked(true);
@@ -154,9 +157,7 @@ export default function App() {
     setAuthBusy(true);
     setAuthError(null);
     try {
-      const configured = typeof import.meta.env !== "undefined"
-        ? String(import.meta.env?.VITE_SITE_PASSWORD ?? "").trim()
-        : "";
+      const configured = getConfiguredPassword();
       if (!configured) {
         setAuthenticated(true);
         return;

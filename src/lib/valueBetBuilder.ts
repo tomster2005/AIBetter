@@ -2838,9 +2838,9 @@ function compareBuilderLegsForSearch(a: BuildLeg, b: BuildLeg): number {
 export function generateCombos(
   legs: BuildLeg[],
   targetOdds: number,
-  options: { maxCombos?: number; maxLegs?: number } = {}
+  options: { maxCombos?: number; maxLegs?: number; sortMode?: "target" | "ev" } = {}
 ): BuildCombo[] {
-  const { maxCombos = 50, maxLegs: maxLegsOpt } = options;
+  const { maxCombos = 50, maxLegs: maxLegsOpt, sortMode = "target" } = options;
   const MAX_LEGS = Math.max(COMBO_MIN_LEGS, Math.min(maxLegsOpt ?? COMBO_MAX_LEGS_CAP, COMBO_MAX_LEGS_CAP));
   const MIN_LEGS = COMBO_MIN_LEGS;
   const combos: BuildCombo[] = [];
@@ -2978,6 +2978,13 @@ export function generateCombos(
   const rankedSource = nearbyPositiveExists ? baseCombos.filter((c) => c.comboEV >= 0) : baseCombos;
 
   rankedSource.sort((a, b) => {
+    if (sortMode === "ev") {
+      if (a.comboEV !== b.comboEV) return b.comboEV - a.comboEV;
+      if (a.rankingComboEdge !== b.rankingComboEdge) return b.rankingComboEdge - a.rankingComboEdge;
+      if (a.legs.length !== b.legs.length) return a.legs.length - b.legs.length;
+      if (a.distanceFromTarget !== b.distanceFromTarget) return a.distanceFromTarget - b.distanceFromTarget;
+      return (a.fingerprint ?? "").localeCompare(b.fingerprint ?? "");
+    }
     if (a.distanceFromTarget !== b.distanceFromTarget) return a.distanceFromTarget - b.distanceFromTarget;
     if (a.rankingComboEdge !== b.rankingComboEdge) return b.rankingComboEdge - a.rankingComboEdge;
     if (a.legs.length !== b.legs.length) return a.legs.length - b.legs.length;
@@ -3001,6 +3008,7 @@ export function buildValueBetCombos(
     evidenceContext?: BuildEvidenceContext | null;
     headToHeadContext?: HeadToHeadFixtureContext | null;
     teamFormContext?: FixtureTeamFormContext | null;
+    sortMode?: "target" | "ev";
   } = {}
 ): { combos: BuildCombo[]; candidateCount: number; legCount: number } {
   const {
@@ -3026,6 +3034,9 @@ export function buildValueBetCombos(
           }
         )
       : [];
+  const sortMode = options.sortMode ?? "target";
+  const playerOnlyLegs = [...playerLegs];
+  playerOnlyLegs.sort(compareBuilderLegsForSearch);
   const allLegs = [...playerLegs, ...teamLegs];
   allLegs.sort(compareBuilderLegsForSearch);
 
@@ -3112,9 +3123,12 @@ export function buildValueBetCombos(
   }
 
   const finalMaxRequested = options.maxCombos ?? 30;
-  const finalMax = Math.min(3, finalMaxRequested);
+  const finalMax = Math.min(6, finalMaxRequested);
   const internalMax = Math.max(finalMax, finalMax * DIVERSITY_INTERNAL_MULTIPLIER);
-  let combos = generateCombos(allLegs, targetOdds, { maxCombos: internalMax, maxLegs: COMBO_MAX_LEGS_CAP });
+  let combos = generateCombos(playerOnlyLegs, targetOdds, { maxCombos: internalMax, maxLegs: COMBO_MAX_LEGS_CAP, sortMode });
+  if (combos.length === 0 && teamLegs.length > 0) {
+    combos = generateCombos(allLegs, targetOdds, { maxCombos: internalMax, maxLegs: COMBO_MAX_LEGS_CAP, sortMode });
+  }
   const generatedCount = combos.length;
 
   const h2hOkForCounts = headToHeadContext?.sampleSize != null && headToHeadContext?.sampleSize >= MIN_H2H_SAMPLE_SIZE;

@@ -195,6 +195,9 @@ export function BuildValueBetsModal({
   evidenceContext: evidenceContextProp = null,
 }: BuildValueBetsModalProps) {
   const [targetOdds, setTargetOdds] = useState("");
+  const [oddsMode, setOddsMode] = useState<"specific" | "range" | "auto">("specific");
+  const [targetOddsMin, setTargetOddsMin] = useState("");
+  const [targetOddsMax, setTargetOddsMax] = useState("");
   const [building, setBuilding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [trackerError, setTrackerError] = useState<string | null>(null);
@@ -266,10 +269,28 @@ export function BuildValueBetsModal({
 
   const handleBuild = useCallback(async () => {
     if (fixture == null) return;
-    const target = parseFloat(targetOdds.replace(/,/g, "."));
-    if (!Number.isFinite(target) || target < 1.1 || target > 1000) {
-      setError("Enter a valid target odds (e.g. 5.0 or 10)");
-      return;
+    let target = 1.01;
+    let oddsMin: number | null = null;
+    let oddsMax: number | null = null;
+    let sortMode: "target" | "ev" = "target";
+    if (oddsMode === "specific") {
+      target = parseFloat(targetOdds.replace(/,/g, "."));
+      if (!Number.isFinite(target) || target < 1.1 || target > 1000) {
+        setError("Enter a valid target odds (e.g. 5.0 or 10)");
+        return;
+      }
+    } else if (oddsMode === "range") {
+      const minVal = parseFloat(targetOddsMin.replace(/,/g, "."));
+      const maxVal = parseFloat(targetOddsMax.replace(/,/g, "."));
+      if (!Number.isFinite(minVal) || !Number.isFinite(maxVal) || minVal < 1.1 || maxVal < 1.1 || maxVal <= minVal) {
+        setError("Enter a valid odds range (min < max). e.g. 3 to 10");
+        return;
+      }
+      oddsMin = minVal;
+      oddsMax = maxVal;
+      target = (minVal + maxVal) / 2;
+    } else {
+      sortMode = "ev";
     }
     setError(null);
     setResult(null);
@@ -336,15 +357,21 @@ export function BuildValueBetsModal({
         bookmakers,
         target,
         {
-          maxCombos: 30,
+          maxCombos: oddsMode === "auto" ? 6 : 30,
           fixtureCornersContext,
           lineupContext,
           evidenceContext,
           headToHeadContext,
           teamFormContext,
+          sortMode,
         }
       );
-      const stored = saveGeneratedCombosForFixture(fixture.id, combos, Math.max(1, combos.length));
+      const filteredCombos =
+        oddsMin != null && oddsMax != null
+          ? combos.filter((c) => c.combinedOdds >= oddsMin! && c.combinedOdds <= oddsMax!)
+          : combos;
+      const finalCombos = oddsMode === "auto" ? filteredCombos.slice(0, 6) : filteredCombos;
+      const stored = saveGeneratedCombosForFixture(fixture.id, finalCombos, Math.max(1, finalCombos.length));
       if (import.meta.env.DEV) {
         const perf = getBetPerformanceSummary();
         console.log("[bet-performance]", {
@@ -356,7 +383,7 @@ export function BuildValueBetsModal({
           profit: Number(perf.profit.toFixed(2)),
         });
       }
-      setResult({ combos, candidateCount, legCount });
+      setResult({ combos: finalCombos, candidateCount, legCount });
       if (import.meta.env.DEV) {
         for (const c of combos) {
           console.log("[build-bet combo]", {
@@ -381,7 +408,7 @@ export function BuildValueBetsModal({
           });
         }
       }
-      if (combos.length === 0 && import.meta.env.DEV) {
+      if (finalCombos.length === 0 && import.meta.env.DEV) {
         console.log("[build-value-bets] no combos; candidateCount", candidateCount, "legCount", legCount);
       }
     } catch (err) {
@@ -390,10 +417,13 @@ export function BuildValueBetsModal({
     } finally {
       setBuilding(false);
     }
-  }, [fixture, targetOdds, getCandidates, fixtureCornersContext, lineupContext, evidenceContextProp]);
+  }, [fixture, targetOdds, targetOddsMin, targetOddsMax, oddsMode, getCandidates, fixtureCornersContext, lineupContext, evidenceContextProp]);
 
   const handleClose = useCallback(() => {
     setTargetOdds("");
+    setTargetOddsMin("");
+    setTargetOddsMax("");
+    setOddsMode("specific");
     setError(null);
     setTrackerError(null);
     setTrackerSuccess(null);
@@ -537,19 +567,49 @@ export function BuildValueBetsModal({
             <p className="build-value-bets-modal__fixture">{fixtureLabel}</p>
           )}
           <div className="build-value-bets-modal__input-row">
-            <label htmlFor="build-value-bets-target" className="build-value-bets-modal__label">
-              Target odds
-            </label>
-            <input
-              id="build-value-bets-target"
-              type="text"
-              inputMode="decimal"
-              placeholder="e.g. 5.0 or 10"
-              value={targetOdds}
-              onChange={(e) => setTargetOdds(e.target.value)}
-              className="build-value-bets-modal__input"
-              disabled={building}
-            />
+              <label className="build-value-bets-modal__label" htmlFor="target-odds-mode">
+                Target Odds Mode
+              </label>
+              <select
+                id="target-odds-mode"
+                className="build-value-bets-modal__input"
+                value={oddsMode}
+                onChange={(e) => setOddsMode(e.target.value as "specific" | "range" | "auto")}
+              >
+                <option value="specific">Specific odds</option>
+                <option value="range">Odds range</option>
+                <option value="auto">Auto (top EV)</option>
+              </select>
+              {oddsMode === "specific" ? (
+                <input
+                  id="target-odds-input"
+                  className="build-value-bets-modal__input"
+                  type="text"
+                  placeholder="e.g. 5.0 or 10"
+                  value={targetOdds}
+                  onChange={(e) => setTargetOdds(e.target.value)}
+                />
+              ) : oddsMode === "range" ? (
+                <div className="build-value-bets-modal__range">
+                  <input
+                    className="build-value-bets-modal__input"
+                    type="text"
+                    placeholder="Min (e.g. 3)"
+                    value={targetOddsMin}
+                    onChange={(e) => setTargetOddsMin(e.target.value)}
+                  />
+                  <span className="build-value-bets-modal__range-sep">to</span>
+                  <input
+                    className="build-value-bets-modal__input"
+                    type="text"
+                    placeholder="Max (e.g. 10)"
+                    value={targetOddsMax}
+                    onChange={(e) => setTargetOddsMax(e.target.value)}
+                  />
+                </div>
+              ) : (
+                <p className="build-value-bets-modal__hint">Builds up to 6 highest EV combos automatically.</p>
+              )}
             <button
               type="button"
               className="build-value-bets-modal__build-btn"
