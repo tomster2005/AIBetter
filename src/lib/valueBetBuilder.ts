@@ -33,7 +33,7 @@ import {
 import { getCompressedNormalizedScore } from "./modelScoreNormalization.js";
 
 /** Min expected minutes for player legs (align with value bet hard filter). */
-const MIN_EXPECTED_MINUTES = 35;
+const MIN_EXPECTED_MINUTES = 45;
 /** Min edge to include a player leg (positive only). Superseded for builder pool by `isValidBuilderCandidate`. */
 const MIN_EDGE = 0.001;
 
@@ -455,13 +455,17 @@ const SOT_MIN_PER90 = 0.25;
 
 /** Recent-form gate: last N apps used for hit rate / variance (not the Poisson model). */
 const PLAYER_PROP_RECENT_WINDOW = 10;
-const PLAYER_PROP_MIN_RECENT_GAMES = 5;
-const PLAYER_PROP_MIN_HIT_RATE = 0.4;
-const PLAYER_PROP_PER90_OVER_MIN_RATIO = 0.6;
+const PLAYER_PROP_MIN_RECENT_GAMES = 6;
+const PLAYER_PROP_MIN_HIT_RATE = 0.5;
+const PLAYER_PROP_PER90_OVER_MIN_RATIO = 0.7;
 const PLAYER_PROP_HIGH_VARIANCE_THRESHOLD = 2.25;
-const PLAYER_PROP_SPIKY_HIT_RATE_MAX = 0.6;
+const PLAYER_PROP_SPIKY_HIT_RATE_MAX = 0.7;
 const PLAYER_PROP_STRONG_HIT_RATE = 0.7;
 const PLAYER_PROP_STRONG_HIT_RATE_SCORE_BONUS = 6;
+
+/** Minimum quality bars for player prop candidates (tighten for reliability). */
+const BUILDER_MIN_DATA_CONFIDENCE_SCORE = 45;
+const BUILDER_MIN_BET_QUALITY_SCORE = 45;
 
 /**
  * Coarse role for prop-market sanity checks (Sportmonks `position_id`).
@@ -1537,6 +1541,20 @@ export function filterPlayerCandidates(
       }
       continue;
     }
+    const dataConfidenceScore = r.dataConfidenceScore ?? 0;
+    if (!Number.isFinite(dataConfidenceScore) || dataConfidenceScore < BUILDER_MIN_DATA_CONFIDENCE_SCORE) {
+      if (isFoulsCat) {
+        foulsRejectedReasons["dataConfidence"] = (foulsRejectedReasons["dataConfidence"] ?? 0) + 1;
+      }
+      continue;
+    }
+    const betQualityScore = r.betQualityScore ?? 0;
+    if (!Number.isFinite(betQualityScore) || betQualityScore < BUILDER_MIN_BET_QUALITY_SCORE) {
+      if (isFoulsCat) {
+        foulsRejectedReasons["betQuality"] = (foulsRejectedReasons["betQuality"] ?? 0) + 1;
+      }
+      continue;
+    }
     const marketIdForLine = marketIdFromPlayerCategory(cat);
     const positionRole = positionRoleForPlayerFromLineup(r.playerName, lineupContext ?? null);
     if (!isValidMarketForPosition(positionRole, marketIdForLine)) {
@@ -1607,6 +1625,12 @@ export function filterPlayerCandidates(
       hits: recentCheck.hits,
       recentN: recentCheck.recentN,
     });
+    if (quality.playerTier === "weak") {
+      if (isFoulsCat) {
+        foulsRejectedReasons["weakTier"] = (foulsRejectedReasons["weakTier"] ?? 0) + 1;
+      }
+      continue;
+    }
     const score = scorePlayerLeg(r, quality);
     const implied = 1 / r.odds;
     const probability = clamp01(implied + (r.modelEdge ?? 0));
