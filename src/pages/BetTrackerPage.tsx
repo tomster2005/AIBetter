@@ -380,6 +380,8 @@ export function BetTrackerPage() {
   const [quickAddBookmakerId, setQuickAddBookmakerId] = useState("");
   const [quickAddStake, setQuickAddStake] = useState("");
   const [quickAddOddsTaken, setQuickAddOddsTaken] = useState("");
+  const [quickAddReturnInput, setQuickAddReturnInput] = useState("");
+  const [quickAddLastEdited, setQuickAddLastEdited] = useState<"odds" | "return" | "stake" | "">("");
   const [quickAddStatus, setQuickAddStatus] = useState<TrackedBetStatus>("pending");
   const [quickAddNotes, setQuickAddNotes] = useState("");
   const [quickAddSelections, setQuickAddSelections] = useState<QuickAddSelectionDraft[]>([createSelectionDraft()]);
@@ -930,6 +932,8 @@ export function BetTrackerPage() {
     setQuickAddBookmakerId("");
     setQuickAddStake("");
     setQuickAddOddsTaken("");
+    setQuickAddReturnInput("");
+    setQuickAddLastEdited("");
     setQuickAddStatus("pending");
     setQuickAddNotes("");
     setQuickAddSelections([createSelectionDraft()]);
@@ -1930,13 +1934,69 @@ export function BetTrackerPage() {
               </label>
               <label>
                 Stake (GBP)
-                <input type="number" min={0.01} step={0.01} value={quickAddStake} onChange={(e) => setQuickAddStake(e.target.value)} />
+                <input
+                  type="number"
+                  min={0.01}
+                  step={0.01}
+                  value={quickAddStake}
+                  onChange={(e) => {
+                    const nextStake = e.target.value;
+                    setQuickAddStake(nextStake);
+                    const stakeVal = Number(nextStake);
+                    if (quickAddLastEdited === "return") {
+                      const returnVal = Number(quickAddReturnInput);
+                      if (Number.isFinite(stakeVal) && stakeVal > 0 && Number.isFinite(returnVal) && returnVal > 0) {
+                        setQuickAddOddsTaken((returnVal / stakeVal).toFixed(2));
+                      }
+                    } else {
+                      const oddsVal = Number(quickAddOddsTaken);
+                      if (Number.isFinite(stakeVal) && stakeVal > 0 && Number.isFinite(oddsVal) && oddsVal > 0) {
+                        setQuickAddReturnInput((stakeVal * oddsVal).toFixed(2));
+                      }
+                    }
+                    setQuickAddLastEdited("stake");
+                  }}
+                />
                 {quickAddErrors.stake && <span className="bet-tracker-page__error-inline">{quickAddErrors.stake}</span>}
               </label>
               <label>
                 Odds Taken
-                <input type="number" min={1.01} step={0.01} value={quickAddOddsTaken} onChange={(e) => setQuickAddOddsTaken(e.target.value)} />
+                <input
+                  type="number"
+                  min={1.01}
+                  step={0.01}
+                  value={quickAddOddsTaken}
+                  onChange={(e) => {
+                    const nextOdds = e.target.value;
+                    setQuickAddOddsTaken(nextOdds);
+                    const oddsVal = Number(nextOdds);
+                    const stakeVal = Number(quickAddStake);
+                    if (Number.isFinite(stakeVal) && stakeVal > 0 && Number.isFinite(oddsVal) && oddsVal > 0) {
+                      setQuickAddReturnInput((stakeVal * oddsVal).toFixed(2));
+                    }
+                    setQuickAddLastEdited("odds");
+                  }}
+                />
                 {quickAddErrors.oddsTaken && <span className="bet-tracker-page__error-inline">{quickAddErrors.oddsTaken}</span>}
+              </label>
+              <label>
+                Return (GBP)
+                <input
+                  type="number"
+                  min={0.01}
+                  step={0.01}
+                  value={quickAddReturnInput}
+                  onChange={(e) => {
+                    const nextReturn = sanitizeCashOutInput(e.target.value);
+                    setQuickAddReturnInput(nextReturn);
+                    const returnVal = Number(nextReturn);
+                    const stakeVal = Number(quickAddStake);
+                    if (Number.isFinite(stakeVal) && stakeVal > 0 && Number.isFinite(returnVal) && returnVal > 0) {
+                      setQuickAddOddsTaken((returnVal / stakeVal).toFixed(2));
+                    }
+                    setQuickAddLastEdited("return");
+                  }}
+                />
               </label>
               <label>
                 Status
