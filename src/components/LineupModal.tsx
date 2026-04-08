@@ -310,6 +310,7 @@ function LineupContent({
   const [recentStatsError, setRecentStatsError] = useState<string | null>(null);
   const [betSlipOpen, setBetSlipOpen] = useState(false);
   const [betSlipRows, setBetSlipRows] = useState<ValueBetRow[]>([]);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
 
   useEffect(() => {
     setRecentPanelRow(null);
@@ -2477,7 +2478,6 @@ export function LineupModal({
   const [hideNegativeEdge, setHideNegativeEdge] = useState(false);
   const [selectedBookmaker, setSelectedBookmaker] = useState<string>("all");
   const [buildModalOpen, setBuildModalOpen] = useState(false);
-  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const autoAnalyzedFixtureRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -2491,7 +2491,6 @@ export function LineupModal({
       setFoulsMarketsStatus(null);
       setSelectedBookmaker("all");
       setBuildModalOpen(false);
-      setDiagnosticsOpen(false);
       autoAnalyzedFixtureRef.current = null;
     }
   }, [open]);
