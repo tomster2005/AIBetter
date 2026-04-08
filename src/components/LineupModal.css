@@ -835,6 +835,80 @@
   background: #f3f4f6;
 }
 
+.lineup-content__value-diagnostics {
+  margin-bottom: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.lineup-content__value-diagnostics-toggle {
+  align-self: flex-start;
+  border: 1px solid #e5e7eb;
+  background: #f8fafc;
+  color: #334155;
+  border-radius: 999px;
+  padding: 0.3rem 0.7rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.lineup-content__value-diagnostics-panel {
+  border: 1px solid #e5e7eb;
+  background: #f9fafb;
+  border-radius: 10px;
+  padding: 0.75rem;
+}
+
+.lineup-content__value-diagnostics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.5rem;
+  margin-bottom: 0.6rem;
+}
+
+.lineup-content__value-diagnostics-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.4rem 0.5rem;
+  border-radius: 8px;
+  background: #fff;
+  border: 1px solid #eef2f7;
+}
+
+.lineup-content__value-diagnostics-label {
+  font-size: 0.7rem;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.lineup-content__value-diagnostics-value {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #111827;
+}
+
+.lineup-content__value-diagnostics-section {
+  margin-top: 0.5rem;
+}
+
+.lineup-content__value-diagnostics-title {
+  margin: 0 0 0.35rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #374151;
+}
+
+.lineup-content__value-diagnostics-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.78rem;
+  color: #4b5563;
+}
+
 .lineup-content__value-skeleton {
   display: grid;
   gap: 0.5rem;

@@ -151,6 +151,64 @@
   border-bottom: 1px solid var(--border-light, #e6e8ec);
 }
 
+.odds-page__tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.odds-page__tab {
+  background: #f1f5f9;
+  border: 1px solid var(--border-light, #e6e8ec);
+  border-radius: 999px;
+  color: #334155;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.35rem 0.9rem;
+  transition: border-color 0.2s ease, background 0.2s ease, color 0.2s ease;
+}
+
+.odds-page__tab:hover {
+  border-color: #94a3b8;
+}
+
+.odds-page__tab--active {
+  background: #1e293b;
+  border-color: #1e293b;
+  color: #f8fafc;
+}
+
+.odds-page__filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+}
+
+.odds-page__filters-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  color: #475569;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.odds-page__filters-select {
+  background: #fff;
+  border: 1px solid var(--border-light, #e6e8ec);
+  border-radius: 8px;
+  color: #0f172a;
+  padding: 0.45rem 0.75rem;
+}
+
+.odds-page__filters-note {
+  color: #94a3b8;
+  font-size: 0.75rem;
+}
+
 .odds-page__section {
   margin-bottom: 2rem;
 }

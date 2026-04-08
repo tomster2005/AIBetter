@@ -98,6 +98,31 @@
   margin-bottom: 0.75rem;
 }
 
+.build-value-bets-modal__options {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+}
+
+.build-value-bets-modal__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.8125rem;
+  color: #374151;
+  padding: 0.35rem 0.65rem;
+  border-radius: 999px;
+  border: 1px solid #e5e7eb;
+  background: #f9fafb;
+  cursor: pointer;
+}
+
+.build-value-bets-modal__toggle input {
+  margin: 0;
+}
+
 .build-value-bets-modal__progress {
   position: relative;
   height: 4px;

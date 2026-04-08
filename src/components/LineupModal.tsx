@@ -516,9 +516,10 @@ function LineupContent({
     if (valueBetStartingCount === 0) return "Lineup not confirmed yet — using predicted players.";
     const d = valueBetDiagnostics;
     if (!d) return "Data is limited for this fixture — showing what we can.";
-    const thinData =
-      d.supportedMarketsFound === 0 || d.playersWithOdds === 0 || d.playersWithStats === 0;
-    if (thinData) return "Data is limited for this fixture — value bets may be sparse.";
+    if (d.playersWithOdds === 0) return "No player prop odds found for this fixture yet.";
+    if (d.supportedMarketsFound === 0) return "No supported player prop markets returned for this fixture.";
+    if (d.playersWithStats === 0) return "Player stats are unavailable for this fixture.";
+    if (d.rowsAfterFiltering === 0) return "No bets passed the quality filters yet — try another fixture.";
     return "Data is limited for this fixture — value bets may be sparse.";
   }, [valueBetDiagnostics, valueBetStartingCount]);
 
@@ -832,6 +833,83 @@ function LineupContent({
                     Showing {displayRows.length} of {strongSourceRows.length} strong rows
                   </span>
                 </div>
+                {valueBetDiagnostics && (
+                  <div className="lineup-content__value-diagnostics">
+                    <button
+                      type="button"
+                      className="lineup-content__value-diagnostics-toggle"
+                      onClick={() => setDiagnosticsOpen((prev) => !prev)}
+                      aria-expanded={diagnosticsOpen}
+                    >
+                      {diagnosticsOpen ? "Hide diagnostics" : "Show diagnostics"}
+                    </button>
+                    {diagnosticsOpen && (
+                      <div className="lineup-content__value-diagnostics-panel">
+                        <div className="lineup-content__value-diagnostics-grid">
+                          <div className="lineup-content__value-diagnostics-item">
+                            <span className="lineup-content__value-diagnostics-label">Lineup players</span>
+                            <span className="lineup-content__value-diagnostics-value">
+                              {valueBetDiagnostics.totalPlayersInLineup}
+                            </span>
+                          </div>
+                          <div className="lineup-content__value-diagnostics-item">
+                            <span className="lineup-content__value-diagnostics-label">Players w/ stats</span>
+                            <span className="lineup-content__value-diagnostics-value">
+                              {valueBetDiagnostics.playersWithStats}
+                            </span>
+                          </div>
+                          <div className="lineup-content__value-diagnostics-item">
+                            <span className="lineup-content__value-diagnostics-label">Players w/ odds</span>
+                            <span className="lineup-content__value-diagnostics-value">
+                              {valueBetDiagnostics.playersWithOdds}
+                            </span>
+                          </div>
+                          <div className="lineup-content__value-diagnostics-item">
+                            <span className="lineup-content__value-diagnostics-label">Supported markets</span>
+                            <span className="lineup-content__value-diagnostics-value">
+                              {valueBetDiagnostics.supportedMarketsFound}
+                            </span>
+                          </div>
+                          <div className="lineup-content__value-diagnostics-item">
+                            <span className="lineup-content__value-diagnostics-label">Rows before filter</span>
+                            <span className="lineup-content__value-diagnostics-value">
+                              {valueBetDiagnostics.computedRowsBeforeFiltering}
+                            </span>
+                          </div>
+                          <div className="lineup-content__value-diagnostics-item">
+                            <span className="lineup-content__value-diagnostics-label">Rows after filter</span>
+                            <span className="lineup-content__value-diagnostics-value">
+                              {valueBetDiagnostics.rowsAfterFiltering}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="lineup-content__value-diagnostics-section">
+                          <p className="lineup-content__value-diagnostics-title">Dropoff reasons</p>
+                          <ul className="lineup-content__value-diagnostics-list">
+                            <li>Missing stats: {valueBetDiagnostics.dropoff.droppedMissingStats}</li>
+                            <li>Missing odds: {valueBetDiagnostics.dropoff.droppedMissingOdds}</li>
+                            <li>Unsupported market: {valueBetDiagnostics.dropoff.droppedUnsupportedMarket}</li>
+                            <li>Missing line: {valueBetDiagnostics.dropoff.droppedMissingLine}</li>
+                            <li>Not in lineup: {valueBetDiagnostics.dropoff.droppedNonStarter}</li>
+                            <li>Low edge/quality: {valueBetDiagnostics.dropoff.droppedLowEdge}</li>
+                          </ul>
+                        </div>
+                        {valueBetDiagnostics.top5Edges.length > 0 && (
+                          <div className="lineup-content__value-diagnostics-section">
+                            <p className="lineup-content__value-diagnostics-title">Top edges</p>
+                            <ul className="lineup-content__value-diagnostics-list">
+                              {valueBetDiagnostics.top5Edges.map((edge, idx) => (
+                                <li key={`${edge.playerName}-${edge.marketName}-${idx}`}>
+                                  {edge.playerName} — {edge.marketName} ({edge.edgePct.toFixed(1)}%)
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
                 {strongSourceRows.length === 0 ? (
                   <p className="lineup-modal__message">No strong value bets found for this fixture</p>
                 ) : displayRows.length === 0 ? (
@@ -2399,6 +2477,7 @@ export function LineupModal({
   const [hideNegativeEdge, setHideNegativeEdge] = useState(false);
   const [selectedBookmaker, setSelectedBookmaker] = useState<string>("all");
   const [buildModalOpen, setBuildModalOpen] = useState(false);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const autoAnalyzedFixtureRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -2412,6 +2491,7 @@ export function LineupModal({
       setFoulsMarketsStatus(null);
       setSelectedBookmaker("all");
       setBuildModalOpen(false);
+      setDiagnosticsOpen(false);
       autoAnalyzedFixtureRef.current = null;
     }
   }, [open]);

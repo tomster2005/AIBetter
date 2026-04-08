@@ -426,6 +426,8 @@ export function OddsPage() {
   const [buildBetResults, setBuildBetResults] = useState<
     Array<{ legs: BuildBetLeg[]; combinedOdds: number; comboScore: number; distanceFromMidpoint: number }> | null
   >(null);
+  const [oddsTab, setOddsTab] = useState<"all" | "core" | "team" | "player" | "build">("all");
+  const [selectedBookmakerFilter, setSelectedBookmakerFilter] = useState<string>("all");
 
   useEffect(() => {
     const start = dateKeys[0];
@@ -513,12 +515,20 @@ export function OddsPage() {
 
   const fixtures = byDate?.[selectedDate] ?? [];
   const bookmakersList = oddsData?.bookmakers ?? [];
-  const coreMarkets = getMarketsFromBookmakers(bookmakersList, isCoreMarket, DISPLAY_ORDER_CORE);
+  const filteredBookmakers = selectedBookmakerFilter === "all"
+    ? bookmakersList
+    : bookmakersList.filter((b) => b.bookmakerName === selectedBookmakerFilter);
+  const coreMarkets = getMarketsFromBookmakers(filteredBookmakers, isCoreMarket, DISPLAY_ORDER_CORE);
   const teamPropMarkets = getMarketsFromBookmakers(
-    bookmakersList,
+    filteredBookmakers,
     isTeamPropMarket,
     DISPLAY_ORDER_TEAM_PROPS
   );
+  const bookmakerOptions = Array.from(
+    new Set(
+      (oddsData?.bookmakers ?? []).map((b) => b.bookmakerName).filter((n) => n && n.trim().length > 0)
+    )
+  ).sort((a, b) => a.localeCompare(b));
 
   function loadPlayerProps() {
     const id = selectedFixture?.id;
@@ -597,6 +607,44 @@ export function OddsPage() {
           <h2 className="odds-page__workspace-title">
             {selectedFixture.homeTeam.name} v {selectedFixture.awayTeam.name}
           </h2>
+          <div className="odds-page__tabs" role="tablist" aria-label="Odds sections">
+            {[
+              { id: "all", label: "All" },
+              { id: "core", label: "Core" },
+              { id: "team", label: "Team" },
+              { id: "player", label: "Player" },
+              { id: "build", label: "Build" },
+            ].map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={oddsTab === tab.id}
+                className={`odds-page__tab ${oddsTab === tab.id ? "odds-page__tab--active" : ""}`}
+                onClick={() => setOddsTab(tab.id as typeof oddsTab)}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+          <div className="odds-page__filters">
+            <label className="odds-page__filters-label">
+              Bookmaker
+              <select
+                value={selectedBookmakerFilter}
+                onChange={(e) => setSelectedBookmakerFilter(e.target.value)}
+                className="odds-page__filters-select"
+              >
+                <option value="all">All Bookmakers</option>
+                {bookmakerOptions.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <span className="odds-page__filters-note">Filters apply to display only.</span>
+          </div>
           <div className="odds-page__player-props-actions">
             <button
               type="button"
@@ -618,36 +666,36 @@ export function OddsPage() {
               <p className="odds-page__message odds-page__auto-refresh" aria-live="polite">
                 Auto refreshing every 30s
               </p>
-              {coreMarkets.length > 0 && (
+              {(oddsTab === "all" || oddsTab === "core") && coreMarkets.length > 0 && (
                 <div className="odds-page__section">
                   <h3 className="odds-page__section-heading">Core Markets</h3>
                   {coreMarkets.map((market) => (
                     <OddsMarketTable
                       key={market.marketId}
                       market={market}
-                      bookmakers={oddsData.bookmakers}
+                      bookmakers={filteredBookmakers}
                     />
                   ))}
                 </div>
               )}
-              {teamPropMarkets.length > 0 && (
+              {(oddsTab === "all" || oddsTab === "team") && teamPropMarkets.length > 0 && (
                 <div className="odds-page__section">
                   <h3 className="odds-page__section-heading">Team Props</h3>
                   {teamPropMarkets.map((market) => (
                     <OddsMarketTable
                       key={market.marketId}
                       market={market}
-                      bookmakers={oddsData.bookmakers}
+                      bookmakers={filteredBookmakers}
                     />
                   ))}
                 </div>
               )}
-              {coreMarkets.length === 0 && teamPropMarkets.length === 0 && (
+              {(oddsTab === "all" || oddsTab === "core" || oddsTab === "team") && coreMarkets.length === 0 && teamPropMarkets.length === 0 && (
                 <p className="odds-page__message">No odds available for this fixture.</p>
               )}
             </>
           )}
-          {(playerOddsLoading || playerOddsError || playerOddsData) && (
+          {(oddsTab === "all" || oddsTab === "player") && (playerOddsLoading || playerOddsError || playerOddsData) && (
             <div className="odds-page__section">
               <h3 className="odds-page__section-heading">Player Props</h3>
               {playerOddsLoading && (
@@ -699,194 +747,202 @@ export function OddsPage() {
                   {(playerOddsData.markets || []).map((market, marketIdx) => (
                     <div key={market.marketId ?? marketIdx} className="odds-page__player-props-market">
                       <h4 className="odds-page__table-title">{market.marketName ?? `Market ${market.marketId ?? marketIdx}`}</h4>
-                      {(market.players || []).map((player) => (
-                        <div key={player.playerId} className="odds-page__player-props-card">
-                          <div className="odds-page__player-props-player">
-                            {player.playerName}
-                            <span className="odds-page__player-props-team">{player.teamName}</span>
+                      {(market.players || []).map((player) => {
+                        const filteredSelections = selectedBookmakerFilter === "all"
+                          ? (player.selections || [])
+                          : (player.selections || []).filter((sel) => sel.bookmakerName === selectedBookmakerFilter);
+                        if (filteredSelections.length === 0) return null;
+                        return (
+                          <div key={player.playerId} className="odds-page__player-props-card">
+                            <div className="odds-page__player-props-player">
+                              {player.playerName}
+                              <span className="odds-page__player-props-team">{player.teamName}</span>
+                            </div>
+                            <div className="odds-page__player-props-selections">
+                              {filteredSelections.map((sel, i) => {
+                                const isSinglePrice =
+                                  market.marketId === MARKET_ID_PLAYER_SHOTS_ON_TARGET ||
+                                  market.marketId === MARKET_ID_PLAYER_SHOTS;
+                                return (
+                                  <span key={i} className="odds-page__player-props-line">
+                                    {sel.line} — O: {sel.overOdds ?? "—"}
+                                    {!isSinglePrice && ` / U: ${sel.underOdds ?? "—"}`}
+                                    <span className="odds-page__player-props-bookmaker"> — {sel.bookmakerName}</span>
+                                  </span>
+                                );
+                              })}
+                            </div>
                           </div>
-                          <div className="odds-page__player-props-selections">
-                            {(player.selections || []).map((sel, i) => {
-                              const isSinglePrice =
-                                market.marketId === MARKET_ID_PLAYER_SHOTS_ON_TARGET ||
-                                market.marketId === MARKET_ID_PLAYER_SHOTS;
-                              return (
-                                <span key={i} className="odds-page__player-props-line">
-                                  {sel.line} — O: {sel.overOdds ?? "—"}
-                                  {!isSinglePrice && ` / U: ${sel.underOdds ?? "—"}`}
-                                  <span className="odds-page__player-props-bookmaker"> — {sel.bookmakerName}</span>
-                                </span>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   ))}
                 </>
               )}
             </div>
           )}
-          <div className="odds-page__section odds-page__build-bet">
-            <h3 className="odds-page__section-heading">Build Bet</h3>
-            <div className="odds-page__build-bet-controls">
-              <label className="odds-page__build-bet-label">
-                Min Odds
-                <input
-                  type="number"
-                  min={1}
-                  max={1000}
-                  step={0.01}
-                  value={buildBetMinOdds}
-                  onChange={(e) => {
-                    const v = parseFloat(e.target.value);
-                    if (Number.isFinite(v) && v >= 1) setBuildBetMinOdds(v);
-                  }}
-                  className="odds-page__build-bet-input"
-                />
-              </label>
-              <label className="odds-page__build-bet-label">
-                Max Odds
-                <input
-                  type="number"
-                  min={1}
-                  max={1000}
-                  step={0.01}
-                  value={buildBetMaxOdds}
-                  onChange={(e) => {
-                    const v = parseFloat(e.target.value);
-                    if (Number.isFinite(v) && v >= 1) setBuildBetMaxOdds(v);
-                  }}
-                  className="odds-page__build-bet-input"
-                />
-              </label>
-              <label className="odds-page__build-bet-label">
-                Max Legs
-                <select
-                  value={buildBetMaxLegs}
-                  onChange={(e) => setBuildBetMaxLegs(e.target.value === "3" ? 3 : 2)}
-                  className="odds-page__build-bet-select"
-                >
-                  <option value={2}>2</option>
-                  <option value={3}>3</option>
-                </select>
-              </label>
-              <button
-                type="button"
-                className="odds-page__build-bet-btn"
-                onClick={() => {
-                  const minOdds = buildBetMinOdds;
-                  const maxOdds = buildBetMaxOdds;
-                  const rangeInvalid = minOdds > maxOdds;
-                  setBuildBetRangeInvalid(rangeInvalid);
-                  if (rangeInvalid) {
-                    setBuildBetResults([]);
-                    return;
-                  }
-                  const selections = collectBuildBetSelections(oddsData, playerOddsData);
-                  if (import.meta.env.DEV) {
-                    const playerProps = selections.filter((s) =>
-                      (PLAYER_PROP_MARKET_IDS as readonly number[]).includes(s.marketId)
-                    ).length;
-                    const coreMarkets = selections.filter((s) => [1, 14, 80].includes(s.marketId)).length;
-                    const ladderMarkets = selections.filter((s) => isLadderMarket(s.marketId)).length;
-                    const secondaryMarkets = selections.length - playerProps - coreMarkets - ladderMarkets;
-                    console.log("[build-bet] candidate counts by market type", {
-                      playerProps,
-                      coreMarkets,
-                      secondaryMarkets,
-                      ladderMarkets,
-                    });
-                  }
-                  const { combos, totalInRange } = generateBuildBetCombos(selections, minOdds, maxOdds, buildBetMaxLegs);
-                  const midpoint = (minOdds + maxOdds) / 2;
-                  if (import.meta.env.DEV) {
-                    console.log("[build-bet] odds range", {
-                      minOdds,
-                      maxOdds,
-                      midpoint,
-                      validCombosInRange: totalInRange,
-                    });
-                    combos.forEach((combo, cIdx) => {
-                      console.log("[build-bet] suggested bet comboScore", {
-                        combo: cIdx + 1,
-                        comboScore: combo.comboScore,
-                        distanceFromMidpoint: combo.distanceFromMidpoint,
-                        legs: combo.legs.length,
+          {(oddsTab === "all" || oddsTab === "build") && (
+            <div className="odds-page__section odds-page__build-bet">
+              <h3 className="odds-page__section-heading">Build Bet</h3>
+              <div className="odds-page__build-bet-controls">
+                <label className="odds-page__build-bet-label">
+                  Min Odds
+                  <input
+                    type="number"
+                    min={1}
+                    max={1000}
+                    step={0.01}
+                    value={buildBetMinOdds}
+                    onChange={(e) => {
+                      const v = parseFloat(e.target.value);
+                      if (Number.isFinite(v) && v >= 1) setBuildBetMinOdds(v);
+                    }}
+                    className="odds-page__build-bet-input"
+                  />
+                </label>
+                <label className="odds-page__build-bet-label">
+                  Max Odds
+                  <input
+                    type="number"
+                    min={1}
+                    max={1000}
+                    step={0.01}
+                    value={buildBetMaxOdds}
+                    onChange={(e) => {
+                      const v = parseFloat(e.target.value);
+                      if (Number.isFinite(v) && v >= 1) setBuildBetMaxOdds(v);
+                    }}
+                    className="odds-page__build-bet-input"
+                  />
+                </label>
+                <label className="odds-page__build-bet-label">
+                  Max Legs
+                  <select
+                    value={buildBetMaxLegs}
+                    onChange={(e) => setBuildBetMaxLegs(e.target.value === "3" ? 3 : 2)}
+                    className="odds-page__build-bet-select"
+                  >
+                    <option value={2}>2</option>
+                    <option value={3}>3</option>
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  className="odds-page__build-bet-btn"
+                  onClick={() => {
+                    const minOdds = buildBetMinOdds;
+                    const maxOdds = buildBetMaxOdds;
+                    const rangeInvalid = minOdds > maxOdds;
+                    setBuildBetRangeInvalid(rangeInvalid);
+                    if (rangeInvalid) {
+                      setBuildBetResults([]);
+                      return;
+                    }
+                    const selections = collectBuildBetSelections(oddsData, playerOddsData);
+                    if (import.meta.env.DEV) {
+                      const playerProps = selections.filter((s) =>
+                        (PLAYER_PROP_MARKET_IDS as readonly number[]).includes(s.marketId)
+                      ).length;
+                      const coreMarkets = selections.filter((s) => [1, 14, 80].includes(s.marketId)).length;
+                      const ladderMarkets = selections.filter((s) => isLadderMarket(s.marketId)).length;
+                      const secondaryMarkets = selections.length - playerProps - coreMarkets - ladderMarkets;
+                      console.log("[build-bet] candidate counts by market type", {
+                        playerProps,
+                        coreMarkets,
+                        secondaryMarkets,
+                        ladderMarkets,
                       });
-                      combo.legs.forEach((leg, lIdx) => {
-                        const e = leg.evidence;
-                        console.log("[build-bet] leg evidence", {
+                    }
+                    const { combos, totalInRange } = generateBuildBetCombos(selections, minOdds, maxOdds, buildBetMaxLegs);
+                    const midpoint = (minOdds + maxOdds) / 2;
+                    if (import.meta.env.DEV) {
+                      console.log("[build-bet] odds range", {
+                        minOdds,
+                        maxOdds,
+                        midpoint,
+                        validCombosInRange: totalInRange,
+                      });
+                      combos.forEach((combo, cIdx) => {
+                        console.log("[build-bet] suggested bet comboScore", {
                           combo: cIdx + 1,
-                          leg: lIdx + 1,
-                          legId: leg.id.slice(0, 40),
-                          hasLine: e?.line != null,
-                          hasLineupStatus: e?.lineupStatus != null,
-                          hasRecentStats: Boolean(e?.recentStats),
-                          hasH2H: Boolean(e?.h2h),
-                          hasTeamForm: Boolean(e?.teamForm),
+                          comboScore: combo.comboScore,
+                          distanceFromMidpoint: combo.distanceFromMidpoint,
+                          legs: combo.legs.length,
+                        });
+                        combo.legs.forEach((leg, lIdx) => {
+                          const e = leg.evidence;
+                          console.log("[build-bet] leg evidence", {
+                            combo: cIdx + 1,
+                            leg: lIdx + 1,
+                            legId: leg.id.slice(0, 40),
+                            hasLine: e?.line != null,
+                            hasLineupStatus: e?.lineupStatus != null,
+                            hasRecentStats: Boolean(e?.recentStats),
+                            hasH2H: Boolean(e?.h2h),
+                            hasTeamForm: Boolean(e?.teamForm),
+                          });
                         });
                       });
-                    });
-                  }
-                  setBuildBetResults(combos);
-                }}
-              >
-                Build Bet
-              </button>
-            </div>
-            {buildBetResults !== null && (
-              <div className="odds-page__build-bet-results">
-                {buildBetResults.length === 0 ? (
-                  buildBetRangeInvalid ? (
-                    <p className="odds-page__message odds-page__message--error">
-                      Min odds must be less than or equal to max odds.
-                    </p>
-                  ) : (
-                    <p className="odds-page__message">
-                      No combinations found within the odds range. Try widening the range or loading more markets.
-                    </p>
-                  )
-                ) : (
-                  buildBetResults.map((combo, idx) => (
-                    <div key={idx} className="odds-page__build-bet-card">
-                      <h4 className="odds-page__build-bet-card-title">Suggested Bet {idx + 1}</h4>
-                      <ul className="odds-page__build-bet-legs">
-                        {combo.legs.map((leg, i) => {
-                          const reasoningLines = formatLegReasoning(leg);
-                          return (
-                            <li key={i} className="odds-page__build-bet-leg-item">
-                              <span className="odds-page__build-bet-leg-main">
-                                {leg.description} @ {leg.odds.toFixed(2)}
-                              </span>
-                              {reasoningLines.length > 0 && (
-                                <div className="odds-page__build-bet-reasoning">
-                                  {reasoningLines.map((line, j) => (
-                                    <p key={j} className="odds-page__build-bet-reasoning-line">
-                                      {line}
-                                    </p>
-                                  ))}
-                                </div>
-                              )}
-                            </li>
-                          );
-                        })}
-                      </ul>
-                      <p className="odds-page__build-bet-combined">
-                        Combined Odds: {combo.combinedOdds.toFixed(2)}
-                      </p>
-                      <p className="odds-page__build-bet-range">
-                        Range: {buildBetMinOdds.toFixed(2)}–{buildBetMaxOdds.toFixed(2)}
-                      </p>
-                      <p className="odds-page__build-bet-distance">
-                        Distance from midpoint: {combo.distanceFromMidpoint.toFixed(2)}
-                      </p>
-                    </div>
-                  ))
-                )}
+                    }
+                    setBuildBetResults(combos);
+                  }}
+                >
+                  Build Bet
+                </button>
               </div>
-            )}
-          </div>
+              {buildBetResults !== null && (
+                <div className="odds-page__build-bet-results">
+                  {buildBetResults.length === 0 ? (
+                    buildBetRangeInvalid ? (
+                      <p className="odds-page__message odds-page__message--error">
+                        Min odds must be less than or equal to max odds.
+                      </p>
+                    ) : (
+                      <p className="odds-page__message">
+                        No combinations found within the odds range. Try widening the range or loading more markets.
+                      </p>
+                    )
+                  ) : (
+                    buildBetResults.map((combo, idx) => (
+                      <div key={idx} className="odds-page__build-bet-card">
+                        <h4 className="odds-page__build-bet-card-title">Suggested Bet {idx + 1}</h4>
+                        <ul className="odds-page__build-bet-legs">
+                          {combo.legs.map((leg, i) => {
+                            const reasoningLines = formatLegReasoning(leg);
+                            return (
+                              <li key={i} className="odds-page__build-bet-leg-item">
+                                <span className="odds-page__build-bet-leg-main">
+                                  {leg.description} @ {leg.odds.toFixed(2)}
+                                </span>
+                                {reasoningLines.length > 0 && (
+                                  <div className="odds-page__build-bet-reasoning">
+                                    {reasoningLines.map((line, j) => (
+                                      <p key={j} className="odds-page__build-bet-reasoning-line">
+                                        {line}
+                                      </p>
+                                    ))}
+                                  </div>
+                                )}
+                              </li>
+                            );
+                          })}
+                        </ul>
+                        <p className="odds-page__build-bet-combined">
+                          Combined Odds: {combo.combinedOdds.toFixed(2)}
+                        </p>
+                        <p className="odds-page__build-bet-range">
+                          Range: {buildBetMinOdds.toFixed(2)}–{buildBetMaxOdds.toFixed(2)}
+                        </p>
+                        <p className="odds-page__build-bet-distance">
+                          Distance from midpoint: {combo.distanceFromMidpoint.toFixed(2)}
+                        </p>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </section>
       )}
     </div>

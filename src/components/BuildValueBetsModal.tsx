@@ -215,6 +215,7 @@ export function BuildValueBetsModal({
   const [oddsMode, setOddsMode] = useState<"specific" | "range" | "auto">("specific");
   const [targetOddsMin, setTargetOddsMin] = useState("");
   const [targetOddsMax, setTargetOddsMax] = useState("");
+  const [allowTeamOnly, setAllowTeamOnly] = useState(true);
   const [building, setBuilding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [trackerError, setTrackerError] = useState<string | null>(null);
@@ -479,10 +480,13 @@ export function BuildValueBetsModal({
           sortMode,
         }
       );
+      const comboPool = allowTeamOnly
+        ? combos
+        : combos.filter((combo) => combo.legs.some((leg) => leg.type === "player"));
       const filteredCombos =
         oddsMin != null && oddsMax != null
-          ? combos.filter((c) => c.combinedOdds >= oddsMin! && c.combinedOdds <= oddsMax!)
-          : combos;
+          ? comboPool.filter((c) => c.combinedOdds >= oddsMin! && c.combinedOdds <= oddsMax!)
+          : comboPool;
       const finalCombos = oddsMode === "auto" ? filteredCombos.slice(0, 6) : filteredCombos;
       const stored = saveGeneratedCombosForFixture(fixture.id, finalCombos, Math.max(1, finalCombos.length));
       if (import.meta.env.DEV) {
@@ -530,13 +534,14 @@ export function BuildValueBetsModal({
     } finally {
       setBuilding(false);
     }
-  }, [fixture, targetOdds, targetOddsMin, targetOddsMax, oddsMode, getCandidates, fixtureCornersContext, lineupContext, evidenceContextProp]);
+  }, [fixture, targetOdds, targetOddsMin, targetOddsMax, oddsMode, allowTeamOnly, getCandidates, fixtureCornersContext, lineupContext, evidenceContextProp]);
 
   const handleClose = useCallback(() => {
     setTargetOdds("");
     setTargetOddsMin("");
     setTargetOddsMax("");
     setOddsMode("specific");
+    setAllowTeamOnly(true);
     setError(null);
     setTrackerError(null);
     setTrackerSuccess(null);
@@ -750,6 +755,19 @@ export function BuildValueBetsModal({
               {building ? "Building…" : "Build"}
             </button>
           </div>
+          <div className="build-value-bets-modal__options">
+            <label className="build-value-bets-modal__toggle">
+              <input
+                type="checkbox"
+                checked={allowTeamOnly}
+                onChange={(e) => setAllowTeamOnly(e.target.checked)}
+              />
+              <span>Allow team-only combos</span>
+            </label>
+            <span className="build-value-bets-modal__hint">
+              When off, combos must include at least one player leg.
+            </span>
+          </div>
           {building && (
             <div className="build-value-bets-modal__progress" role="progressbar" aria-label="Building combos">
               <span />
@@ -773,7 +791,9 @@ export function BuildValueBetsModal({
               </p>
               {result.combos.length === 0 ? (
                 <p className="build-value-bets-modal__empty">
-                  No combos near target. Try running &quot;Find Value Bets&quot; first or a different target.
+                  {allowTeamOnly
+                    ? "No combos near target. Try running \"Find Value Bets\" first or a different target."
+                    : "No player-based combos found. Enable team-only combos or run \"Find Value Bets\" first."}
                 </p>
               ) : (
                 <ul className="build-value-bets-modal__combo-list">
