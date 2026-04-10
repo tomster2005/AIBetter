@@ -4002,6 +4002,15 @@ export function buildValueBetCombos(
   const postSanityCombosSnapshot = combos;
   const postSanityCount = combos.length;
 
+  // Prefer player-only combos when any player legs exist.
+  const playerOnlyPreferred = playerLegs.length > 0;
+  if (playerOnlyPreferred) {
+    const playerOnlyCombos = combos.filter((c) => c.legs.every((l) => l.type === "player"));
+    if (playerOnlyCombos.length > 0) {
+      combos = playerOnlyCombos;
+    }
+  }
+
   // Diversity pass: remove near-duplicates (same market families) and select a varied final top N.
   const preDiversityCount = combos.length;
   const { selected, nearDuplicatesRemoved } = selectDiverseTopCombos(combos, finalMax);
