@@ -608,6 +608,19 @@ export function BetTrackerPage() {
     setUnitSizeInput(getUnitSize().toString());
   }, []);
 
+  const currentUnitSize = useMemo(() => {
+    const n = Number(unitSizeInput);
+    return Number.isFinite(n) && n > 0 ? n : getUnitSize();
+  }, [unitSizeInput]);
+  const quickAddStakeValue = Number(quickAddStake);
+  const quickAddOddsValue = Number(quickAddOddsTaken);
+  const quickAddReturnValue =
+    Number.isFinite(quickAddStakeValue) && Number.isFinite(quickAddOddsValue) ? Math.max(0, quickAddStakeValue * quickAddOddsValue) : 0;
+  const quickAddStakeUnits =
+    Number.isFinite(quickAddStakeValue) && currentUnitSize > 0 ? Math.max(0, quickAddStakeValue / currentUnitSize) : 0;
+  const quickAddReturnUnits =
+    Number.isFinite(quickAddReturnValue) && currentUnitSize > 0 ? Math.max(0, quickAddReturnValue / currentUnitSize) : 0;
+
   const global = useMemo(() => getTrackedBetStats(), [bookmakers, bets]);
   const timelinePoints = useMemo(
     () => getBankrollTimeline(timelineBookmakerId === "all" ? undefined : timelineBookmakerId),
@@ -786,19 +799,6 @@ export function BetTrackerPage() {
     (bookmakerId: string) => adjustmentsByBookmakerId.get(bookmakerId) ?? [],
     [adjustmentsByBookmakerId]
   );
-  const currentUnitSize = useMemo(() => {
-    const n = Number(unitSizeInput);
-    return Number.isFinite(n) && n > 0 ? n : getUnitSize();
-  }, [unitSizeInput]);
-  const quickAddStakeValue = Number(quickAddStake);
-  const quickAddOddsValue = Number(quickAddOddsTaken);
-  const quickAddReturnValue =
-    Number.isFinite(quickAddStakeValue) && Number.isFinite(quickAddOddsValue) ? Math.max(0, quickAddStakeValue * quickAddOddsValue) : 0;
-  const quickAddStakeUnits =
-    Number.isFinite(quickAddStakeValue) && currentUnitSize > 0 ? Math.max(0, quickAddStakeValue / currentUnitSize) : 0;
-  const quickAddReturnUnits =
-    Number.isFinite(quickAddReturnValue) && currentUnitSize > 0 ? Math.max(0, quickAddReturnValue / currentUnitSize) : 0;
-
   const filteredAndSortedBets = useMemo(() => {
     const parsedMinScore = minScore.trim() === "" ? null : Number(minScore);
     const hasMinScore = parsedMinScore != null && Number.isFinite(parsedMinScore);
