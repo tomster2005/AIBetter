@@ -226,19 +226,29 @@ function parseDetailsToStats(
     // Note: no per-row foul debugging logs here; the caller can use [truffert raw foul rows]
     // for the final-fixture mismatch inspection.
 
-    // Shots mapping (name-based first; id-based fallback for known type ids).
-    if (name === "shots total" || name === "total shots" || name === "shots") {
-      out.shots = value;
-    } else if (name === "shots on target" || name === "shots on goal" || name === "on target shots") {
+    // Shots mapping (prefer explicit total shots vs on-target labels).
+    const detailText = detailTypeText(o);
+    const isOnTarget =
+      /on target|on goal|shots on target|shots on goal/.test(detailText) ||
+      name.includes("shots on target") ||
+      name.includes("shots on goal") ||
+      name.includes("on target shots");
+    const isTotalShots =
+      /shots total|total shots/.test(detailText) ||
+      name === "shots total" ||
+      name === "total shots";
+    const isShotsGeneric = name === "shots" || (name.includes("shots") && !name.includes("on target") && !name.includes("on goal"));
+
+    if (isOnTarget) {
       out.shotsOnTarget = value;
-    } else if (typeId === 84) {
+    } else if (isTotalShots) {
       out.shots = value;
     } else if (typeId === 86) {
       out.shotsOnTarget = value;
-    } else if (name.includes("shots") && !name.includes("on target") && !name.includes("on goal")) {
+    } else if (typeId === 84) {
       out.shots = value;
-    } else if (name.includes("shots on") && name.includes("target")) {
-      out.shotsOnTarget = value;
+    } else if (isShotsGeneric && out.shots == null && !isOnTarget) {
+      out.shots = value;
     }
 
     // Fouls mapping: direct assignment based on dedicated helpers.

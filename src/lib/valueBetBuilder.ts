@@ -1804,7 +1804,7 @@ export function filterPlayerCandidates(
     const implied = 1 / r.odds;
     const probability = clamp01(implied + (r.modelEdge ?? 0));
     const id = `player-${legs.length}-${key.slice(0, 40)}`;
-    const reason = buildLegReason(r, quality);
+    const reason = buildLegReason(r, quality, evidenceContext);
     // One player per combo: overlap rule uses marketFamily; same player → same family (any market/line).
     const marketFamily = `player:${String(r.playerName).trim().toLowerCase()}`;
     const smPid = r.sportmonksPlayerId;
@@ -2098,7 +2098,11 @@ function scorePlayerLeg(r: PlayerCandidateInput, quality: PlayerLegQualitySignal
   return Math.max(0, score);
 }
 
-function buildLegReason(r: PlayerCandidateInput, quality: PlayerLegQualitySignals): string {
+function buildLegReason(
+  r: PlayerCandidateInput,
+  quality: PlayerLegQualitySignals,
+  evidenceContext?: BuildEvidenceContext | null
+): string {
   const edge = r.modelEdge;
   const pct = edge != null ? `${(edge * 100).toFixed(1)}% edge` : "";
   const strong = r.isStrongBet ? " strong" : "";
@@ -2109,7 +2113,20 @@ function buildLegReason(r: PlayerCandidateInput, quality: PlayerLegQualitySignal
   if (quality.sampleReliability >= 0.7) reasons.push("reliable sample");
   if (quality.minutesReliability >= 0.75) reasons.push("stable minutes");
   if (quality.recencyScore >= 0.65) reasons.push("recent form supports line");
-  if (
+  const cat = getMarketCategory(r.marketName);
+  let hitsSummary: { hits: number; sampleSize: number } | null = null;
+  if (cat != null && evidenceContext?.playerRecentStats?.length) {
+    const evidence = getPlayerEvidence(r.playerName, cat, evidenceContext.playerRecentStats);
+    const rawSeries = evidence?.recentValues?.filter((v) => typeof v === "number" && Number.isFinite(v)) ?? [];
+    if (rawSeries.length > 0) {
+      const recentGames = rawSeries.slice(-PLAYER_PROP_RECENT_WINDOW);
+      const hits = countOutcomeHits(recentGames, r.line, r.outcome);
+      hitsSummary = { hits, sampleSize: recentGames.length };
+    }
+  }
+  if (hitsSummary && hitsSummary.sampleSize >= PLAYER_PROP_MIN_RECENT_GAMES) {
+    reasons.push(`Hits: ${hitsSummary.hits}/${hitsSummary.sampleSize} recent apps vs line`);
+  } else if (
     quality.recentHitsCount != null &&
     quality.recentHitsSampleSize != null &&
     quality.recentHitsSampleSize >= PLAYER_PROP_MIN_RECENT_GAMES
