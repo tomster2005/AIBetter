@@ -70,6 +70,31 @@ function fmtRelativeDate(v: string): string {
   return d.toLocaleDateString([], { day: "2-digit", month: "short", year: "numeric" }) + ` ${hhmm}`;
 }
 
+function toRangeStartMs(value: string): number | null {
+  if (!value) return null;
+  const t = Date.parse(value);
+  if (!Number.isFinite(t)) return null;
+  const d = new Date(t);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+function toRangeEndMs(value: string): number | null {
+  if (!value) return null;
+  const t = Date.parse(value);
+  if (!Number.isFinite(t)) return null;
+  const d = new Date(t);
+  d.setHours(23, 59, 59, 999);
+  return d.getTime();
+}
+
+function formatRangeLabel(start: string, end: string): string {
+  if (!start && !end) return "All time";
+  if (start && end) return `${start} to ${end}`;
+  if (start) return `From ${start}`;
+  return `To ${end}`;
+}
+
 function getBetProfit(bet: TrackedBetRecord): number {
   if (bet.status === "win" || bet.status === "cashed_out") return bet.returnAmount - bet.stake;
   if (bet.status === "loss") return -bet.stake;
@@ -98,6 +123,104 @@ function sanitizeCashOutInput(value: string): string {
 
 function toMoneyString(value: number): string {
   return `£${value.toFixed(2)}`;
+}
+
+function buildExportSvg(params: {
+  points: { date: string; balance: number }[];
+  title: string;
+  rangeLabel: string;
+  profitMoney: number;
+  profitUnits: number;
+}): string {
+  const width = 920;
+  const height = 520;
+  const chartWidth = 820;
+  const chartHeight = 240;
+  const chartX = 50;
+  const chartY = 190;
+  const padX = 34;
+  const padY = 20;
+  const points = params.points;
+  const balances = points.length > 0 ? points.map((p) => p.balance) : [0];
+  const minY = Math.min(...balances);
+  const maxY = Math.max(...balances);
+  const yRange = Math.max(1, maxY - minY);
+
+  const toX = (idx: number) => {
+    if (points.length <= 1) return chartX + chartWidth / 2;
+    return chartX + padX + (idx / (points.length - 1)) * (chartWidth - padX * 2);
+  };
+  const toY = (value: number) => {
+    return chartY + chartHeight - padY - ((value - minY) / yRange) * (chartHeight - padY * 2);
+  };
+  const polyline = points.map((p, i) => `${toX(i)},${toY(p.balance)}`).join(" ");
+  const profitLabel = `${params.profitUnits >= 0 ? "+" : "-"}${Math.abs(params.profitUnits).toFixed(2)} units`;
+  const profitMoneyLabel = `${params.profitMoney >= 0 ? "+" : "-"}£${Math.abs(params.profitMoney).toFixed(2)}`;
+  const trendUp = points.length > 1 ? points[points.length - 1]!.balance >= points[0]!.balance : true;
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+  <rect width="100%" height="100%" fill="#ffffff" />
+  <text x="50" y="50" font-size="24" font-family="Arial, sans-serif" fill="#111827">${params.title}</text>
+  <text x="50" y="82" font-size="14" font-family="Arial, sans-serif" fill="#6b7280">${params.rangeLabel}</text>
+  <text x="50" y="118" font-size="18" font-family="Arial, sans-serif" fill="#111827">P/L: ${profitMoneyLabel} (${profitLabel})</text>
+  <rect x="${chartX}" y="${chartY}" width="${chartWidth}" height="${chartHeight}" rx="12" fill="#f9fafb" stroke="#e5e7eb" />
+  <line x1="${chartX + padX}" y1="${chartY + chartHeight - padY}" x2="${chartX + chartWidth - padX}" y2="${chartY + chartHeight - padY}" stroke="#d1d5db" stroke-width="1" />
+  <line x1="${chartX + padX}" y1="${chartY + padY}" x2="${chartX + padX}" y2="${chartY + chartHeight - padY}" stroke="#d1d5db" stroke-width="1" />
+  <polyline points="${polyline}" fill="none" stroke="${trendUp ? "#16a34a" : "#dc2626"}" stroke-width="2.2" />
+  ${points
+    .map((p, i) => `<circle cx="${toX(i)}" cy="${toY(p.balance)}" r="3" fill="#111827" />`)
+    .join("\n  ")}
+</svg>`;
+}
+
+function buildRangeTimeline(params: {
+  bookmakers: BookmakerStats[];
+  bets: TrackedBetRecord[];
+  adjustments: BalanceAdjustment[];
+  bookmakerId: string;
+  startMs: number | null;
+  endMs: number | null;
+}): { date: string; balance: number }[] {
+  const bookmakerFilter = params.bookmakerId !== "all" ? params.bookmakerId : null;
+  const relevantBookmakers = bookmakerFilter
+    ? params.bookmakers.filter((b) => b.bookmakerId === bookmakerFilter)
+    : params.bookmakers;
+  const startingBalance = relevantBookmakers.reduce((sum, b) => sum + b.startingBalance, 0);
+
+  type Event = { date: number; delta: number; label: string };
+  const events: Event[] = [];
+  for (const bet of params.bets) {
+    if (bet.status === "pending") continue;
+    if (bookmakerFilter && bet.bookmakerId !== bookmakerFilter) continue;
+    const d = Date.parse(bet.updatedAt || bet.createdAt);
+    if (!Number.isFinite(d)) continue;
+    events.push({ date: d, delta: getBetProfit(bet), label: bet.updatedAt || bet.createdAt });
+  }
+  for (const adj of params.adjustments) {
+    if (bookmakerFilter && adj.bookmakerId !== bookmakerFilter) continue;
+    events.push({ date: adj.createdAt, delta: adj.amount, label: new Date(adj.createdAt).toISOString() });
+  }
+  events.sort((a, b) => a.date - b.date);
+
+  const startMs = params.startMs;
+  const endMs = params.endMs;
+  const rangeStartMs = startMs ?? (events.length > 0 ? events[0]!.date : Date.now());
+  const rangeEndMs = endMs ?? (events.length > 0 ? events[events.length - 1]!.date : Date.now());
+  let balance = startingBalance;
+  for (const e of events) {
+    if (e.date < rangeStartMs) balance += e.delta;
+  }
+
+  const points: { date: string; balance: number }[] = [];
+  points.push({ date: new Date(rangeStartMs).toISOString(), balance });
+  for (const e of events) {
+    if (e.date < rangeStartMs) continue;
+    if (e.date > rangeEndMs) break;
+    balance += e.delta;
+    points.push({ date: e.label, balance });
+  }
+  return points;
 }
 
 function normalizeDuplicateText(value: unknown): string {
@@ -365,6 +488,8 @@ export function BetTrackerPage() {
   const [name, setName] = useState("");
   const [startingBalance, setStartingBalance] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [exportStartDate, setExportStartDate] = useState<string>("");
+  const [exportEndDate, setExportEndDate] = useState<string>("");
   const [bookmakers, setBookmakers] = useState<BookmakerStats[]>([]);
   const [balanceAdjustments, setBalanceAdjustments] = useState<BalanceAdjustment[]>([]);
   const [bets, setBets] = useState<TrackedBetRecord[]>([]);
@@ -517,6 +642,39 @@ export function BetTrackerPage() {
     const roi = totalStaked > 0 ? totalProfit / totalStaked : 0;
     return { totalStaked, totalReturned, totalProfit, roi };
   }, [settledBets]);
+  const exportRangeStartMs = useMemo(() => toRangeStartMs(exportStartDate), [exportStartDate]);
+  const exportRangeEndMs = useMemo(() => toRangeEndMs(exportEndDate), [exportEndDate]);
+  const exportRangeBets = useMemo(() => {
+    const startMs = exportRangeStartMs;
+    const endMs = exportRangeEndMs;
+    return settledBets.filter((b) => {
+      if (timelineBookmakerId !== "all" && b.bookmakerId !== timelineBookmakerId) return false;
+      const ts = Date.parse(b.updatedAt || b.createdAt);
+      if (!Number.isFinite(ts)) return false;
+      if (startMs != null && ts < startMs) return false;
+      if (endMs != null && ts > endMs) return false;
+      return true;
+    });
+  }, [exportRangeEndMs, exportRangeStartMs, settledBets, timelineBookmakerId]);
+  const exportRangeProfit = useMemo(() => exportRangeBets.reduce((sum, b) => sum + getBetProfit(b), 0), [exportRangeBets]);
+  const exportRangeUnits = useMemo(() => (currentUnitSize > 0 ? exportRangeProfit / currentUnitSize : 0), [currentUnitSize, exportRangeProfit]);
+  const exportRangePoints = useMemo(
+    () =>
+      buildRangeTimeline({
+        bookmakers,
+        bets,
+        adjustments: balanceAdjustments,
+        bookmakerId: timelineBookmakerId,
+        startMs: exportRangeStartMs,
+        endMs: exportRangeEndMs,
+      }),
+    [balanceAdjustments, bets, bookmakers, exportRangeEndMs, exportRangeStartMs, timelineBookmakerId]
+  );
+  const exportRangeLabel = useMemo(
+    () => formatRangeLabel(exportStartDate, exportEndDate),
+    [exportStartDate, exportEndDate]
+  );
+  const exportRangeTitle = useMemo(() => "Bet Tracker Snapshot", []);
   const bookmakerPerformance = useMemo(() => {
     return bookmakers
       .map((b) => ({
@@ -1261,6 +1419,90 @@ export function BetTrackerPage() {
     }
   }, [evalLine, evalMarket, evalOdds, evalPlayerName]);
 
+  const onExportSnapshot = useCallback(
+    async (format: "png" | "svg") => {
+      const svg = buildExportSvg({
+        points: exportRangePoints,
+        title: exportRangeTitle,
+        rangeLabel: exportRangeLabel,
+        profitMoney: exportRangeProfit,
+        profitUnits: exportRangeUnits,
+      });
+      const safeLabel = exportRangeLabel.replace(/[^a-z0-9]+/gi, "-").replace(/(^-|-$)/g, "") || "all-time";
+      const fileBase = `bet-tracker-${safeLabel}`.toLowerCase();
+      if (format === "svg") {
+        const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `${fileBase}.svg`;
+        link.click();
+        URL.revokeObjectURL(url);
+        return;
+      }
+
+      const svgBlob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
+      const url = URL.createObjectURL(svgBlob);
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = 920;
+        canvas.height = 520;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0);
+        canvas.toBlob((pngBlob) => {
+          if (!pngBlob) return;
+          const pngUrl = URL.createObjectURL(pngBlob);
+          const link = document.createElement("a");
+          link.href = pngUrl;
+          link.download = `${fileBase}.png`;
+          link.click();
+          URL.revokeObjectURL(pngUrl);
+        }, "image/png");
+        URL.revokeObjectURL(url);
+      };
+      img.src = url;
+    },
+    [exportRangeLabel, exportRangePoints, exportRangeProfit, exportRangeTitle, exportRangeUnits]
+  );
+
+  const onExportCsv = useCallback(() => {
+    const rows: string[][] = [];
+    rows.push(["Range", exportRangeLabel]);
+    rows.push(["Profit", exportRangeProfit.toFixed(2)]);
+    rows.push(["Profit Units", exportRangeUnits.toFixed(2)]);
+    rows.push([]);
+    rows.push(["Date", "Match", "Status", "Stake", "Return", "Profit", "Odds", "Units", "Bookmaker"]);
+    for (const bet of exportRangeBets) {
+      const profit = getBetProfit(bet);
+      const units = currentUnitSize > 0 ? profit / currentUnitSize : 0;
+      rows.push([
+        bet.updatedAt || bet.createdAt,
+        bet.matchLabel,
+        getStatusLabel(bet.status),
+        bet.stake.toFixed(2),
+        bet.returnAmount.toFixed(2),
+        profit.toFixed(2),
+        bet.oddsTaken.toFixed(2),
+        units.toFixed(2),
+        bet.bookmakerName,
+      ]);
+    }
+    const csv = rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const safeLabel = exportRangeLabel.replace(/[^a-z0-9]+/gi, "-").replace(/(^-|-$)/g, "") || "all-time";
+    const fileBase = `bet-tracker-${safeLabel}`.toLowerCase();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${fileBase}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }, [currentUnitSize, exportRangeBets, exportRangeLabel, exportRangeProfit, exportRangeUnits]);
+
   return (
     <div className="bet-tracker-page">
       <div className="bet-tracker-page__header">
@@ -1284,6 +1526,56 @@ export function BetTrackerPage() {
               ))}
             </select>
           </label>
+          <label>
+            Export start
+            <input
+              type="date"
+              value={exportStartDate}
+              onChange={(e) => setExportStartDate(e.target.value)}
+            />
+          </label>
+          <label>
+            Export end
+            <input
+              type="date"
+              value={exportEndDate}
+              onChange={(e) => setExportEndDate(e.target.value)}
+            />
+          </label>
+        </div>
+        <div className="bet-tracker-page__export-card">
+          <div className="bet-tracker-page__export-head">
+            <div>
+              <h3>Export Snapshot</h3>
+              <p className="bet-tracker-page__export-subtitle">{exportRangeLabel}</p>
+            </div>
+            <div className="bet-tracker-page__export-actions">
+              <button type="button" onClick={() => void onExportSnapshot("png")}>Download PNG</button>
+              <button type="button" onClick={() => void onExportSnapshot("svg")}>Download SVG</button>
+              <button type="button" onClick={onExportCsv}>Export CSV</button>
+            </div>
+          </div>
+          <div className="bet-tracker-page__export-stats">
+            <div>
+              <span>P/L</span>
+              <strong className={exportRangeProfit >= 0 ? "bet-tracker-page__pl is-profit" : "bet-tracker-page__pl is-loss"}>
+                {fmtSignedMoney(exportRangeProfit)}
+              </strong>
+            </div>
+            <div>
+              <span>P/L (units)</span>
+              <strong className={exportRangeUnits >= 0 ? "bet-tracker-page__pl is-profit" : "bet-tracker-page__pl is-loss"}>
+                {exportRangeUnits >= 0 ? "+" : "-"}{Math.abs(exportRangeUnits).toFixed(2)}
+              </strong>
+            </div>
+            <div>
+              <span>Settled bets</span>
+              <strong>{exportRangeBets.length}</strong>
+            </div>
+          </div>
+          <div className="bet-tracker-page__export-chart">
+            <BankrollChart points={exportRangePoints} />
+          </div>
         </div>
         <div className="bet-tracker-page__bankroll-card" id="bet-tracker-bankroll">
           <div className="bet-tracker-page__bankroll-card-head">

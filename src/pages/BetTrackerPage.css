@@ -283,6 +283,7 @@ h3.bet-tracker-page__bankroll-title {
   display: flex;
   gap: 0.6rem;
   margin-bottom: 0.45rem;
+  flex-wrap: wrap;
 }
 
 .bet-tracker-page__performance-controls label {
@@ -298,6 +299,84 @@ h3.bet-tracker-page__bankroll-title {
   border-radius: 6px;
   padding: 0.35rem 0.45rem;
   font-size: 0.8rem;
+}
+
+.bet-tracker-page__performance-controls input {
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 0.35rem 0.45rem;
+  font-size: 0.8rem;
+}
+
+.bet-tracker-page__export-card {
+  border: 1px solid var(--border-light);
+  border-radius: 12px;
+  padding: 0.85rem 0.95rem;
+  background: var(--card-bg);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
+  margin-bottom: 0.7rem;
+}
+
+.bet-tracker-page__export-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: flex-start;
+}
+
+.bet-tracker-page__export-head h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.bet-tracker-page__export-subtitle {
+  margin: 0.2rem 0 0;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.bet-tracker-page__export-actions {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.bet-tracker-page__export-actions button {
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 8px;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.bet-tracker-page__export-actions button:hover {
+  background: var(--accent-hover);
+}
+
+.bet-tracker-page__export-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.5rem;
+  margin-top: 0.65rem;
+}
+
+.bet-tracker-page__export-stats span {
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+}
+
+.bet-tracker-page__export-stats strong {
+  display: block;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.bet-tracker-page__export-chart {
+  margin-top: 0.6rem;
 }
 
 .bet-tracker-page__model-performance {
