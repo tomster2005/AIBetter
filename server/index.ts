@@ -156,6 +156,9 @@ if (allowedOrigins.length > 0) {
 }
 
 app.get("/health", (_req, res) => {
+  if (process.env.NODE_ENV !== "production") {
+    console.log("[health] ok", { time: new Date().toISOString() });
+  }
   res.type("text/plain").send("ok");
 });
 
