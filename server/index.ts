@@ -9,6 +9,14 @@ import express from "express";
 import { createServer } from "http";
 import { getFixturesBetween } from "../src/api/sportmonks.js";
 
+process.on("uncaughtException", (err) => {
+  console.error("[fatal] uncaughtException", err);
+});
+
+process.on("unhandledRejection", (err) => {
+  console.error("[fatal] unhandledRejection", err);
+});
+
 const token = process.env.SPORTMONKS_API_TOKEN ?? process.env.SPORTMONKS_TOKEN;
 if (!token || typeof token !== "string") {
   console.warn(
