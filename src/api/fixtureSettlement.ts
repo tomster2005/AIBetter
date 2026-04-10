@@ -143,7 +143,11 @@ function getDetailTypeFields(detail: any): {
 
 function detailTypeText(detail: any): string {
   const f = getDetailTypeFields(detail);
-  return `${f.typeName} ${f.typeCode} ${f.typeDeveloperName}`.toLowerCase();
+  return `${f.typeName} ${f.typeCode} ${f.typeDeveloperName}`
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function isFoulsWonDetail(detail: any): boolean {
