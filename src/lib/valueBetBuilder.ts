@@ -332,6 +332,19 @@ function comboFingerprintFromLegs(legs: BuildLeg[]): string {
   return legs.map(legFingerprintToken).slice().sort().join("||");
 }
 
+function mergeLegsByFingerprint(primary: BuildLeg[], secondary: BuildLeg[]): BuildLeg[] {
+  if (secondary.length === 0) return primary;
+  const seen = new Set(primary.map(legFingerprintToken));
+  const out = [...primary];
+  for (const leg of secondary) {
+    const key = legFingerprintToken(leg);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(leg);
+  }
+  return out;
+}
+
 /** Player row shape used by the builder (subset of ValueBetRow). modelInputs extended for matchup boost. */
 export interface PlayerCandidateInput {
   playerName: string;
@@ -576,30 +589,50 @@ type PlayerPropRecentValidation =
   | { accepted: true; hitRate: number; recentN: number; hits: number }
   | { accepted: false; hitRate: number; recentN: number; reason: string };
 
+type PlayerPropRecentConfig = {
+  minRecentGames: number;
+  minHitRate: number;
+  per90OverMinRatio: number;
+  allowMissing: boolean;
+  allowSpiky: boolean;
+};
+
 function validatePlayerPropRecentEvidence(
   r: PlayerCandidateInput,
   cat: ValueBetPlayerMarketCategory,
   evidenceContext: BuildEvidenceContext | null | undefined,
-  per90ForLine: number
+  per90ForLine: number,
+  config?: Partial<PlayerPropRecentConfig>
 ): PlayerPropRecentValidation {
+  const cfg: PlayerPropRecentConfig = {
+    minRecentGames: PLAYER_PROP_MIN_RECENT_GAMES,
+    minHitRate: PLAYER_PROP_MIN_HIT_RATE,
+    per90OverMinRatio: PLAYER_PROP_PER90_OVER_MIN_RATIO,
+    allowMissing: false,
+    allowSpiky: false,
+    ...config,
+  };
   const recentGames = getPlayerRecentGamesWindow(r.playerName, cat, evidenceContext?.playerRecentStats, PLAYER_PROP_RECENT_WINDOW);
 
-  if (recentGames.length < PLAYER_PROP_MIN_RECENT_GAMES) {
+  if (recentGames.length < cfg.minRecentGames) {
+    if (cfg.allowMissing) {
+      return { accepted: true, hitRate: 0, recentN: recentGames.length, hits: 0 };
+    }
     return { accepted: false, hitRate: 0, recentN: recentGames.length, reason: "minSample" };
   }
 
   const hits = countOutcomeHits(recentGames, r.line, r.outcome);
   const hitRate = hits / recentGames.length;
 
-  if (hitRate < PLAYER_PROP_MIN_HIT_RATE) {
+  if (hitRate < cfg.minHitRate) {
     return { accepted: false, hitRate, recentN: recentGames.length, reason: "hitRate" };
   }
 
-  if (r.outcome === "Over" && per90ForLine < r.line * PLAYER_PROP_PER90_OVER_MIN_RATIO) {
+  if (r.outcome === "Over" && per90ForLine < r.line * cfg.per90OverMinRatio) {
     return { accepted: false, hitRate, recentN: recentGames.length, reason: "per90Floor" };
   }
 
-  if (isVeryHighRecentVariance(recentGames) && hitRate < PLAYER_PROP_SPIKY_HIT_RATE_MAX) {
+  if (!cfg.allowSpiky && isVeryHighRecentVariance(recentGames) && hitRate < PLAYER_PROP_SPIKY_HIT_RATE_MAX) {
     return { accepted: false, hitRate, recentN: recentGames.length, reason: "spiky" };
   }
 
@@ -1521,11 +1554,78 @@ function buildFixtureH2hContextLine(headToHeadContext: HeadToHeadFixtureContext)
 }
 
 /** Filter and convert player rows to build legs. */
+type PlayerCandidateFilterMode = "strict" | "relaxed";
+type PlayerCandidateFilterOptions = {
+  mode?: PlayerCandidateFilterMode;
+};
+
+type PlayerCandidateThresholds = {
+  minExpectedMinutes: number;
+  minDataConfidence: number;
+  minBetQuality: number;
+  allowWeakTier: boolean;
+  minModelEdge: number;
+  minLowOddsEdge: number;
+  minOddsHard: number;
+  minOddsWithoutEdge: number;
+  recentConfig: Partial<PlayerPropRecentConfig>;
+};
+
+const PLAYER_CANDIDATE_THRESHOLDS: Record<PlayerCandidateFilterMode, PlayerCandidateThresholds> = {
+  strict: {
+    minExpectedMinutes: MIN_EXPECTED_MINUTES,
+    minDataConfidence: BUILDER_MIN_DATA_CONFIDENCE_SCORE,
+    minBetQuality: BUILDER_MIN_BET_QUALITY_SCORE,
+    allowWeakTier: false,
+    minModelEdge: BUILDER_MIN_MODEL_EDGE,
+    minLowOddsEdge: BUILDER_LOW_ODDS_MIN_EDGE,
+    minOddsHard: BUILDER_ODDS_HARD_REJECT,
+    minOddsWithoutEdge: BUILDER_ODDS_MIN_WITHOUT_MODEL_EDGE,
+    recentConfig: {},
+  },
+  relaxed: {
+    minExpectedMinutes: 35,
+    minDataConfidence: 30,
+    minBetQuality: 30,
+    allowWeakTier: true,
+    minModelEdge: 0.01,
+    minLowOddsEdge: 0.03,
+    minOddsHard: BUILDER_ODDS_HARD_REJECT,
+    minOddsWithoutEdge: 1.35,
+    recentConfig: {
+      allowMissing: true,
+      minRecentGames: 3,
+      minHitRate: 0.35,
+      per90OverMinRatio: 0.6,
+      allowSpiky: true,
+    },
+  },
+};
+
+function isValidBuilderCandidateWithThresholds(
+  odds: number,
+  edge: number | null | undefined,
+  thresholds: PlayerCandidateThresholds
+): boolean {
+  if (!Number.isFinite(odds)) return false;
+  if (odds < thresholds.minOddsHard) return false;
+
+  const e = Number.isFinite(edge as number) ? (edge as number) : null;
+  if (e == null) {
+    return odds >= thresholds.minOddsWithoutEdge;
+  }
+  if (e < thresholds.minModelEdge) return false;
+  if (odds < BUILDER_LOW_ODDS_BAND && e < thresholds.minLowOddsEdge) return false;
+  return true;
+}
+
 export function filterPlayerCandidates(
   rows: PlayerCandidateInput[],
   evidenceContext?: BuildEvidenceContext | null,
-  lineupContext?: LineupContext | null
+  lineupContext?: LineupContext | null,
+  options: PlayerCandidateFilterOptions = {}
 ): BuildLeg[] {
+  const thresholds = PLAYER_CANDIDATE_THRESHOLDS[options.mode ?? "strict"];
   const legs: BuildLeg[] = [];
   const seen = new Set<string>();
   // Dev-only fouls tracing.
@@ -1567,7 +1667,7 @@ export function filterPlayerCandidates(
       }
       continue;
     }
-    if (!isValidBuilderCandidate(r.odds, r.modelEdge)) {
+    if (!isValidBuilderCandidateWithThresholds(r.odds, r.modelEdge, thresholds)) {
       if (isFoulsCat) {
         foulsRejectedReasons["edge"] = (foulsRejectedReasons["edge"] ?? 0) + 1;
         if (foulsRejectedSamples.length < 5) {
@@ -1593,7 +1693,7 @@ export function filterPlayerCandidates(
       continue;
     }
     const expectedMinutes = r.modelInputs?.expectedMinutes ?? 0;
-    if (expectedMinutes < MIN_EXPECTED_MINUTES) {
+    if (expectedMinutes < thresholds.minExpectedMinutes) {
       if (isFoulsCat) {
         foulsRejectedReasons["minutes"] = (foulsRejectedReasons["minutes"] ?? 0) + 1;
         if (foulsRejectedSamples.length < 5) {
@@ -1611,14 +1711,14 @@ export function filterPlayerCandidates(
       continue;
     }
     const dataConfidenceScore = r.dataConfidenceScore ?? 0;
-    if (!Number.isFinite(dataConfidenceScore) || dataConfidenceScore < BUILDER_MIN_DATA_CONFIDENCE_SCORE) {
+    if (!Number.isFinite(dataConfidenceScore) || dataConfidenceScore < thresholds.minDataConfidence) {
       if (isFoulsCat) {
         foulsRejectedReasons["dataConfidence"] = (foulsRejectedReasons["dataConfidence"] ?? 0) + 1;
       }
       continue;
     }
     const betQualityScore = r.betQualityScore ?? 0;
-    if (!Number.isFinite(betQualityScore) || betQualityScore < BUILDER_MIN_BET_QUALITY_SCORE) {
+    if (!Number.isFinite(betQualityScore) || betQualityScore < thresholds.minBetQuality) {
       if (isFoulsCat) {
         foulsRejectedReasons["betQuality"] = (foulsRejectedReasons["betQuality"] ?? 0) + 1;
       }
@@ -1661,7 +1761,7 @@ export function filterPlayerCandidates(
       continue;
     }
 
-    const recentCheck = validatePlayerPropRecentEvidence(r, cat, evidenceContext, per90ForLine);
+    const recentCheck = validatePlayerPropRecentEvidence(r, cat, evidenceContext, per90ForLine, thresholds.recentConfig);
     if (!recentCheck.accepted) {
       if (import.meta.env.DEV) {
         console.log({
@@ -1694,7 +1794,7 @@ export function filterPlayerCandidates(
       hits: recentCheck.hits,
       recentN: recentCheck.recentN,
     });
-    if (quality.playerTier === "weak") {
+    if (quality.playerTier === "weak" && !thresholds.allowWeakTier) {
       if (isFoulsCat) {
         foulsRejectedReasons["weakTier"] = (foulsRejectedReasons["weakTier"] ?? 0) + 1;
       }
@@ -3334,7 +3434,20 @@ export function buildValueBetCombos(
     teamGoalLineStats = undefined,
     teamIds = { home: null, away: null },
   } = options;
-  const playerLegs = filterPlayerCandidates(playerRows, evidenceContext, lineupContext);
+  const strictPlayerLegs = filterPlayerCandidates(playerRows, evidenceContext, lineupContext, { mode: "strict" });
+  let playerLegs = strictPlayerLegs;
+  const MIN_PLAYER_LEGS_TARGET = 12;
+  if (strictPlayerLegs.length < MIN_PLAYER_LEGS_TARGET) {
+    const relaxedPlayerLegs = filterPlayerCandidates(playerRows, evidenceContext, lineupContext, { mode: "relaxed" });
+    playerLegs = mergeLegsByFingerprint(strictPlayerLegs, relaxedPlayerLegs);
+    if (import.meta.env?.DEV) {
+      console.log("[build-value-bets] relaxed player pool", {
+        strictCount: strictPlayerLegs.length,
+        relaxedCount: relaxedPlayerLegs.length,
+        mergedCount: playerLegs.length,
+      });
+    }
+  }
   applyFoulMatchupBoost(playerLegs, playerRows, lineupContext);
   applyShotMatchupBoost(playerLegs, playerRows, lineupContext);
   applyH2hContextToPlayerLegs(playerLegs, headToHeadContext);
