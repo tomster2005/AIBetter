@@ -673,6 +673,7 @@ const DIVERSITY_PLAYER_REUSE_PENALTY = 10;
 // Encourage variation in combo shape (player-heavy vs player-light) after quality tie-breaking.
 const DIVERSITY_PLAYER_LEGCOUNT_REUSE_PENALTY = 6;
 const DIVERSITY_CORNERS_REUSE_PENALTY = 8;
+const DIVERSITY_TEAM_GOALS_REUSE_PENALTY = 14;
 // Diversity should mostly break ties, not promote clearly worse combos.
 // Only consider candidates within this raw-score window of the best remaining combo.
 const DIVERSITY_TIE_WINDOW_SCORE = 10;
@@ -844,6 +845,18 @@ function comboMarketCategories(c: BuildCombo): string[] {
       cats.push(cat ?? "playerOther");
       continue;
     }
+    if (normaliseGoalsTotalLeg(l)) {
+      cats.push("teamGoalsTotal");
+      continue;
+    }
+    if (l.marketFamily === "team:btts") {
+      cats.push("teamBtts");
+      continue;
+    }
+    if (l.marketFamily === "team:match-results") {
+      cats.push("teamResult");
+      continue;
+    }
     cats.push("teamOther");
   }
   return cats;
@@ -906,7 +919,14 @@ function selectDiverseTopCombos(
       for (const p of players) penalty += (playerUse.get(p) ?? 0) * DIVERSITY_PLAYER_REUSE_PENALTY;
       const playerLegCount = c.legs.filter((l) => l.type === "player").length;
       penalty += (playerLegCountUse.get(playerLegCount) ?? 0) * DIVERSITY_PLAYER_LEGCOUNT_REUSE_PENALTY;
-      for (const cat of cats) penalty += (marketUse.get(cat) ?? 0) * DIVERSITY_MARKET_CATEGORY_REUSE_PENALTY;
+      for (const cat of cats) {
+        const reuse = marketUse.get(cat) ?? 0;
+        if (cat === "teamGoalsTotal") {
+          penalty += reuse * DIVERSITY_TEAM_GOALS_REUSE_PENALTY;
+        } else {
+          penalty += reuse * DIVERSITY_MARKET_CATEGORY_REUSE_PENALTY;
+        }
+      }
 
       if (comboHasCorners(c)) {
         penalty += cornersUsed * DIVERSITY_CORNERS_REUSE_PENALTY;
