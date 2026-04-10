@@ -1594,9 +1594,9 @@ const PLAYER_CANDIDATE_THRESHOLDS: Record<PlayerCandidateFilterMode, PlayerCandi
     minOddsWithoutEdge: 1.35,
     recentConfig: {
       allowMissing: true,
-      minRecentGames: 3,
-      minHitRate: 0.35,
-      per90OverMinRatio: 0.6,
+      minRecentGames: 10,
+      minHitRate: 0.7,
+      per90OverMinRatio: 0.65,
       allowSpiky: true,
     },
   },
