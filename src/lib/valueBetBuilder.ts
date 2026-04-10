@@ -3443,6 +3443,15 @@ export function buildValueBetCombos(
   const finalMaxRequested = options.maxCombos ?? 30;
   const finalMax = Math.min(6, finalMaxRequested);
   const internalMax = Math.max(finalMax, finalMax * DIVERSITY_INTERNAL_MULTIPLIER);
+  const preferredMinLegs = targetOdds >= 4 ? 3 : 2;
+  const preferredMinPlayerLegs = 2;
+  const applyPreferredLegMinimums = (input: BuildCombo[]): BuildCombo[] => {
+    if (input.length === 0) return input;
+    const minLegsFiltered = input.filter((c) => c.legs.length >= preferredMinLegs);
+    const legSource = minLegsFiltered.length > 0 ? minLegsFiltered : input;
+    const minPlayerLegsFiltered = legSource.filter((c) => c.legs.filter((l) => l.type === "player").length >= preferredMinPlayerLegs);
+    return minPlayerLegsFiltered.length > 0 ? minPlayerLegsFiltered : legSource;
+  };
   let combos = generateCombos(playerOnlyLegs, targetOdds, { maxCombos: internalMax, maxLegs: COMBO_MAX_LEGS_CAP, sortMode });
   if (combos.length === 0) {
     combos = generateCombos(playerOnlyLegs, targetOdds, {
@@ -3452,6 +3461,7 @@ export function buildValueBetCombos(
       allowBelowTarget: true,
     });
   }
+  combos = applyPreferredLegMinimums(combos);
   if (combos.length === 0 && teamLegs.length > 0) {
     combos = generateCombos(allLegs, targetOdds, { maxCombos: internalMax, maxLegs: COMBO_MAX_LEGS_CAP, sortMode });
     if (combos.length === 0) {
@@ -3462,6 +3472,7 @@ export function buildValueBetCombos(
         allowBelowTarget: true,
       });
     }
+    combos = applyPreferredLegMinimums(combos);
     const playerCounts = combos.map((c) => c.legs.filter((l) => l.type === "player").length);
     const maxPlayerLegs = Math.max(0, ...playerCounts);
     if (maxPlayerLegs > 0) {
