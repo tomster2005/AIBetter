@@ -912,8 +912,24 @@ function selectDiverseTopCombos(
   const playerLegCountUse = new Map<number, number>();
   let cornersUsed = 0;
   const marketUse = new Map<string, number>();
+  const selectedGoalsTotals = new Map<number, "over" | "under">();
+  let selectedBtts: boolean | null = null;
 
   const maxCornersAllowed = Math.max(1, Math.round(maxOut * DIVERSITY_MAX_CORNERS_SHARE));
+
+  const comboConflictsWithSelected = (combo: BuildCombo): boolean => {
+    for (const leg of combo.legs) {
+      const goals = normaliseGoalsTotalLeg(leg);
+      if (goals) {
+        const lineKey = Number(goals.line.toFixed(1));
+        const existing = selectedGoalsTotals.get(lineKey);
+        if (existing && existing !== goals.direction) return true;
+      }
+      const btts = parseBttsFromLabel(leg.label);
+      if (btts != null && selectedBtts != null && btts !== selectedBtts) return true;
+    }
+    return false;
+  };
 
   while (selected.length < maxOut && deduped.length > 0) {
     const bestRaw = deduped[0]!.comboScore;
@@ -929,6 +945,7 @@ function selectDiverseTopCombos(
     let bestAdjusted = -Infinity;
     for (const i of candidateIdxs) {
       const c = deduped[i]!;
+      if (selected.length > 0 && comboConflictsWithSelected(c)) continue;
       const players = comboPlayerKeys(c);
       const cats = comboMarketCategories(c);
       let penalty = 0;
@@ -965,6 +982,15 @@ function selectDiverseTopCombos(
     playerLegCountUse.set(pickPlayerLegCount, (playerLegCountUse.get(pickPlayerLegCount) ?? 0) + 1);
     if (comboHasCorners(pick)) cornersUsed += 1;
     for (const cat of comboMarketCategories(pick)) marketUse.set(cat, (marketUse.get(cat) ?? 0) + 1);
+    for (const leg of pick.legs) {
+      const goals = normaliseGoalsTotalLeg(leg);
+      if (goals) {
+        const lineKey = Number(goals.line.toFixed(1));
+        selectedGoalsTotals.set(lineKey, goals.direction);
+      }
+      const btts = parseBttsFromLabel(leg.label);
+      if (btts != null) selectedBtts = btts;
+    }
   }
 
   return { selected, nearDuplicatesRemoved };
@@ -4008,6 +4034,44 @@ export function buildValueBetCombos(
     const playerOnlyCombos = combos.filter((c) => c.legs.every((l) => l.type === "player"));
     if (playerOnlyCombos.length > 0) {
       combos = playerOnlyCombos;
+    }
+  }
+
+  // Global consistency: prefer a single goals-total direction (per line) and BTTS direction across returned combos.
+  if (combos.length > 1) {
+    const sortedByScore = [...combos].sort((a, b) => b.comboScore - a.comboScore);
+    const preferredGoalsByLine = new Map<number, "over" | "under">();
+    let preferredBtts: boolean | null = null;
+
+    for (const c of sortedByScore) {
+      for (const leg of c.legs) {
+        const goals = normaliseGoalsTotalLeg(leg);
+        if (goals) {
+          const lineKey = Number(goals.line.toFixed(1));
+          if (!preferredGoalsByLine.has(lineKey)) {
+            preferredGoalsByLine.set(lineKey, goals.direction);
+          }
+        }
+        const btts = parseBttsFromLabel(leg.label);
+        if (preferredBtts == null && btts != null) preferredBtts = btts;
+      }
+      if (preferredGoalsByLine.size > 0 || preferredBtts != null) break;
+    }
+
+    if (preferredGoalsByLine.size > 0 || preferredBtts != null) {
+      combos = combos.filter((c) => {
+        for (const leg of c.legs) {
+          const goals = normaliseGoalsTotalLeg(leg);
+          if (goals) {
+            const lineKey = Number(goals.line.toFixed(1));
+            const preferred = preferredGoalsByLine.get(lineKey);
+            if (preferred && preferred !== goals.direction) return false;
+          }
+          const btts = parseBttsFromLabel(leg.label);
+          if (preferredBtts != null && btts != null && btts !== preferredBtts) return false;
+        }
+        return true;
+      });
     }
   }
 
