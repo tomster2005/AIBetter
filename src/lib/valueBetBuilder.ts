@@ -819,6 +819,23 @@ function comboMarketFamilySignature(c: BuildCombo): string {
     .join("||");
 }
 
+function comboLegIdentitySignature(c: BuildCombo): string {
+  // Strict dedupe: same player/team legs with same line/outcome should collapse to one.
+  return c.legs
+    .map((l) => [
+      l.type,
+      l.marketFamily,
+      l.playerName ?? "",
+      l.playerId ?? "",
+      l.teamId ?? "",
+      Number.isFinite(l.line) ? l.line.toFixed(3) : "",
+      l.outcome,
+    ].join("|"))
+    .slice()
+    .sort()
+    .join("||");
+}
+
 function comboHasCorners(c: BuildCombo): boolean {
   return c.legs.some((l) => l.marketFamily === CORNERS_MARKET_FAMILY);
 }
@@ -4029,6 +4046,17 @@ export function buildValueBetCombos(
 
   // Final output cap: keep only the best 2–3 combos.
   // We already capped with `finalMax` (<=3) and diversity, but do a conservative quality cut for the 3rd-best combo.
+  if (combos.length > 1) {
+    const bestByLegs = new Map<string, BuildCombo>();
+    for (const c of combos) {
+      const sig = comboLegIdentitySignature(c);
+      const prev = bestByLegs.get(sig);
+      if (!prev || c.comboScore > prev.comboScore) {
+        bestByLegs.set(sig, c);
+      }
+    }
+    combos = Array.from(bestByLegs.values());
+  }
   combos = [...combos].sort((a, b) => {
     if (a.comboScore !== b.comboScore) return b.comboScore - a.comboScore;
     if (a.distanceFromTarget !== b.distanceFromTarget) return a.distanceFromTarget - b.distanceFromTarget;
