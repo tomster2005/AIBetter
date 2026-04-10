@@ -215,7 +215,7 @@ export function BuildValueBetsModal({
   const [oddsMode, setOddsMode] = useState<"specific" | "range" | "auto">("specific");
   const [targetOddsMin, setTargetOddsMin] = useState("");
   const [targetOddsMax, setTargetOddsMax] = useState("");
-  const [allowTeamOnly, setAllowTeamOnly] = useState(true);
+  const [limitTeamProps, setLimitTeamProps] = useState(true);
   const [building, setBuilding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [trackerError, setTrackerError] = useState<string | null>(null);
@@ -480,13 +480,14 @@ export function BuildValueBetsModal({
           sortMode,
         }
       );
-      const comboPool = allowTeamOnly
-        ? combos
-        : combos.filter((combo) => combo.legs.some((leg) => leg.type === "player"));
+      const comboPool = combos.filter((combo) => combo.legs.some((leg) => leg.type === "player"));
+      const teamLimitedCombos = limitTeamProps
+        ? comboPool.filter((combo) => combo.legs.filter((leg) => leg.type === "team").length <= 1)
+        : comboPool;
       const filteredCombos =
         oddsMin != null && oddsMax != null
-          ? comboPool.filter((c) => c.combinedOdds >= oddsMin! && c.combinedOdds <= oddsMax!)
-          : comboPool;
+          ? teamLimitedCombos.filter((c) => c.combinedOdds >= oddsMin! && c.combinedOdds <= oddsMax!)
+          : teamLimitedCombos;
       const finalCombos = oddsMode === "auto" ? filteredCombos.slice(0, 6) : filteredCombos;
       const stored = saveGeneratedCombosForFixture(fixture.id, finalCombos, Math.max(1, finalCombos.length));
       if (import.meta.env.DEV) {
@@ -534,14 +535,14 @@ export function BuildValueBetsModal({
     } finally {
       setBuilding(false);
     }
-  }, [fixture, targetOdds, targetOddsMin, targetOddsMax, oddsMode, allowTeamOnly, getCandidates, fixtureCornersContext, lineupContext, evidenceContextProp]);
+  }, [fixture, targetOdds, targetOddsMin, targetOddsMax, oddsMode, limitTeamProps, getCandidates, fixtureCornersContext, lineupContext, evidenceContextProp]);
 
   const handleClose = useCallback(() => {
     setTargetOdds("");
     setTargetOddsMin("");
     setTargetOddsMax("");
     setOddsMode("specific");
-    setAllowTeamOnly(true);
+    setLimitTeamProps(true);
     setError(null);
     setTrackerError(null);
     setTrackerSuccess(null);
@@ -759,13 +760,13 @@ export function BuildValueBetsModal({
             <label className="build-value-bets-modal__toggle">
               <input
                 type="checkbox"
-                checked={allowTeamOnly}
-                onChange={(e) => setAllowTeamOnly(e.target.checked)}
+                checked={limitTeamProps}
+                onChange={(e) => setLimitTeamProps(e.target.checked)}
               />
-              <span>Allow team-only combos</span>
+              <span>Limit to 1 team prop per combo</span>
             </label>
             <span className="build-value-bets-modal__hint">
-              When off, combos must include at least one player leg.
+              Combos always include at least one player prop.
             </span>
           </div>
           {building && (
@@ -791,9 +792,7 @@ export function BuildValueBetsModal({
               </p>
               {result.combos.length === 0 ? (
                 <p className="build-value-bets-modal__empty">
-                  {allowTeamOnly
-                    ? "No combos near target. Try running \"Find Value Bets\" first or a different target."
-                    : "No player-based combos found. Enable team-only combos or run \"Find Value Bets\" first."}
+                  No player-based combos found. Run "Find Value Bets" first or try a different target.
                 </p>
               ) : (
                 <ul className="build-value-bets-modal__combo-list">
