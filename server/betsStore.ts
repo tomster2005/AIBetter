@@ -1,6 +1,6 @@
-import Database from "better-sqlite3";
-import { existsSync, mkdirSync, readFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
+import { createRequire } from "module";
 
 export type SharedBetRecord = {
   id: string;
@@ -15,14 +15,27 @@ type BetsStoreOptions = {
   dbPath?: string;
 };
 
-export class BetsStore {
-  private db: Database.Database;
+type BetsStoreBackend = {
+  list(): SharedBetRecord[];
+  upsert(record: SharedBetRecord): SharedBetRecord;
+  patch(id: string, patch: Record<string, unknown>): SharedBetRecord | null;
+  deleteById(id: string): boolean;
+  deleteAll(): number;
+  getById(id: string): SharedBetRecord | null;
+  count(): number;
+};
+
+class SqliteBetsStore implements BetsStoreBackend {
+  private db: any;
   private legacyJsonPath: string;
 
   constructor(opts: BetsStoreOptions) {
     const dbPath = opts.dbPath || process.env.BETS_DB_PATH || join(opts.projectRoot, "server", "data", "bets.sqlite");
     const dbDir = dirname(dbPath);
     if (!existsSync(dbDir)) mkdirSync(dbDir, { recursive: true });
+
+    const require = createRequire(import.meta.url);
+    const Database = require("better-sqlite3");
     this.db = new Database(dbPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("synchronous = NORMAL");
@@ -154,6 +167,130 @@ export class BetsStore {
   count(): number {
     const row = this.db.prepare(`SELECT COUNT(1) as c FROM shared_bets`).get() as { c: number };
     return Number(row?.c ?? 0);
+  }
+}
+
+class JsonBetsStore implements BetsStoreBackend {
+  private jsonPath: string;
+
+  constructor(opts: BetsStoreOptions) {
+    this.jsonPath = opts.legacyJsonPath;
+    const dir = dirname(this.jsonPath);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  }
+
+  private load(): SharedBetRecord[] {
+    if (!existsSync(this.jsonPath)) return [];
+    try {
+      const raw = readFileSync(this.jsonPath, "utf-8");
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? (parsed as SharedBetRecord[]) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private save(rows: SharedBetRecord[]): void {
+    writeFileSync(this.jsonPath, JSON.stringify(rows, null, 2), "utf-8");
+  }
+
+  list(): SharedBetRecord[] {
+    const rows = this.load();
+    return rows
+      .slice()
+      .sort((a, b) => {
+        const aTime = Date.parse(a.createdAt ?? a.updatedAt ?? "") || 0;
+        const bTime = Date.parse(b.createdAt ?? b.updatedAt ?? "") || 0;
+        if (aTime !== bTime) return bTime - aTime;
+        return String(b.id ?? "").localeCompare(String(a.id ?? ""));
+      });
+  }
+
+  upsert(record: SharedBetRecord): SharedBetRecord {
+    const rows = this.load();
+    const idx = rows.findIndex((r) => r.id === record.id);
+    if (idx >= 0) rows[idx] = { ...rows[idx], ...record, id: record.id };
+    else rows.push(record);
+    this.save(rows);
+    return record;
+  }
+
+  patch(id: string, patch: Record<string, unknown>): SharedBetRecord | null {
+    const current = this.getById(id);
+    if (!current) return null;
+    const next = { ...current, ...patch, id } as SharedBetRecord;
+    this.upsert(next);
+    return next;
+  }
+
+  deleteById(id: string): boolean {
+    const rows = this.load();
+    const next = rows.filter((r) => r.id !== id);
+    if (next.length === rows.length) return false;
+    this.save(next);
+    return true;
+  }
+
+  deleteAll(): number {
+    const rows = this.load();
+    this.save([]);
+    return rows.length;
+  }
+
+  getById(id: string): SharedBetRecord | null {
+    const rows = this.load();
+    return rows.find((r) => r.id === id) ?? null;
+  }
+
+  count(): number {
+    return this.load().length;
+  }
+}
+
+export class BetsStore {
+  private backend: BetsStoreBackend;
+
+  constructor(opts: BetsStoreOptions) {
+    const forceJson = process.env.BETS_STORE === "json";
+    if (!forceJson) {
+      try {
+        this.backend = new SqliteBetsStore(opts);
+        return;
+      } catch (err) {
+        console.warn("[api/bets] sqlite unavailable; falling back to JSON store", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    this.backend = new JsonBetsStore(opts);
+  }
+
+  list(): SharedBetRecord[] {
+    return this.backend.list();
+  }
+
+  upsert(record: SharedBetRecord): SharedBetRecord {
+    return this.backend.upsert(record);
+  }
+
+  patch(id: string, patch: Record<string, unknown>): SharedBetRecord | null {
+    return this.backend.patch(id, patch);
+  }
+
+  deleteById(id: string): boolean {
+    return this.backend.deleteById(id);
+  }
+
+  deleteAll(): number {
+    return this.backend.deleteAll();
+  }
+
+  getById(id: string): SharedBetRecord | null {
+    return this.backend.getById(id);
+  }
+
+  count(): number {
+    return this.backend.count();
   }
 }
 
