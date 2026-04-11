@@ -78,11 +78,24 @@ export async function getHeadToHeadPlayerStats(
   const limit = options.limit != null && Number.isFinite(options.limit) ? Math.max(1, Math.floor(options.limit)) : 1;
   const selected = sorted.slice(0, limit);
 
+  const debugFixtureEnv = process.env.H2H_DEBUG_FIXTURES ?? "";
+  const debugFixtures = new Set(
+    debugFixtureEnv
+      .split(",")
+      .map((v) => parseInt(v.trim(), 10))
+      .filter((n) => Number.isFinite(n) && n > 0)
+  );
+  const debugPlayerName = typeof process.env.H2H_DEBUG_PLAYER === "string" ? process.env.H2H_DEBUG_PLAYER.trim() : "";
+
   const out: HeadToHeadPlayerStatsFixture[] = [];
   for (const f of selected) {
     const fixtureId = typeof f.id === "number" ? f.id : 0;
     if (!Number.isFinite(fixtureId) || fixtureId <= 0) continue;
-    const playerStats = parseFixtureDetailsToPlayerStats(f);
+    const debugOptions =
+      debugPlayerName && debugFixtures.has(fixtureId)
+        ? { targetFixtureId: fixtureId, targetPlayerName: debugPlayerName }
+        : undefined;
+    const playerStats = parseFixtureDetailsToPlayerStats(f, debugOptions);
     if (playerStats.length === 0) continue;
     out.push({
       fixtureId,

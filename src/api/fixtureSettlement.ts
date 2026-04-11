@@ -413,6 +413,36 @@ export function parseFixtureDetailsToPlayerStats(
       lineupLoggedCount += 1;
     }
 
+    const shouldLogTargetPlayerDetails =
+      process.env.NODE_ENV !== "production" &&
+      debugOptions?.targetFixtureId != null &&
+      fixtureIdFromRaw === debugOptions.targetFixtureId &&
+      typeof debugOptions?.targetPlayerName === "string" &&
+      normalizeDetailName(playerName) === normalizeDetailName(debugOptions.targetPlayerName);
+
+    if (shouldLogTargetPlayerDetails) {
+      const detailPreview = detailsList
+        .map((detail) => {
+          const { typeId, typeName, typeCode, typeDeveloperName } = getDetailTypeFields(detail as any);
+          const rawValue = (detail as any)?.value ?? (detail as any)?.data?.value ?? (detail as any)?.value?.total ?? (detail as any)?.data?.total;
+          return {
+            typeId: Number.isFinite(typeId) ? typeId : null,
+            typeName: typeName || null,
+            typeCode: typeCode || null,
+            typeDeveloperName: typeDeveloperName || null,
+            rawValue,
+          };
+        })
+        .filter((row) => row.typeName || row.typeCode || row.typeDeveloperName || row.rawValue != null);
+
+      console.log("[h2h-debug] player detail rows", {
+        fixtureId: fixtureIdFromRaw ?? null,
+        playerId,
+        playerName,
+        detailPreview,
+      });
+    }
+
     const stats = parseDetailsToStats(detailsList, playerId, fixtureIdFromRaw, {
       targetFixtureId: debugOptions?.targetFixtureId,
       targetPlayerId: debugOptions?.targetPlayerId,
