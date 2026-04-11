@@ -150,6 +150,10 @@ function detailTypeText(detail: any): string {
     .trim();
 }
 
+function isIntegerLike(value: number): boolean {
+  return Number.isFinite(value) && Math.abs(value - Math.round(value)) < 1e-6;
+}
+
 function isFoulsWonDetail(detail: any): boolean {
   const t = detailTypeText(detail);
   const hasFoul = /foul/i.test(t);
@@ -232,6 +236,16 @@ function parseDetailsToStats(
 
     // Shots mapping (prefer explicit total shots vs on-target labels).
     const detailText = detailTypeText(o);
+    const looksLikeRate =
+      detailText.includes("percent") ||
+      detailText.includes("percentage") ||
+      detailText.includes("accuracy") ||
+      detailText.includes("ratio") ||
+      detailText.includes("per 90") ||
+      detailText.includes("per90") ||
+      detailText.includes("per game") ||
+      detailText.includes("per match") ||
+      detailText.includes("per minute");
     const isOnTarget =
       /on target|on goal|shots on target|shots on goal/.test(detailText) ||
       name.includes("shots on target") ||
@@ -243,16 +257,18 @@ function parseDetailsToStats(
       name === "total shots";
     const isShotsGeneric = name === "shots" || (name.includes("shots") && !name.includes("on target") && !name.includes("on goal"));
 
-    if (isOnTarget) {
-      out.shotsOnTarget = value;
-    } else if (isTotalShots) {
-      out.shots = value;
-    } else if (typeId === 86) {
-      out.shotsOnTarget = value;
-    } else if (typeId === 84) {
-      out.shots = value;
-    } else if (isShotsGeneric && out.shots == null && !isOnTarget) {
-      out.shots = value;
+    if (!looksLikeRate && isIntegerLike(value)) {
+      if (isOnTarget) {
+        out.shotsOnTarget = value;
+      } else if (isTotalShots) {
+        out.shots = value;
+      } else if (typeId === 86) {
+        out.shotsOnTarget = value;
+      } else if (typeId === 84) {
+        out.shots = value;
+      } else if (isShotsGeneric && out.shots == null && !isOnTarget) {
+        out.shots = value;
+      }
     }
 
     // Fouls mapping: direct assignment based on dedicated helpers.
