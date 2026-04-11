@@ -78,11 +78,24 @@ function formatConfidenceLabel(score: number): string {
 }
 
 function getComboConfidenceScore(combo: BuildCombo): number | null {
-  const scores = combo.legs
-    .map((leg) => leg.dataConfidenceScore)
+  const perLegScores = combo.legs
+    .map((leg) => {
+      const data = typeof leg.dataConfidenceScore === "number" && Number.isFinite(leg.dataConfidenceScore)
+        ? leg.dataConfidenceScore
+        : null;
+      const quality = typeof leg.betQualityScore === "number" && Number.isFinite(leg.betQualityScore)
+        ? leg.betQualityScore
+        : null;
+      if (data == null && quality == null) return null;
+      if (data != null && quality != null) return data * 0.7 + quality * 0.3;
+      return data ?? quality;
+    })
     .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
-  if (scores.length === 0) return null;
-  return Math.min(...scores);
+  if (perLegScores.length === 0) return null;
+
+  const avg = perLegScores.reduce((sum, v) => sum + v, 0) / perLegScores.length;
+  const legPenalty = Math.max(0, combo.legs.length - 2) * 3; // longer combos slightly lower confidence
+  return Math.max(0, Math.min(100, avg - legPenalty));
 }
 
 /**
