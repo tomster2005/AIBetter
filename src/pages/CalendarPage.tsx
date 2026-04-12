@@ -107,11 +107,6 @@ export function CalendarPage() {
   }>({});
   const [fixtureSignalCounts, setFixtureSignalCounts] = useState<Record<number, number>>({});
   const [fixtureReadiness, setFixtureReadiness] = useState<Record<number, boolean>>({});
-  const [sectionsOpen, setSectionsOpen] = useState({
-    live: true,
-    notStarted: true,
-    finished: false,
-  });
 
   const { favouriteIds, toggleFavourite, isFavourite } = useLeagueFavourites();
   const { isExpanded, toggleExpanded } = useExpandedLeagueState();
@@ -391,115 +386,85 @@ export function CalendarPage() {
           )}
           {!loading && !error && leagueGroups.length > 0 && (
             <div className="calendar-page__status-sections">
-              <section className="calendar-page__status">
-                <button
-                  type="button"
-                  className="calendar-page__status-toggle"
-                  onClick={() => setSectionsOpen((prev) => ({ ...prev, live: !prev.live }))}
-                  aria-expanded={sectionsOpen.live}
-                >
-                  <span>Live games ({liveFixtures.length})</span>
-                  <span className={`calendar-page__status-chevron${sectionsOpen.live ? " is-open" : ""}`}>▼</span>
-                </button>
-                {sectionsOpen.live && (
-                  <div className="calendar-page__league-cards">
-                    {liveLeagueGroups.length === 0 ? (
-                      <p className="calendar-page__message">No live games.</p>
-                    ) : (
-                      liveLeagueGroups.map((group) => (
-                        <LeagueSectionCard
-                          key={`live-${group.leagueId}`}
-                          leagueId={group.leagueId}
-                          leagueName={group.leagueName}
-                          leagueLogo={group.leagueLogo}
-                          fixtures={group.fixtures}
-                          formatTime={formatTime}
-                          onFixtureClick={handleFixtureClick}
-                          isFavourite={isFavourite(group.leagueId)}
-                          onToggleFavourite={toggleFavourite}
-                          isExpanded={isExpanded(selectedDate, group.leagueId)}
-                          onToggleExpand={() => toggleExpanded(selectedDate, group.leagueId)}
-                          fixtureSignalCounts={fixtureSignalCounts}
-                          fixtureReadiness={fixtureReadiness}
-                        />
-                      ))
-                    )}
-                  </div>
-                )}
+              <section className="calendar-page__status-block">
+                <h3 className="calendar-page__status-title">Live games ({liveFixtures.length})</h3>
+                <div className="calendar-page__league-cards">
+                  {liveLeagueGroups.length === 0 ? (
+                    <p className="calendar-page__message">No live games.</p>
+                  ) : (
+                    liveLeagueGroups.map((group) => (
+                      <LeagueSectionCard
+                        key={`live-${group.leagueId}`}
+                        leagueId={group.leagueId}
+                        leagueName={group.leagueName}
+                        leagueLogo={group.leagueLogo}
+                        fixtures={group.fixtures}
+                        formatTime={formatTime}
+                        onFixtureClick={handleFixtureClick}
+                        isFavourite={isFavourite(group.leagueId)}
+                        onToggleFavourite={toggleFavourite}
+                        isExpanded={isExpanded(selectedDate, group.leagueId)}
+                        onToggleExpand={() => toggleExpanded(selectedDate, group.leagueId)}
+                        fixtureSignalCounts={fixtureSignalCounts}
+                        fixtureReadiness={fixtureReadiness}
+                      />
+                    ))
+                  )}
+                </div>
               </section>
 
-              <section className="calendar-page__status">
-                <button
-                  type="button"
-                  className="calendar-page__status-toggle"
-                  onClick={() => setSectionsOpen((prev) => ({ ...prev, notStarted: !prev.notStarted }))}
-                  aria-expanded={sectionsOpen.notStarted}
-                >
-                  <span>Not started ({notStartedFixtures.length})</span>
-                  <span className={`calendar-page__status-chevron${sectionsOpen.notStarted ? " is-open" : ""}`}>▼</span>
-                </button>
-                {sectionsOpen.notStarted && (
-                  <div className="calendar-page__league-cards">
-                    {notStartedLeagueGroups.length === 0 ? (
-                      <p className="calendar-page__message">No upcoming games.</p>
-                    ) : (
-                      notStartedLeagueGroups.map((group) => (
-                        <LeagueSectionCard
-                          key={`ns-${group.leagueId}`}
-                          leagueId={group.leagueId}
-                          leagueName={group.leagueName}
-                          leagueLogo={group.leagueLogo}
-                          fixtures={group.fixtures}
-                          formatTime={formatTime}
-                          onFixtureClick={handleFixtureClick}
-                          isFavourite={isFavourite(group.leagueId)}
-                          onToggleFavourite={toggleFavourite}
-                          isExpanded={isExpanded(selectedDate, group.leagueId)}
-                          onToggleExpand={() => toggleExpanded(selectedDate, group.leagueId)}
-                          fixtureSignalCounts={fixtureSignalCounts}
-                          fixtureReadiness={fixtureReadiness}
-                        />
-                      ))
-                    )}
-                  </div>
-                )}
+              <section className="calendar-page__status-block">
+                <h3 className="calendar-page__status-title">Not started ({notStartedFixtures.length})</h3>
+                <div className="calendar-page__league-cards">
+                  {notStartedLeagueGroups.length === 0 ? (
+                    <p className="calendar-page__message">No upcoming games.</p>
+                  ) : (
+                    notStartedLeagueGroups.map((group) => (
+                      <LeagueSectionCard
+                        key={`ns-${group.leagueId}`}
+                        leagueId={group.leagueId}
+                        leagueName={group.leagueName}
+                        leagueLogo={group.leagueLogo}
+                        fixtures={group.fixtures}
+                        formatTime={formatTime}
+                        onFixtureClick={handleFixtureClick}
+                        isFavourite={isFavourite(group.leagueId)}
+                        onToggleFavourite={toggleFavourite}
+                        isExpanded={isExpanded(selectedDate, group.leagueId)}
+                        onToggleExpand={() => toggleExpanded(selectedDate, group.leagueId)}
+                        fixtureSignalCounts={fixtureSignalCounts}
+                        fixtureReadiness={fixtureReadiness}
+                      />
+                    ))
+                  )}
+                </div>
               </section>
 
-              <section className="calendar-page__status">
-                <button
-                  type="button"
-                  className="calendar-page__status-toggle"
-                  onClick={() => setSectionsOpen((prev) => ({ ...prev, finished: !prev.finished }))}
-                  aria-expanded={sectionsOpen.finished}
-                >
-                  <span>Finished ({finishedFixtures.length})</span>
-                  <span className={`calendar-page__status-chevron${sectionsOpen.finished ? " is-open" : ""}`}>▼</span>
-                </button>
-                {sectionsOpen.finished && (
-                  <div className="calendar-page__league-cards">
-                    {finishedLeagueGroups.length === 0 ? (
-                      <p className="calendar-page__message">No finished games.</p>
-                    ) : (
-                      finishedLeagueGroups.map((group) => (
-                        <LeagueSectionCard
-                          key={`ft-${group.leagueId}`}
-                          leagueId={group.leagueId}
-                          leagueName={group.leagueName}
-                          leagueLogo={group.leagueLogo}
-                          fixtures={group.fixtures}
-                          formatTime={formatTime}
-                          onFixtureClick={handleFixtureClick}
-                          isFavourite={isFavourite(group.leagueId)}
-                          onToggleFavourite={toggleFavourite}
-                          isExpanded={isExpanded(selectedDate, group.leagueId)}
-                          onToggleExpand={() => toggleExpanded(selectedDate, group.leagueId)}
-                          fixtureSignalCounts={fixtureSignalCounts}
-                          fixtureReadiness={fixtureReadiness}
-                        />
-                      ))
-                    )}
-                  </div>
-                )}
+              <section className="calendar-page__status-block">
+                <h3 className="calendar-page__status-title">Finished ({finishedFixtures.length})</h3>
+                <div className="calendar-page__league-cards">
+                  {finishedLeagueGroups.length === 0 ? (
+                    <p className="calendar-page__message">No finished games.</p>
+                  ) : (
+                    finishedLeagueGroups.map((group) => (
+                      <LeagueSectionCard
+                        key={`ft-${group.leagueId}`}
+                        leagueId={group.leagueId}
+                        leagueName={group.leagueName}
+                        leagueLogo={group.leagueLogo}
+                        fixtures={group.fixtures}
+                        formatTime={formatTime}
+                        onFixtureClick={handleFixtureClick}
+                        isFavourite={isFavourite(group.leagueId)}
+                        onToggleFavourite={toggleFavourite}
+                        isExpanded={isExpanded(selectedDate, group.leagueId)}
+                        onToggleExpand={() => toggleExpanded(selectedDate, group.leagueId)}
+                        fixtureSignalCounts={fixtureSignalCounts}
+                        fixtureReadiness={fixtureReadiness}
+                      />
+                    ))
+                  )}
+                </div>
               </section>
             </div>
           )}
