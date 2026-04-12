@@ -4,6 +4,7 @@ import { groupFixturesByDate } from "../utils/groupFixturesByDate.js";
 import { groupFixturesByLeague } from "../utils/groupFixturesByLeague.js";
 import type { FixturesByDate } from "../utils/groupFixturesByDate.js";
 import { DateStrip } from "../components/DateStrip.js";
+import { FixtureTile } from "../components/FixtureTile.js";
 import { LeagueSectionCard } from "../components/LeagueSectionCard.js";
 import { LineupModal } from "../components/LineupModal.js";
 import { useLeagueFavourites } from "../hooks/useLeagueFavourites.js";
@@ -107,6 +108,11 @@ export function CalendarPage() {
   }>({});
   const [fixtureSignalCounts, setFixtureSignalCounts] = useState<Record<number, number>>({});
   const [fixtureReadiness, setFixtureReadiness] = useState<Record<number, boolean>>({});
+  const [statusDropdownsOpen, setStatusDropdownsOpen] = useState({
+    live: false,
+    notStarted: false,
+    finished: false,
+  });
 
   const { favouriteIds, toggleFavourite, isFavourite } = useLeagueFavourites();
   const { isExpanded, toggleExpanded } = useExpandedLeagueState();
@@ -199,6 +205,25 @@ export function CalendarPage() {
     0
   );
   const hasRequiredData = readyFixtureCount > 0;
+
+  const sortFixtures = (list: Fixture[]) =>
+    [...list].sort((a, b) => {
+      const ra = fixtureReadiness[a.id] === true ? 1 : 0;
+      const rb = fixtureReadiness[b.id] === true ? 1 : 0;
+      if (rb !== ra) return rb - ra;
+      const sa = fixtureSignalCounts[a.id] ?? 0;
+      const sb = fixtureSignalCounts[b.id] ?? 0;
+      if (sb !== sa) return sb - sa;
+      const tA = a.startingAt;
+      const tB = b.startingAt;
+      if (tA < tB) return -1;
+      if (tA > tB) return 1;
+      return a.id - b.id;
+    });
+
+  const sortedLiveFixtures = sortFixtures(liveFixtures);
+  const sortedNotStartedFixtures = sortFixtures(notStartedFixtures);
+  const sortedFinishedFixtures = sortFixtures(finishedFixtures);
 
   useEffect(() => {
     if (import.meta.env.DEV && leagueGroups.length >= 0) {
@@ -384,88 +409,139 @@ export function CalendarPage() {
               </button>
             </div>
           )}
-          {!loading && !error && leagueGroups.length > 0 && (
+          {!loading && !error && fixtures.length > 0 && (
             <div className="calendar-page__status-sections">
               <section className="calendar-page__status-block">
-                <h3 className="calendar-page__status-title">Live games ({liveFixtures.length})</h3>
-                <div className="calendar-page__league-cards">
-                  {liveLeagueGroups.length === 0 ? (
-                    <p className="calendar-page__message">No live games.</p>
-                  ) : (
-                    liveLeagueGroups.map((group) => (
-                      <LeagueSectionCard
-                        key={`live-${group.leagueId}`}
-                        leagueId={group.leagueId}
-                        leagueName={group.leagueName}
-                        leagueLogo={group.leagueLogo}
-                        fixtures={group.fixtures}
-                        formatTime={formatTime}
-                        onFixtureClick={handleFixtureClick}
-                        isFavourite={isFavourite(group.leagueId)}
-                        onToggleFavourite={toggleFavourite}
-                        isExpanded={isExpanded(selectedDate, group.leagueId)}
-                        onToggleExpand={() => toggleExpanded(selectedDate, group.leagueId)}
-                        fixtureSignalCounts={fixtureSignalCounts}
-                        fixtureReadiness={fixtureReadiness}
-                      />
-                    ))
-                  )}
-                </div>
+                <button
+                  type="button"
+                  className="calendar-page__status-toggle"
+                  onClick={() =>
+                    setStatusDropdownsOpen((prev) => ({
+                      ...prev,
+                      live: !prev.live,
+                    }))
+                  }
+                  aria-expanded={statusDropdownsOpen.live}
+                >
+                  <span>Live games ({liveFixtures.length})</span>
+                  <span className={`calendar-page__status-chevron${statusDropdownsOpen.live ? " is-open" : ""}`}>
+                    ▼
+                  </span>
+                </button>
+                {statusDropdownsOpen.live && (
+                  <div className="calendar-page__status-list">
+                    {sortedLiveFixtures.length === 0 ? (
+                      <p className="calendar-page__message">No live games.</p>
+                    ) : (
+                      sortedLiveFixtures.map((fixture) => (
+                        <FixtureTile
+                          key={fixture.id}
+                          fixture={fixture}
+                          formatTime={formatTime}
+                          onFixtureClick={handleFixtureClick}
+                          signalCount={fixtureSignalCounts[fixture.id] ?? 0}
+                          analysisReady={fixtureReadiness[fixture.id] === true}
+                        />
+                      ))
+                    )}
+                  </div>
+                )}
               </section>
 
               <section className="calendar-page__status-block">
-                <h3 className="calendar-page__status-title">Not started ({notStartedFixtures.length})</h3>
-                <div className="calendar-page__league-cards">
-                  {notStartedLeagueGroups.length === 0 ? (
-                    <p className="calendar-page__message">No upcoming games.</p>
-                  ) : (
-                    notStartedLeagueGroups.map((group) => (
-                      <LeagueSectionCard
-                        key={`ns-${group.leagueId}`}
-                        leagueId={group.leagueId}
-                        leagueName={group.leagueName}
-                        leagueLogo={group.leagueLogo}
-                        fixtures={group.fixtures}
-                        formatTime={formatTime}
-                        onFixtureClick={handleFixtureClick}
-                        isFavourite={isFavourite(group.leagueId)}
-                        onToggleFavourite={toggleFavourite}
-                        isExpanded={isExpanded(selectedDate, group.leagueId)}
-                        onToggleExpand={() => toggleExpanded(selectedDate, group.leagueId)}
-                        fixtureSignalCounts={fixtureSignalCounts}
-                        fixtureReadiness={fixtureReadiness}
-                      />
-                    ))
-                  )}
-                </div>
+                <button
+                  type="button"
+                  className="calendar-page__status-toggle"
+                  onClick={() =>
+                    setStatusDropdownsOpen((prev) => ({
+                      ...prev,
+                      notStarted: !prev.notStarted,
+                    }))
+                  }
+                  aria-expanded={statusDropdownsOpen.notStarted}
+                >
+                  <span>Not started ({notStartedFixtures.length})</span>
+                  <span className={`calendar-page__status-chevron${statusDropdownsOpen.notStarted ? " is-open" : ""}`}>
+                    ▼
+                  </span>
+                </button>
+                {statusDropdownsOpen.notStarted && (
+                  <div className="calendar-page__status-list">
+                    {sortedNotStartedFixtures.length === 0 ? (
+                      <p className="calendar-page__message">No upcoming games.</p>
+                    ) : (
+                      sortedNotStartedFixtures.map((fixture) => (
+                        <FixtureTile
+                          key={fixture.id}
+                          fixture={fixture}
+                          formatTime={formatTime}
+                          onFixtureClick={handleFixtureClick}
+                          signalCount={fixtureSignalCounts[fixture.id] ?? 0}
+                          analysisReady={fixtureReadiness[fixture.id] === true}
+                        />
+                      ))
+                    )}
+                  </div>
+                )}
               </section>
 
               <section className="calendar-page__status-block">
-                <h3 className="calendar-page__status-title">Finished ({finishedFixtures.length})</h3>
-                <div className="calendar-page__league-cards">
-                  {finishedLeagueGroups.length === 0 ? (
-                    <p className="calendar-page__message">No finished games.</p>
-                  ) : (
-                    finishedLeagueGroups.map((group) => (
-                      <LeagueSectionCard
-                        key={`ft-${group.leagueId}`}
-                        leagueId={group.leagueId}
-                        leagueName={group.leagueName}
-                        leagueLogo={group.leagueLogo}
-                        fixtures={group.fixtures}
-                        formatTime={formatTime}
-                        onFixtureClick={handleFixtureClick}
-                        isFavourite={isFavourite(group.leagueId)}
-                        onToggleFavourite={toggleFavourite}
-                        isExpanded={isExpanded(selectedDate, group.leagueId)}
-                        onToggleExpand={() => toggleExpanded(selectedDate, group.leagueId)}
-                        fixtureSignalCounts={fixtureSignalCounts}
-                        fixtureReadiness={fixtureReadiness}
-                      />
-                    ))
-                  )}
-                </div>
+                <button
+                  type="button"
+                  className="calendar-page__status-toggle"
+                  onClick={() =>
+                    setStatusDropdownsOpen((prev) => ({
+                      ...prev,
+                      finished: !prev.finished,
+                    }))
+                  }
+                  aria-expanded={statusDropdownsOpen.finished}
+                >
+                  <span>Finished ({finishedFixtures.length})</span>
+                  <span className={`calendar-page__status-chevron${statusDropdownsOpen.finished ? " is-open" : ""}`}>
+                    ▼
+                  </span>
+                </button>
+                {statusDropdownsOpen.finished && (
+                  <div className="calendar-page__status-list">
+                    {sortedFinishedFixtures.length === 0 ? (
+                      <p className="calendar-page__message">No finished games.</p>
+                    ) : (
+                      sortedFinishedFixtures.map((fixture) => (
+                        <FixtureTile
+                          key={fixture.id}
+                          fixture={fixture}
+                          formatTime={formatTime}
+                          onFixtureClick={handleFixtureClick}
+                          signalCount={fixtureSignalCounts[fixture.id] ?? 0}
+                          analysisReady={fixtureReadiness[fixture.id] === true}
+                        />
+                      ))
+                    )}
+                  </div>
+                )}
               </section>
+            </div>
+          )}
+          {!loading && !error && leagueGroups.length > 0 && (
+            <div className="calendar-page__league-cards">
+              {leagueGroups.map((group) => (
+                <LeagueSectionCard
+                  key={group.leagueId}
+                  leagueId={group.leagueId}
+                  leagueName={group.leagueName}
+                  leagueLogo={group.leagueLogo}
+                  fixtures={group.fixtures}
+                  formatTime={formatTime}
+                  onFixtureClick={handleFixtureClick}
+                  isFavourite={isFavourite(group.leagueId)}
+                  onToggleFavourite={toggleFavourite}
+                  isExpanded={isExpanded(selectedDate, group.leagueId)}
+                  onToggleExpand={() => toggleExpanded(selectedDate, group.leagueId)}
+                  fixtureSignalCounts={fixtureSignalCounts}
+                  fixtureReadiness={fixtureReadiness}
+                />
+              ))}
             </div>
           )}
           <LineupModal
