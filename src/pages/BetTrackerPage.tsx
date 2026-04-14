@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   addManualMultiBetShared,
   explainManualMultiBetFailure,
-  getBankrollTimeline,
   restoreTrackedBetsFromBackup,
   settlePendingTrackedBets,
   getTrackedBetsDebugState,
@@ -565,7 +564,6 @@ export function BetTrackerPage() {
     Number.isFinite(quickAddStakeValue) && Number.isFinite(quickAddOddsValue) ? Math.max(0, quickAddStakeValue * quickAddOddsValue) : 0;
 
   const global = useMemo(() => getTrackedBetStats(), [bets]);
-  const timelinePoints = useMemo(() => getBankrollTimeline(), [bets]);
   const scoreBands = useMemo<ScoreBandAnalysisRow[]>(() => getScoreBandAnalysis(), [bets]);
   const settledBets = useMemo(() => bets.filter((b) => b.status !== "pending"), [bets]);
   const duplicateBetIds = useMemo(() => {
@@ -960,12 +958,6 @@ export function BetTrackerPage() {
       const el = document.getElementById("bet-tracker-insights");
       if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
     };
-    const onBankroll = () => {
-      setSelectedStatus("all");
-      setQuickDateFilter("all");
-      const el = document.getElementById("bet-tracker-bankroll");
-      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
-    };
     const onTodayPl = () => {
       setSelectedStatus("all");
       setQuickDateFilter("today");
@@ -993,7 +985,6 @@ export function BetTrackerPage() {
     };
     window.addEventListener("app:quick-add-bet", onQuickAdd as EventListener);
     window.addEventListener("app:scroll-insights", onInsights as EventListener);
-    window.addEventListener("app:sidebar-bankroll", onBankroll as EventListener);
     window.addEventListener("app:sidebar-today-pl", onTodayPl as EventListener);
     window.addEventListener("app:sidebar-total-pl", onTotalPl as EventListener);
     window.addEventListener("app:sidebar-open-bets", onOpenBets as EventListener);
@@ -1001,7 +992,6 @@ export function BetTrackerPage() {
     return () => {
       window.removeEventListener("app:quick-add-bet", onQuickAdd as EventListener);
       window.removeEventListener("app:scroll-insights", onInsights as EventListener);
-      window.removeEventListener("app:sidebar-bankroll", onBankroll as EventListener);
       window.removeEventListener("app:sidebar-today-pl", onTodayPl as EventListener);
       window.removeEventListener("app:sidebar-total-pl", onTotalPl as EventListener);
       window.removeEventListener("app:sidebar-open-bets", onOpenBets as EventListener);
@@ -1393,16 +1383,6 @@ export function BetTrackerPage() {
             <BankrollChart points={exportRangePoints} />
           </div>
         </div>
-        <div className="bet-tracker-page__bankroll-card" id="bet-tracker-bankroll">
-          <div className="bet-tracker-page__bankroll-card-head">
-            <h3 className="bet-tracker-page__bankroll-title">Bankroll</h3>
-            <p className="bet-tracker-page__bankroll-subtitle">Running balance after settled activity</p>
-          </div>
-          <div className="bet-tracker-page__bankroll-card-body">
-            <BankrollChart points={timelinePoints} />
-          </div>
-        </div>
-
         <div className="bet-tracker-page__model-performance">
           <h3>Model Performance</h3>
           <div className="bet-tracker-page__bets-table-wrap">

@@ -50,7 +50,6 @@ export default function App() {
     try {
       const tracker = getTrackedBetStats();
       const bets = getTrackedBets();
-      const bankroll = tracker.totalProfit;
       const startOfToday = new Date();
       startOfToday.setHours(0, 0, 0, 0);
       const todayStartMs = startOfToday.getTime();
@@ -65,7 +64,6 @@ export default function App() {
         return sum;
       }, 0);
       return {
-        bankroll,
         todayProfit,
         totalProfit: tracker.totalProfit,
         openBets: tracker.pendingBets,
@@ -73,7 +71,6 @@ export default function App() {
       };
     } catch {
       return {
-        bankroll: null as number | null,
         todayProfit: null as number | null,
         totalProfit: null as number | null,
         openBets: null as number | null,
@@ -258,7 +255,7 @@ export default function App() {
                     {`${activeBetLabel(bet.matchLabel, bet.legs)} @ ${bet.oddsTaken.toFixed(2)}`}
                   </span>
                   <span className="app-nav__active-line app-nav__active-line--meta">
-                    £{bet.stake.toFixed(2)} → £{bet.returnAmount.toFixed(2)}
+                    {Number.isFinite(bet.stakeUnits as number) ? (bet.stakeUnits as number).toFixed(2) : bet.stake.toFixed(2)}u → {Number.isFinite(bet.returnUnits as number) ? (bet.returnUnits as number).toFixed(2) : bet.returnAmount.toFixed(2)}u
                   </span>
                 </button>
               ))}
@@ -275,9 +272,6 @@ export default function App() {
 
         <section className="app-nav__panel app-nav__panel--stats" aria-label="Quick Stats">
           <h3 className="app-nav__panel-title">Quick Stats</h3>
-          <button type="button" className="app-nav__stat-btn" onClick={() => navigateAndEmit("betTracker", "app:sidebar-bankroll")}>
-            <span className="app-nav__stat-row"><span>Bankroll</span><strong>{fmtUnits(quickStats.bankroll)}</strong></span>
-          </button>
           <button type="button" className="app-nav__stat-btn" onClick={() => navigateAndEmit("betTracker", "app:sidebar-today-pl")}>
             <span className="app-nav__stat-row">
               <span>Today P/L</span>
@@ -341,7 +335,7 @@ export default function App() {
       <main className="app-main">
         {activeTab === "calendar" && <CalendarPage />}
         {activeTab === "betTracker" && <BetTrackerPage />}
-        {activeTab === "stakeCalculator" && <StakeCalculatorPage defaultBankroll={quickStats.bankroll} />}
+        {activeTab === "stakeCalculator" && <StakeCalculatorPage />}
       </main>
     </div>
   );

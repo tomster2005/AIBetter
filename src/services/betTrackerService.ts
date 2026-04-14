@@ -1057,26 +1057,6 @@ export function getTrackedBetStats(): TrackedBetStats {
   };
 }
 
-export function getBankrollTimeline(bookmakerId?: string): BankrollTimelinePoint[] {
-  const tracked = getTrackedBets();
-  const settled = tracked
-    .filter((b) => b.status !== "pending")
-    .sort((a, b) => Date.parse(a.updatedAt || a.createdAt) - Date.parse(b.updatedAt || b.createdAt));
-
-  const points: BankrollTimelinePoint[] = [];
-  let balance = 0;
-  points.push({ date: "Start", balance });
-  for (const bet of settled) {
-    const d = Date.parse(bet.updatedAt || bet.createdAt);
-    if (!Number.isFinite(d)) continue;
-    const delta = getSettledProfit(bet);
-    if (!Number.isFinite(delta)) continue;
-    balance += delta;
-    points.push({ date: bet.updatedAt || bet.createdAt, balance });
-  }
-  return points;
-}
-
 export function getScoreBandAnalysis(): ScoreBandAnalysisRow[] {
   const bands: Array<{ label: string; min: number; max: number }> = [
     { label: "0-40", min: 0, max: 40 },

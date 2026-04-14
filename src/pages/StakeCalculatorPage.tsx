@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import "./StakeCalculatorPage.css";
 
 type StakeRiskLevel = "conservative" | "standard" | "aggressive";
@@ -24,16 +24,10 @@ function adjustUnitsForRisk(baseUnits: number, risk: StakeRiskLevel): number {
   return Math.min(3, Math.max(0.25, baseUnits + riskOffset));
 }
 
-export function StakeCalculatorPage({ defaultBankroll }: { defaultBankroll: number | null }) {
+export function StakeCalculatorPage() {
   const [bankroll, setBankroll] = useState("");
   const [odds, setOdds] = useState("");
   const [risk, setRisk] = useState<StakeRiskLevel>("standard");
-
-  useEffect(() => {
-    if (bankroll.trim() !== "") return;
-    if (defaultBankroll == null || !Number.isFinite(defaultBankroll)) return;
-    setBankroll(defaultBankroll.toFixed(2));
-  }, [defaultBankroll, bankroll]);
 
   const { recommendedStake, unitsLabel, helperText } = useMemo(() => {
     const bankrollValue = parsePositiveNumber(bankroll);
@@ -65,7 +59,7 @@ export function StakeCalculatorPage({ defaultBankroll }: { defaultBankroll: numb
       <section className="stake-calculator-page__card">
         <div className="stake-calculator-page__inputs">
           <label>
-            <span>Bankroll (£)</span>
+            <span>Bankroll (units)</span>
             <input
               type="text"
               inputMode="decimal"
@@ -95,7 +89,7 @@ export function StakeCalculatorPage({ defaultBankroll }: { defaultBankroll: numb
         </div>
         <div className="stake-calculator-page__result" aria-live="polite">
           <p className="stake-calculator-page__result-label">Recommended Stake</p>
-          <p className="stake-calculator-page__result-value">£{recommendedStake.toFixed(2)}</p>
+          <p className="stake-calculator-page__result-value">{recommendedStake.toFixed(2)}u</p>
           <p className="stake-calculator-page__result-label">Suggested Size</p>
           <p className="stake-calculator-page__result-units">{unitsLabel}</p>
           <p className="stake-calculator-page__result-note">
