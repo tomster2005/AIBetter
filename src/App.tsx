@@ -4,7 +4,7 @@ import { BetTrackerPage } from "./pages/BetTrackerPage.js";
 import { StakeCalculatorPage } from "./pages/StakeCalculatorPage.js";
 import { setCalibrationTable } from "./lib/valueBetCalibration.js";
 import type { CalibrationBucket } from "./lib/valueBetCalibration.js";
-import { clearAllTrackedBetsShared, getAllBookmakerStats, getTrackedBetStats, getTrackedBets } from "./services/betTrackerService.js";
+import { clearAllTrackedBetsShared, getTrackedBetStats, getTrackedBets } from "./services/betTrackerService.js";
 import "./App.css";
 
 type AppTab = "calendar" | "betTracker" | "stakeCalculator";
@@ -49,17 +49,19 @@ export default function App() {
   const quickStats = useMemo(() => {
     try {
       const tracker = getTrackedBetStats();
-      const books = getAllBookmakerStats();
       const bets = getTrackedBets();
-      const bankroll = books.reduce((sum, b) => sum + (Number.isFinite(b.currentBalance) ? b.currentBalance : 0), 0);
+      const bankroll = tracker.totalProfit;
       const startOfToday = new Date();
       startOfToday.setHours(0, 0, 0, 0);
       const todayStartMs = startOfToday.getTime();
       const todayProfit = bets.reduce((sum, b) => {
         const createdMs = Date.parse(b.createdAt);
         if (!Number.isFinite(createdMs) || createdMs < todayStartMs) return sum;
-        if (b.status === "win" || b.status === "cashed_out") return sum + (b.returnAmount - b.stake);
-        if (b.status === "loss") return sum - b.stake;
+        const stakeUnits = Number.isFinite(b.stakeUnits as number) ? (b.stakeUnits as number) : b.stake;
+        const returnUnits = Number.isFinite(b.returnUnits as number) ? (b.returnUnits as number) : b.returnAmount;
+        const profitUnits = Number.isFinite(b.profitUnits as number) ? (b.profitUnits as number) : returnUnits - stakeUnits;
+        if (b.status === "win" || b.status === "cashed_out") return sum + profitUnits;
+        if (b.status === "loss") return sum - Math.abs(stakeUnits);
         return sum;
       }, 0);
       return {
@@ -92,15 +94,15 @@ export default function App() {
     }
   }, [sidebarTick]);
 
-  const fmtMoney = (n: number | null): string => {
+  const fmtUnits = (n: number | null): string => {
     if (n == null || !Number.isFinite(n)) return "—";
-    return `£${Math.abs(n).toFixed(2)}`;
+    return `${Math.abs(n).toFixed(2)}u`;
   };
 
-  const fmtSignedMoney = (n: number | null): string => {
+  const fmtSignedUnits = (n: number | null): string => {
     if (n == null || !Number.isFinite(n)) return "—";
-    if (n === 0) return "£0.00";
-    return `${n > 0 ? "+" : "-"}£${Math.abs(n).toFixed(2)}`;
+    if (n === 0) return "0.00u";
+    return `${n > 0 ? "+" : "-"}${Math.abs(n).toFixed(2)}u`;
   };
 
   const activeBetLabel = (matchLabel: string, legs: { playerName?: string; label: string }[]): string => {
@@ -274,13 +276,13 @@ export default function App() {
         <section className="app-nav__panel app-nav__panel--stats" aria-label="Quick Stats">
           <h3 className="app-nav__panel-title">Quick Stats</h3>
           <button type="button" className="app-nav__stat-btn" onClick={() => navigateAndEmit("betTracker", "app:sidebar-bankroll")}>
-            <span className="app-nav__stat-row"><span>Bankroll</span><strong>{fmtMoney(quickStats.bankroll)}</strong></span>
+            <span className="app-nav__stat-row"><span>Bankroll</span><strong>{fmtUnits(quickStats.bankroll)}</strong></span>
           </button>
           <button type="button" className="app-nav__stat-btn" onClick={() => navigateAndEmit("betTracker", "app:sidebar-today-pl")}>
             <span className="app-nav__stat-row">
               <span>Today P/L</span>
               <strong className={quickStats.todayProfit != null ? (quickStats.todayProfit > 0 ? "app-nav__value--profit" : quickStats.todayProfit < 0 ? "app-nav__value--loss" : "") : ""}>
-                {fmtSignedMoney(quickStats.todayProfit)}
+                {fmtSignedUnits(quickStats.todayProfit)}
               </strong>
             </span>
           </button>
@@ -288,7 +290,7 @@ export default function App() {
             <span className="app-nav__stat-row">
               <span>Total P/L</span>
               <strong className={quickStats.totalProfit != null ? (quickStats.totalProfit > 0 ? "app-nav__value--profit" : quickStats.totalProfit < 0 ? "app-nav__value--loss" : "") : ""}>
-                {fmtSignedMoney(quickStats.totalProfit)}
+                {fmtSignedUnits(quickStats.totalProfit)}
               </strong>
             </span>
           </button>

@@ -28,12 +28,8 @@ import { fetchFixtureResolutionData } from "../services/comboResolutionDataServi
 import {
   addTrackedBetShared,
   findDuplicateTrackedBet,
-  getBookmakers,
-  getBookmakerStats,
-  getUnitSize,
   settleTrackedBetsForFixture,
   type DuplicateMatch,
-  type TrackedBookmaker,
 } from "../services/betTrackerService.js";
 import "./BuildValueBetsModal.css";
 
@@ -233,13 +229,9 @@ export function BuildValueBetsModal({
   const [error, setError] = useState<string | null>(null);
   const [trackerError, setTrackerError] = useState<string | null>(null);
   const [trackerSuccess, setTrackerSuccess] = useState<string | null>(null);
-  const [bookmakers, setBookmakers] = useState<TrackedBookmaker[]>([]);
   const [trackerOpenIdx, setTrackerOpenIdx] = useState<number | null>(null);
-  const [trackerBookmakerId, setTrackerBookmakerId] = useState<string>("");
   const [trackerStake, setTrackerStake] = useState<string>("");
   const [trackerOddsTaken, setTrackerOddsTaken] = useState<string>("");
-  const [unitSize, setUnitSizeState] = useState<number>(2);
-  const [trackerAvailableBalance, setTrackerAvailableBalance] = useState<number | null>(null);
   const [trackerStakeTouched, setTrackerStakeTouched] = useState(false);
   const [result, setResult] = useState<{
     combos: BuildCombo[];
@@ -250,18 +242,6 @@ export function BuildValueBetsModal({
   const [trackerDuplicate, setTrackerDuplicate] = useState<{ match: DuplicateMatch; comboIdx: number } | null>(null);
   const [expandedWhy, setExpandedWhy] = useState<Record<string, boolean>>({});
   const [lastAddedComboKey, setLastAddedComboKey] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const current = getBookmakers();
-    setUnitSizeState(getUnitSize());
-    setBookmakers(current);
-    if (current.length > 0) {
-      setTrackerBookmakerId((prev) => (prev && current.some((b) => b.id === prev) ? prev : current[0]!.id));
-    } else {
-      setTrackerBookmakerId("");
-    }
-  }, [open]);
 
   useEffect(() => {
     if (!open || fixture == null) return;
@@ -563,7 +543,6 @@ export function BuildValueBetsModal({
     setTrackerStake("");
     setTrackerOddsTaken("");
     setTrackerStakeTouched(false);
-    setTrackerAvailableBalance(null);
     setResult(null);
     setPlayerTeamByName({});
     setTrackerDuplicate(null);
@@ -573,48 +552,21 @@ export function BuildValueBetsModal({
   }, [onClose]);
 
   const openTrackerPanel = useCallback((idx: number, combo: BuildCombo) => {
-    const current = getBookmakers();
-    setBookmakers(current);
     setTrackerError(null);
     setTrackerSuccess(null);
     setTrackerDuplicate(null);
     setTrackerOpenIdx(idx);
     setTrackerOddsTaken(combo.combinedOdds.toFixed(2));
-    setUnitSizeState(getUnitSize());
-    if (current.length > 0) {
-      const firstId = current[0]!.id;
-      setTrackerBookmakerId(firstId);
-      const firstStats = getBookmakerStats(firstId);
-      setTrackerAvailableBalance(firstStats?.availableBalance ?? null);
-      setTrackerStake("");
-      setTrackerStakeTouched(false);
-    } else {
-      setTrackerBookmakerId("");
-      setTrackerAvailableBalance(null);
-      setTrackerStake("");
-      setTrackerStakeTouched(false);
-    }
+    setTrackerStake("");
+    setTrackerStakeTouched(false);
   }, []);
 
   const handleAddTrackedBet = useCallback(async (combo: BuildCombo, force = false) => {
     if (!fixture) return;
-    if (bookmakers.length === 0) {
-      setTrackerError("Add a bookmaker first in Bet Tracker.");
-      return;
-    }
     const stake = Number(trackerStake);
     const oddsTaken = Number(trackerOddsTaken);
-    const availableBalance = trackerAvailableBalance;
-    if (!trackerBookmakerId) {
-      setTrackerError("Select a bookmaker.");
-      return;
-    }
     if (!Number.isFinite(stake) || stake <= 0) {
-      setTrackerError("Enter a valid stake.");
-      return;
-    }
-    if (availableBalance != null && Number.isFinite(availableBalance) && stake > availableBalance) {
-      setTrackerError(`Stake exceeds available balance (£${availableBalance.toFixed(2)}).`);
+      setTrackerError("Enter a valid stake in units.");
       return;
     }
     if (!Number.isFinite(oddsTaken) || oddsTaken <= 1) {
@@ -623,7 +575,6 @@ export function BuildValueBetsModal({
     }
     if (!force) {
       const duplicate = findDuplicateTrackedBet({
-        bookmakerId: trackerBookmakerId,
         fixtureId: fixture.id,
         matchLabel: `${fixture.homeTeam?.name ?? "Home"} v ${fixture.awayTeam?.name ?? "Away"}`,
         legs: combo.legs.map((leg) => ({
@@ -643,7 +594,6 @@ export function BuildValueBetsModal({
       }
     }
     const record = await addTrackedBetShared({
-      bookmakerId: trackerBookmakerId,
       stake,
       oddsTaken,
       status: "pending",
@@ -666,19 +616,13 @@ export function BuildValueBetsModal({
     setTrackerError(null);
     setTrackerOpenIdx(null);
     setTrackerDuplicate(null);
-  }, [fixture, bookmakers.length, trackerBookmakerId, trackerStake, trackerOddsTaken, trackerOpenIdx]);
+  }, [fixture, trackerStake, trackerOddsTaken, trackerOpenIdx]);
 
   if (!open) return null;
 
   const fixtureLabel = fixture
     ? `${fixture.homeTeam?.name ?? "Home"} v ${fixture.awayTeam?.name ?? "Away"}`
     : "";
-  const parsedStake = Number(trackerStake);
-  const stakeExceedsAvailable =
-    trackerAvailableBalance != null &&
-    Number.isFinite(trackerAvailableBalance) &&
-    Number.isFinite(parsedStake) &&
-    parsedStake > trackerAvailableBalance;
   const normalizePlayerKey = (name: string): string => name.trim().toLowerCase().replace(/\s+/g, " ");
   const formatLegLabel = (leg: BuildCombo["legs"][number]): string => {
     if (leg.type !== "player" || !leg.playerName) return formatBetLegDisplayLabel(leg);
@@ -866,126 +810,72 @@ export function BuildValueBetsModal({
                       </div>
                       {trackerOpenIdx === i && (
                         <div className="build-value-bets-modal__tracker-panel">
-                          {bookmakers.length === 0 ? (
-                            <p className="build-value-bets-modal__tracker-note">
-                              No bookmakers found. Add one in the Bet Tracker tab first.
+                          <>
+                            <label>
+                              Stake (units)
+                              <input
+                                type="number"
+                                min={0}
+                                step={0.01}
+                                value={trackerStake}
+                                onChange={(e) => {
+                                  setTrackerStake(e.target.value);
+                                  setTrackerStakeTouched(true);
+                                }}
+                                placeholder="0.00"
+                              />
+                            </label>
+                            <label>
+                              Odds taken
+                              <input
+                                type="number"
+                                min={1.01}
+                                step={0.01}
+                                value={trackerOddsTaken}
+                                onChange={(e) => setTrackerOddsTaken(e.target.value)}
+                                placeholder="e.g. 3.20"
+                              />
+                            </label>
+                            <p className="build-value-bets-modal__tracker-return">
+                              Return: {(() => {
+                                const s = Number(trackerStake);
+                                const o = Number(trackerOddsTaken);
+                                if (!Number.isFinite(s) || !Number.isFinite(o) || s <= 0 || o <= 0) return "0.00u";
+                                return `${(s * o).toFixed(2)}u`;
+                              })()}
                             </p>
-                          ) : (
-                            <>
-                              <label>
-                                Bookmaker
-                                <select
-                                  value={trackerBookmakerId}
-                                  onChange={(e) => {
-                                    const id = e.target.value;
-                                    setTrackerBookmakerId(id);
-                                    const stats = getBookmakerStats(id);
-                                    setTrackerAvailableBalance(stats?.availableBalance ?? null);
-                                  }}
-                                >
-                                  {bookmakers.map((b) => (
-                                    <option key={b.id} value={b.id}>
-                                      {b.name}
-                                    </option>
-                                  ))}
-                                </select>
-                              </label>
-                              <label>
-                                Stake
-                                <input
-                                  type="number"
-                                  min={0}
-                                  step={0.01}
-                                  value={trackerStake}
-                                  onChange={(e) => {
-                                    setTrackerStake(e.target.value);
-                                    setTrackerStakeTouched(true);
-                                  }}
-                                  placeholder="0.00"
-                                />
-                              </label>
-                              <label>
-                                Odds taken
-                                <input
-                                  type="number"
-                                  min={1.01}
-                                  step={0.01}
-                                  value={trackerOddsTaken}
-                                  onChange={(e) => setTrackerOddsTaken(e.target.value)}
-                                  placeholder="e.g. 3.20"
-                                />
-                              </label>
-                              <p className="build-value-bets-modal__tracker-available">
-                                Available: £
-                                {trackerAvailableBalance != null && Number.isFinite(trackerAvailableBalance)
-                                  ? trackerAvailableBalance.toFixed(2)
-                                  : "0.00"}
-                              </p>
-                              {stakeExceedsAvailable && (
-                                <p className="build-value-bets-modal__tracker-balance-error">
-                                  Stake exceeds available balance (£{trackerAvailableBalance?.toFixed(2)}).
+                            {trackerStakeTouched && <p className="build-value-bets-modal__tracker-override">Manual override</p>}
+                            {trackerDuplicate && trackerDuplicate.comboIdx === i && (
+                              <div className="build-value-bets-modal__tracker-duplicate">
+                                <p>⚠️ You already have a similar bet tracked.</p>
+                                <p>
+                                  Existing: {trackerDuplicate.match.existingBet.stake.toFixed(2)}u @ {trackerDuplicate.match.existingBet.oddsTaken.toFixed(2)}
                                 </p>
-                              )}
-                              <p className="build-value-bets-modal__tracker-return">
-                                Return: £
-                                {(() => {
-                                  const s = Number(trackerStake);
-                                  const o = Number(trackerOddsTaken);
-                                  if (!Number.isFinite(s) || !Number.isFinite(o) || s <= 0 || o <= 0) return "0.00";
-                                  return (s * o).toFixed(2);
-                                })()}
-                              </p>
-                              <p className="build-value-bets-modal__tracker-suggested">
-                                Stake Units:{" "}
-                                {(() => {
-                                  const s = Number(trackerStake);
-                                  if (!Number.isFinite(s) || s <= 0 || unitSize <= 0) return "0.00u";
-                                  return `${(s / unitSize).toFixed(2)}u`;
-                                })()}
-                              </p>
-                              <p className="build-value-bets-modal__tracker-suggested">
-                                Return Units:{" "}
-                                {(() => {
-                                  const s = Number(trackerStake);
-                                  const o = Number(trackerOddsTaken);
-                                  if (!Number.isFinite(s) || !Number.isFinite(o) || s <= 0 || o <= 0 || unitSize <= 0) return "0.00u";
-                                  return `${((s * o) / unitSize).toFixed(2)}u`;
-                                })()}
-                              </p>
-                              {trackerStakeTouched && <p className="build-value-bets-modal__tracker-override">Manual override</p>}
-                              {trackerDuplicate && trackerDuplicate.comboIdx === i && (
-                                <div className="build-value-bets-modal__tracker-duplicate">
-                                  <p>⚠️ You already have a similar bet tracked.</p>
-                                  <p>
-                                    Existing: £{trackerDuplicate.match.existingBet.stake.toFixed(2)} @ {trackerDuplicate.match.existingBet.oddsTaken.toFixed(2)} • {trackerDuplicate.match.existingBet.bookmakerName}
-                                  </p>
-                                  <div className="build-value-bets-modal__tracker-duplicate-actions">
-                                    <button
-                                      type="button"
-                                      className="secondary"
-                                      onClick={() => setTrackerDuplicate(null)}
-                                    >
-                                      Cancel
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleAddTrackedBet(combo, true)}
-                                    >
-                                      Add Anyway
-                                    </button>
-                                  </div>
+                                <div className="build-value-bets-modal__tracker-duplicate-actions">
+                                  <button
+                                    type="button"
+                                    className="secondary"
+                                    onClick={() => setTrackerDuplicate(null)}
+                                  >
+                                    Cancel
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleAddTrackedBet(combo, true)}
+                                  >
+                                    Add Anyway
+                                  </button>
                                 </div>
-                              )}
-                              <button
-                                type="button"
-                                className="build-value-bets-modal__tracker-save-btn"
-                                onClick={() => handleAddTrackedBet(combo)}
-                                disabled={stakeExceedsAvailable}
-                              >
-                                Save to tracker
-                              </button>
-                            </>
-                          )}
+                              </div>
+                            )}
+                            <button
+                              type="button"
+                              className="build-value-bets-modal__tracker-save-btn"
+                              onClick={() => handleAddTrackedBet(combo)}
+                            >
+                              Save to tracker
+                            </button>
+                          </>
                         </div>
                       )}
                       <ul className="build-value-bets-modal__leg-list">

@@ -1,32 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  addBookmaker,
   addManualMultiBetShared,
   explainManualMultiBetFailure,
-  getAllBookmakerStats,
   getBankrollTimeline,
-  getBookmakers,
-  getBalanceAdjustments,
-  getUnitSize,
   restoreTrackedBetsFromBackup,
   settlePendingTrackedBets,
   getTrackedBetsDebugState,
   getScoreBandAnalysis,
-  setUnitSize,
   getTrackedBetStats,
   getTrackedBets,
-  adjustBalance,
   deleteTrackedBetShared,
   findDuplicateTrackedBet,
   updateTrackedBetStatusShared,
   updateTrackedBetCashOutShared,
   type AddManualMultiBetInput,
-  type BookmakerStats,
   type DuplicateMatch,
   type ManualTrackedSelectionInput,
   type ScoreBandAnalysisRow,
-  type BalanceAdjustment,
-  type BalanceAdjustmentType,
   type TrackedBetRecord,
   type TrackedBetStatus,
   type TrackedBetLeg,
@@ -36,19 +26,13 @@ import { BankrollChart } from "../components/BankrollChart.js";
 import { evaluateValueBet, type ValueEvalMarket, type ValueEvalResult } from "../services/valueEvaluatorService.js";
 import "./BetTrackerPage.css";
 
-function fmtMoney(v: number): string {
-  return Number.isFinite(v) ? v.toFixed(2) : "0.00";
+function fmtUnits(v: number): string {
+  return Number.isFinite(v) ? `${v.toFixed(2)}u` : "0.00u";
 }
 
-function fmtSignedMoney(v: number): string {
-  if (!Number.isFinite(v) || v === 0) return "£0.00";
-  return `${v > 0 ? "+" : "-"}£${Math.abs(v).toFixed(2)}`;
-}
-
-function fmtAdjustmentLine(a: BalanceAdjustment): string {
-  const label = a.type === "deposit" ? "Deposit" : a.type === "withdrawal" ? "Withdrawal" : "Correction";
-  const sign = a.amount >= 0 ? "+" : "-";
-  return `${sign}£${Math.abs(a.amount).toFixed(2)} ${label}`;
+function fmtSignedUnits(v: number): string {
+  if (!Number.isFinite(v) || v === 0) return "0.00u";
+  return `${v > 0 ? "+" : "-"}${Math.abs(v).toFixed(2)}u`;
 }
 
 function fmtDate(v: string): string {
@@ -95,9 +79,21 @@ function formatRangeLabel(start: string, end: string): string {
   return `To ${end}`;
 }
 
+function getBetStakeUnits(bet: TrackedBetRecord): number {
+  if (Number.isFinite(bet.stakeUnits as number)) return bet.stakeUnits as number;
+  return bet.stake;
+}
+
+function getBetReturnUnits(bet: TrackedBetRecord): number {
+  if (Number.isFinite(bet.returnUnits as number)) return bet.returnUnits as number;
+  return bet.returnAmount;
+}
+
 function getBetProfit(bet: TrackedBetRecord): number {
-  if (bet.status === "win" || bet.status === "cashed_out") return bet.returnAmount - bet.stake;
-  if (bet.status === "loss") return -bet.stake;
+  if (Number.isFinite(bet.profitUnits as number)) return bet.profitUnits as number;
+  const stakeUnits = getBetStakeUnits(bet);
+  if (bet.status === "win" || bet.status === "cashed_out") return getBetReturnUnits(bet) - stakeUnits;
+  if (bet.status === "loss") return -stakeUnits;
   return 0;
 }
 
@@ -121,15 +117,14 @@ function sanitizeCashOutInput(value: string): string {
   return nextDecimals.length > 0 ? `${intPart}.${nextDecimals}` : intPart;
 }
 
-function toMoneyString(value: number): string {
-  return `£${value.toFixed(2)}`;
+function toUnitsString(value: number): string {
+  return `${value.toFixed(2)}u`;
 }
 
 function buildExportSvg(params: {
   points: { date: string; balance: number }[];
   title: string;
   rangeLabel: string;
-  profitMoney: number;
   profitUnits: number;
 }): string {
   const width = 920;
@@ -155,7 +150,6 @@ function buildExportSvg(params: {
   };
   const polyline = points.map((p, i) => `${toX(i)},${toY(p.balance)}`).join(" ");
   const profitLabel = `${params.profitUnits >= 0 ? "+" : "-"}${Math.abs(params.profitUnits).toFixed(2)} units`;
-  const profitMoneyLabel = `${params.profitMoney >= 0 ? "+" : "-"}£${Math.abs(params.profitMoney).toFixed(2)}`;
   const trendUp = points.length > 1 ? points[points.length - 1]!.balance >= points[0]!.balance : true;
 
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -163,7 +157,7 @@ function buildExportSvg(params: {
   <rect width="100%" height="100%" fill="#ffffff" />
   <text x="50" y="50" font-size="24" font-family="Arial, sans-serif" fill="#111827">${params.title}</text>
   <text x="50" y="82" font-size="14" font-family="Arial, sans-serif" fill="#6b7280">${params.rangeLabel}</text>
-  <text x="50" y="118" font-size="18" font-family="Arial, sans-serif" fill="#111827">P/L: ${profitMoneyLabel} (${profitLabel})</text>
+  <text x="50" y="118" font-size="18" font-family="Arial, sans-serif" fill="#111827">P/L: ${profitLabel}</text>
   <rect x="${chartX}" y="${chartY}" width="${chartWidth}" height="${chartHeight}" rx="12" fill="#f9fafb" stroke="#e5e7eb" />
   <line x1="${chartX + padX}" y1="${chartY + chartHeight - padY}" x2="${chartX + chartWidth - padX}" y2="${chartY + chartHeight - padY}" stroke="#d1d5db" stroke-width="1" />
   <line x1="${chartX + padX}" y1="${chartY + padY}" x2="${chartX + padX}" y2="${chartY + chartHeight - padY}" stroke="#d1d5db" stroke-width="1" />
@@ -175,31 +169,19 @@ function buildExportSvg(params: {
 }
 
 function buildRangeTimeline(params: {
-  bookmakers: BookmakerStats[];
   bets: TrackedBetRecord[];
-  adjustments: BalanceAdjustment[];
-  bookmakerId: string;
   startMs: number | null;
   endMs: number | null;
 }): { date: string; balance: number }[] {
-  const bookmakerFilter = params.bookmakerId !== "all" ? params.bookmakerId : null;
-  const relevantBookmakers = bookmakerFilter
-    ? params.bookmakers.filter((b) => b.bookmakerId === bookmakerFilter)
-    : params.bookmakers;
-  const startingBalance = relevantBookmakers.reduce((sum, b) => sum + b.startingBalance, 0);
+  const startingBalance = 0;
 
   type Event = { date: number; delta: number; label: string };
   const events: Event[] = [];
   for (const bet of params.bets) {
     if (bet.status === "pending") continue;
-    if (bookmakerFilter && bet.bookmakerId !== bookmakerFilter) continue;
     const d = Date.parse(bet.updatedAt || bet.createdAt);
     if (!Number.isFinite(d)) continue;
     events.push({ date: d, delta: getBetProfit(bet), label: bet.updatedAt || bet.createdAt });
-  }
-  for (const adj of params.adjustments) {
-    if (bookmakerFilter && adj.bookmakerId !== bookmakerFilter) continue;
-    events.push({ date: adj.createdAt, delta: adj.amount, label: new Date(adj.createdAt).toISOString() });
   }
   events.sort((a, b) => a.date - b.date);
 
@@ -237,7 +219,7 @@ function buildDuplicateSignature(bet: TrackedBetRecord, leg: TrackedBetLeg): str
   const marketKey = normalizeDuplicateText(leg.marketName || leg.marketFamily);
   const lineKey = normalizeDuplicateLine(leg.line) ?? "";
   const outcomeKey = leg.outcome ?? "";
-  return [bet.bookmakerId, fixtureKey, playerKey, marketKey, lineKey, outcomeKey].join("|");
+  return [fixtureKey, playerKey, marketKey, lineKey, outcomeKey].join("|");
 }
 
 export type QuickAddSelectionDraft = {
@@ -270,7 +252,6 @@ export type QuickAddSelectionDraft = {
 };
 
 type QuickAddErrors = {
-  bookmakerId?: string;
   stake?: string;
   oddsTaken?: string;
   selections?: string;
@@ -485,28 +466,17 @@ export function buildSelectionFromPreset(
 }
 
 export function BetTrackerPage() {
-  const [name, setName] = useState("");
-  const [startingBalance, setStartingBalance] = useState("");
-  const [error, setError] = useState<string | null>(null);
   const [exportStartDate, setExportStartDate] = useState<string>("");
   const [exportEndDate, setExportEndDate] = useState<string>("");
-  const [bookmakers, setBookmakers] = useState<BookmakerStats[]>([]);
-  const [balanceAdjustments, setBalanceAdjustments] = useState<BalanceAdjustment[]>([]);
   const [bets, setBets] = useState<TrackedBetRecord[]>([]);
   const [selectedStatus, setSelectedStatus] = useState<"all" | TrackedBetStatus>("all");
-  const [selectedBookmakerId, setSelectedBookmakerId] = useState<string>("all");
   const [quickDateFilter, setQuickDateFilter] = useState<"all" | "today">("all");
   const [minScore, setMinScore] = useState<string>("");
   const [sortMode, setSortMode] = useState<"dateDesc" | "dateAsc" | "modelDesc" | "modelAsc" | "plDesc" | "plAsc">("dateDesc");
-  const [timelineBookmakerId, setTimelineBookmakerId] = useState<string>("all");
-  const [unitSizeInput, setUnitSizeInput] = useState<string>("2");
   const [message, setMessage] = useState<string | null>(null);
   const [showQuickAdd, setShowQuickAdd] = useState(false);
-  const [quickAddBookmakerId, setQuickAddBookmakerId] = useState("");
   const [quickAddStake, setQuickAddStake] = useState("");
   const [quickAddOddsTaken, setQuickAddOddsTaken] = useState("");
-  const [quickAddReturnInput, setQuickAddReturnInput] = useState("");
-  const [quickAddLastEdited, setQuickAddLastEdited] = useState<"odds" | "return" | "stake" | "">("");
   const [quickAddStatus, setQuickAddStatus] = useState<TrackedBetStatus>("pending");
   const [quickAddNotes, setQuickAddNotes] = useState("");
   const [quickAddSelections, setQuickAddSelections] = useState<QuickAddSelectionDraft[]>([createSelectionDraft()]);
@@ -536,19 +506,8 @@ export function BetTrackerPage() {
   const [debugSyncSource, setDebugSyncSource] = useState<string>("local-fallback");
   const quickAddTriggerRef = useRef<HTMLButtonElement | null>(null);
   const quickAddModalRef = useRef<HTMLDivElement | null>(null);
-  const quickAddBookmakerRef = useRef<HTMLSelectElement | null>(null);
-
-  const [adjustModalOpen, setAdjustModalOpen] = useState(false);
-  const [adjustBookmakerId, setAdjustBookmakerId] = useState<string | null>(null);
-  const [adjustType, setAdjustType] = useState<BalanceAdjustmentType>("deposit");
-  const [adjustAmount, setAdjustAmount] = useState<string>("");
-  const [adjustNote, setAdjustNote] = useState<string>("");
-  const [adjustError, setAdjustError] = useState<string | null>(null);
-  const adjustAmountRef = useRef<HTMLInputElement | null>(null);
 
   const refresh = useCallback(() => {
-    setBookmakers(getAllBookmakerStats());
-    setBalanceAdjustments(getBalanceAdjustments());
     setBets(getTrackedBets());
     if (import.meta.env.DEV) {
       const dbg = getTrackedBetsDebugState();
@@ -600,32 +559,13 @@ export function BetTrackerPage() {
     return () => window.clearTimeout(t);
   }, [toast]);
 
-  useEffect(() => {
-    if (!adjustModalOpen) return;
-    adjustAmountRef.current?.focus();
-  }, [adjustModalOpen]);
-  useEffect(() => {
-    setUnitSizeInput(getUnitSize().toString());
-  }, []);
-
-  const currentUnitSize = useMemo(() => {
-    const n = Number(unitSizeInput);
-    return Number.isFinite(n) && n > 0 ? n : getUnitSize();
-  }, [unitSizeInput]);
   const quickAddStakeValue = Number(quickAddStake);
   const quickAddOddsValue = Number(quickAddOddsTaken);
   const quickAddReturnValue =
     Number.isFinite(quickAddStakeValue) && Number.isFinite(quickAddOddsValue) ? Math.max(0, quickAddStakeValue * quickAddOddsValue) : 0;
-  const quickAddStakeUnits =
-    Number.isFinite(quickAddStakeValue) && currentUnitSize > 0 ? Math.max(0, quickAddStakeValue / currentUnitSize) : 0;
-  const quickAddReturnUnits =
-    Number.isFinite(quickAddReturnValue) && currentUnitSize > 0 ? Math.max(0, quickAddReturnValue / currentUnitSize) : 0;
 
-  const global = useMemo(() => getTrackedBetStats(), [bookmakers, bets]);
-  const timelinePoints = useMemo(
-    () => getBankrollTimeline(timelineBookmakerId === "all" ? undefined : timelineBookmakerId),
-    [bets, bookmakers, timelineBookmakerId]
-  );
+  const global = useMemo(() => getTrackedBetStats(), [bets]);
+  const timelinePoints = useMemo(() => getBankrollTimeline(), [bets]);
   const scoreBands = useMemo<ScoreBandAnalysisRow[]>(() => getScoreBandAnalysis(), [bets]);
   const settledBets = useMemo(() => bets.filter((b) => b.status !== "pending"), [bets]);
   const duplicateBetIds = useMemo(() => {
@@ -649,8 +589,11 @@ export function BetTrackerPage() {
     return duplicates;
   }, [bets]);
   const totals = useMemo(() => {
-    const totalStaked = settledBets.reduce((sum, b) => sum + b.stake, 0);
-    const totalReturned = settledBets.reduce((sum, b) => sum + (b.status === "win" || b.status === "cashed_out" ? b.returnAmount : 0), 0);
+    const totalStaked = settledBets.reduce((sum, b) => sum + getBetStakeUnits(b), 0);
+    const totalReturned = settledBets.reduce(
+      (sum, b) => sum + (b.status === "win" || b.status === "cashed_out" ? getBetReturnUnits(b) : 0),
+      0
+    );
     const totalProfit = totalReturned - totalStaked;
     const roi = totalStaked > 0 ? totalProfit / totalStaked : 0;
     return { totalStaked, totalReturned, totalProfit, roi };
@@ -661,43 +604,29 @@ export function BetTrackerPage() {
     const startMs = exportRangeStartMs;
     const endMs = exportRangeEndMs;
     return settledBets.filter((b) => {
-      if (timelineBookmakerId !== "all" && b.bookmakerId !== timelineBookmakerId) return false;
       const ts = Date.parse(b.updatedAt || b.createdAt);
       if (!Number.isFinite(ts)) return false;
       if (startMs != null && ts < startMs) return false;
       if (endMs != null && ts > endMs) return false;
       return true;
     });
-  }, [exportRangeEndMs, exportRangeStartMs, settledBets, timelineBookmakerId]);
+  }, [exportRangeEndMs, exportRangeStartMs, settledBets]);
   const exportRangeProfit = useMemo(() => exportRangeBets.reduce((sum, b) => sum + getBetProfit(b), 0), [exportRangeBets]);
-  const exportRangeUnits = useMemo(() => (currentUnitSize > 0 ? exportRangeProfit / currentUnitSize : 0), [currentUnitSize, exportRangeProfit]);
+  const exportRangeUnits = useMemo(() => exportRangeProfit, [exportRangeProfit]);
   const exportRangePoints = useMemo(
     () =>
       buildRangeTimeline({
-        bookmakers,
         bets,
-        adjustments: balanceAdjustments,
-        bookmakerId: timelineBookmakerId,
         startMs: exportRangeStartMs,
         endMs: exportRangeEndMs,
       }),
-    [balanceAdjustments, bets, bookmakers, exportRangeEndMs, exportRangeStartMs, timelineBookmakerId]
+    [bets, exportRangeEndMs, exportRangeStartMs]
   );
   const exportRangeLabel = useMemo(
     () => formatRangeLabel(exportStartDate, exportEndDate),
     [exportStartDate, exportEndDate]
   );
   const exportRangeTitle = useMemo(() => "Bet Tracker Snapshot", []);
-  const bookmakerPerformance = useMemo(() => {
-    return bookmakers
-      .map((b) => ({
-        name: b.bookmakerName,
-        bets: b.settledCount,
-        profit: b.realizedProfit,
-        roi: b.roi,
-      }))
-      .sort((a, b) => b.profit - a.profit);
-  }, [bookmakers]);
   const oddsRangePerformance = useMemo(() => {
     const ranges = [
       { label: "1.0-2.0", min: 1, max: 2 },
@@ -784,21 +713,6 @@ export function BetTrackerPage() {
     const worst = [...nonEmpty].sort((a, b) => a.profit - b.profit)[0]!.label;
     return { best, worst };
   }, [scoreBands]);
-  const availableBookmakers = useMemo(() => getBookmakers(), [bookmakers]);
-  const adjustmentsByBookmakerId = useMemo(() => {
-    const m = new Map<string, BalanceAdjustment[]>();
-    for (const adj of balanceAdjustments) {
-      const arr = m.get(adj.bookmakerId);
-      if (arr) arr.push(adj);
-      else m.set(adj.bookmakerId, [adj]);
-    }
-    return m;
-  }, [balanceAdjustments]);
-
-  const getAdjustmentsForBookmaker = useCallback(
-    (bookmakerId: string) => adjustmentsByBookmakerId.get(bookmakerId) ?? [],
-    [adjustmentsByBookmakerId]
-  );
   const filteredAndSortedBets = useMemo(() => {
     const parsedMinScore = minScore.trim() === "" ? null : Number(minScore);
     const hasMinScore = parsedMinScore != null && Number.isFinite(parsedMinScore);
@@ -817,7 +731,6 @@ export function BetTrackerPage() {
       })
       .filter(({ b, normalizedScore }) => {
         if (selectedStatus !== "all" && b.status !== selectedStatus) return false;
-        if (selectedBookmakerId !== "all" && b.bookmakerId !== selectedBookmakerId) return false;
         if (quickDateFilter === "today") {
           const ts = Date.parse(b.createdAt);
           if (!Number.isFinite(ts) || ts < todayStart) return false;
@@ -852,7 +765,7 @@ export function BetTrackerPage() {
     });
 
     return withDerived;
-  }, [bets, minScore, selectedBookmakerId, selectedStatus, sortMode, quickDateFilter]);
+  }, [bets, minScore, selectedStatus, sortMode, quickDateFilter]);
 
   useEffect(() => {
     if (!import.meta.env.DEV) return;
@@ -862,77 +775,11 @@ export function BetTrackerPage() {
       hiddenByFilters: Math.max(0, bets.length - filteredAndSortedBets.length),
       filters: {
         status: selectedStatus,
-        bookmakerId: selectedBookmakerId,
         minScore: minScore.trim() === "" ? null : minScore,
         sortMode,
       },
     });
-  }, [bets.length, filteredAndSortedBets.length, minScore, selectedBookmakerId, selectedStatus, sortMode]);
-
-  const onAddBookmaker = useCallback(() => {
-    const n = name.trim();
-    const balance = Number(startingBalance);
-    if (!n) {
-      setError("Enter bookmaker name.");
-      return;
-    }
-    if (!Number.isFinite(balance) || balance < 0) {
-      setError("Enter a valid starting balance.");
-      return;
-    }
-    const created = addBookmaker(n, balance);
-    if (!created) {
-      setError("Bookmaker could not be added (name may already exist).");
-      return;
-    }
-    setName("");
-    setStartingBalance("");
-    setError(null);
-    refresh();
-  }, [name, startingBalance, refresh]);
-
-  const openAdjustBalance = useCallback((bookmakerId: string) => {
-    setAdjustBookmakerId(bookmakerId);
-    setAdjustType("deposit");
-    setAdjustAmount("");
-    setAdjustNote("");
-    setAdjustError(null);
-    setAdjustModalOpen(true);
-  }, []);
-
-  const closeAdjustBalance = useCallback(() => {
-    setAdjustModalOpen(false);
-    setAdjustBookmakerId(null);
-    setAdjustAmount("");
-    setAdjustNote("");
-    setAdjustError(null);
-  }, []);
-
-  const onConfirmAdjustBalance = useCallback(() => {
-    if (!adjustBookmakerId) return;
-    const n = Number(adjustAmount);
-    if (!Number.isFinite(n)) {
-      setAdjustError("Enter a valid adjustment amount.");
-      return;
-    }
-    const rounded = Math.round((n + Number.EPSILON) * 100) / 100;
-    if (rounded === 0) {
-      setAdjustError("Amount must not be 0.");
-      return;
-    }
-    const created = adjustBalance(adjustBookmakerId, {
-      amount: n,
-      type: adjustType,
-      note: adjustNote.trim() || undefined,
-    });
-    if (!created) {
-      setAdjustError("Adjustment could not be saved. Check the input and try again.");
-      return;
-    }
-    closeAdjustBalance();
-    refresh();
-    setMessage(`Balance adjusted: ${fmtAdjustmentLine(created)}`);
-  }, [adjustBookmakerId, adjustAmount, adjustType, adjustNote, closeAdjustBalance, refresh]);
+  }, [bets.length, filteredAndSortedBets.length, minScore, selectedStatus, sortMode]);
 
   const onStatusChange = useCallback(async (id: string, status: TrackedBetStatus) => {
     const updated = await updateTrackedBetStatusShared(id, status);
@@ -1057,7 +904,7 @@ export function BetTrackerPage() {
       return;
     }
     onCloseCashOut(bet.id);
-    setToast({ id: Date.now(), text: `Bet cashed out for ${toMoneyString(amount)}` });
+    setToast({ id: Date.now(), text: `Bet cashed out for ${toUnitsString(amount)}` });
     if (import.meta.env.DEV) {
       console.log("[cash-out-ui] confirmed", { betId: bet.id, amount });
     }
@@ -1072,7 +919,7 @@ export function BetTrackerPage() {
       return;
     }
     if (amount > bet.returnAmount) {
-      setCashOutErrors((prev) => ({ ...prev, [bet.id]: `Cannot exceed potential return (${toMoneyString(bet.returnAmount)}).` }));
+      setCashOutErrors((prev) => ({ ...prev, [bet.id]: `Cannot exceed potential return (${toUnitsString(bet.returnAmount)}).` }));
       return;
     }
     setCashOutConfirmIds((prev) => new Set(prev).add(bet.id));
@@ -1087,11 +934,8 @@ export function BetTrackerPage() {
   }, []);
 
   const resetQuickAdd = useCallback(() => {
-    setQuickAddBookmakerId("");
     setQuickAddStake("");
     setQuickAddOddsTaken("");
-    setQuickAddReturnInput("");
-    setQuickAddLastEdited("");
     setQuickAddStatus("pending");
     setQuickAddNotes("");
     setQuickAddSelections([createSelectionDraft()]);
@@ -1183,7 +1027,6 @@ export function BetTrackerPage() {
       Array.from(modal.querySelectorAll<HTMLElement>(focusSelector)).filter((el) => !el.hasAttribute("disabled"));
 
     // Move initial focus into the modal for keyboard users.
-    quickAddBookmakerRef.current?.focus();
     if (document.activeElement == null || !modal.contains(document.activeElement)) {
       const first = getFocusable()[0];
       first?.focus();
@@ -1293,7 +1136,6 @@ export function BetTrackerPage() {
         }
       }
       setQuickAddErrors({
-        bookmakerId: expl.bookmakerId,
         stake: expl.stake,
         oddsTaken: expl.oddsTaken,
         selections: expl.selections,
@@ -1314,7 +1156,6 @@ export function BetTrackerPage() {
 
   const onSaveQuickAdd = useCallback(async () => {
     const nextErrors: QuickAddErrors = {};
-    if (!quickAddBookmakerId) nextErrors.bookmakerId = "Select a bookmaker.";
     const stake = Number(quickAddStake);
     if (!Number.isFinite(stake) || stake <= 0) nextErrors.stake = "Stake must be greater than 0.";
     const oddsTaken = Number(quickAddOddsTaken);
@@ -1349,7 +1190,6 @@ export function BetTrackerPage() {
     }
 
     const savePayload = {
-      bookmakerId: quickAddBookmakerId,
       stake,
       oddsTaken,
       status: quickAddStatus,
@@ -1359,7 +1199,6 @@ export function BetTrackerPage() {
     const matchLabels = new Set(mappedSelections.map((s) => normalizeDuplicateText(s.matchLabel)).filter(Boolean));
     const matchLabel = matchLabels.size === 1 ? mappedSelections[0]?.matchLabel : undefined;
     const duplicate = findDuplicateTrackedBet({
-      bookmakerId: quickAddBookmakerId,
       matchLabel,
       legs: mappedSelections.map((s) => ({
         marketName: s.marketName,
@@ -1378,7 +1217,6 @@ export function BetTrackerPage() {
     await performQuickAddSave(savePayload);
   }, [
     performQuickAddSave,
-    quickAddBookmakerId,
     quickAddStake,
     quickAddOddsTaken,
     quickAddSelections,
@@ -1425,7 +1263,6 @@ export function BetTrackerPage() {
         points: exportRangePoints,
         title: exportRangeTitle,
         rangeLabel: exportRangeLabel,
-        profitMoney: exportRangeProfit,
         profitUnits: exportRangeUnits,
       });
       const safeLabel = exportRangeLabel.replace(/[^a-z0-9]+/gi, "-").replace(/(^-|-$)/g, "") || "all-time";
@@ -1466,29 +1303,25 @@ export function BetTrackerPage() {
       };
       img.src = url;
     },
-    [exportRangeLabel, exportRangePoints, exportRangeProfit, exportRangeTitle, exportRangeUnits]
+    [exportRangeLabel, exportRangePoints, exportRangeTitle, exportRangeUnits]
   );
 
   const onExportCsv = useCallback(() => {
     const rows: string[][] = [];
     rows.push(["Range", exportRangeLabel]);
-    rows.push(["Profit", exportRangeProfit.toFixed(2)]);
-    rows.push(["Profit Units", exportRangeUnits.toFixed(2)]);
+    rows.push(["Profit (units)", exportRangeUnits.toFixed(2)]);
     rows.push([]);
-    rows.push(["Date", "Match", "Status", "Stake", "Return", "Profit", "Odds", "Units", "Bookmaker"]);
+    rows.push(["Date", "Match", "Status", "Stake (u)", "Return (u)", "Profit (u)", "Odds"]);
     for (const bet of exportRangeBets) {
       const profit = getBetProfit(bet);
-      const units = currentUnitSize > 0 ? profit / currentUnitSize : 0;
       rows.push([
         bet.updatedAt || bet.createdAt,
         bet.matchLabel,
         getStatusLabel(bet.status),
-        bet.stake.toFixed(2),
-        bet.returnAmount.toFixed(2),
+        getBetStakeUnits(bet).toFixed(2),
+        getBetReturnUnits(bet).toFixed(2),
         profit.toFixed(2),
         bet.oddsTaken.toFixed(2),
-        units.toFixed(2),
-        bet.bookmakerName,
       ]);
     }
     const csv = rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
@@ -1501,7 +1334,7 @@ export function BetTrackerPage() {
     link.download = `${fileBase}.csv`;
     link.click();
     URL.revokeObjectURL(url);
-  }, [currentUnitSize, exportRangeBets, exportRangeLabel, exportRangeProfit, exportRangeUnits]);
+  }, [exportRangeBets, exportRangeLabel, exportRangeUnits]);
 
   return (
     <div className="bet-tracker-page">
@@ -1515,17 +1348,6 @@ export function BetTrackerPage() {
       <section className="bet-tracker-page__section">
         <h2>Performance</h2>
         <div className="bet-tracker-page__performance-controls">
-          <label>
-            Bankroll View
-            <select value={timelineBookmakerId} onChange={(e) => setTimelineBookmakerId(e.target.value)}>
-              <option value="all">All bookmakers</option>
-              {bookmakers.map((bk) => (
-                <option key={bk.bookmakerId} value={bk.bookmakerId}>
-                  {bk.bookmakerName}
-                </option>
-              ))}
-            </select>
-          </label>
           <label>
             Export start
             <input
@@ -1556,12 +1378,6 @@ export function BetTrackerPage() {
             </div>
           </div>
           <div className="bet-tracker-page__export-stats">
-            <div>
-              <span>P/L</span>
-              <strong className={exportRangeProfit >= 0 ? "bet-tracker-page__pl is-profit" : "bet-tracker-page__pl is-loss"}>
-                {fmtSignedMoney(exportRangeProfit)}
-              </strong>
-            </div>
             <div>
               <span>P/L (units)</span>
               <strong className={exportRangeUnits >= 0 ? "bet-tracker-page__pl is-profit" : "bet-tracker-page__pl is-loss"}>
@@ -1598,7 +1414,7 @@ export function BetTrackerPage() {
                   <th>Wins</th>
                   <th>Losses</th>
                   <th>Win %</th>
-                  <th>Profit</th>
+                  <th>Profit (u)</th>
                 </tr>
               </thead>
               <tbody>
@@ -1623,7 +1439,7 @@ export function BetTrackerPage() {
                     <td>{row.losses}</td>
                     <td>{row.total > 0 ? `${(row.winRate * 100).toFixed(1)}%` : "—"}</td>
                     <td className={row.profit > 0 ? "bet-tracker-page__pl is-profit" : row.profit < 0 ? "bet-tracker-page__pl is-loss" : "bet-tracker-page__pl is-pending"}>
-                      {fmtSignedMoney(row.profit)}
+                      {fmtSignedUnits(row.profit)}
                     </td>
                   </tr>
                 ))}
@@ -1637,10 +1453,10 @@ export function BetTrackerPage() {
         <div className="bet-tracker-page__summary-card"><span>Total Bets</span><strong>{global.totalBets}</strong></div>
         <div className="bet-tracker-page__summary-card"><span>Settled</span><strong>{global.settledBets}</strong></div>
         <div className="bet-tracker-page__summary-card"><span>Pending</span><strong>{global.pendingBets}</strong></div>
-        <div className="bet-tracker-page__summary-card"><span>Total Profit</span><strong>{fmtMoney(global.totalProfit)}</strong></div>
+        <div className="bet-tracker-page__summary-card"><span>Total Profit</span><strong>{fmtUnits(global.totalProfit)}</strong></div>
         <div className="bet-tracker-page__summary-card"><span>ROI</span><strong>{(global.roi * 100).toFixed(1)}%</strong></div>
-        <div className="bet-tracker-page__summary-card"><span>Total Staked</span><strong>£{fmtMoney(totals.totalStaked)}</strong></div>
-        <div className="bet-tracker-page__summary-card"><span>Total Returned</span><strong>£{fmtMoney(totals.totalReturned)}</strong></div>
+        <div className="bet-tracker-page__summary-card"><span>Total Staked</span><strong>{fmtUnits(totals.totalStaked)}</strong></div>
+        <div className="bet-tracker-page__summary-card"><span>Total Returned</span><strong>{fmtUnits(totals.totalReturned)}</strong></div>
         <div className="bet-tracker-page__summary-card"><span>Real ROI</span><strong>{(totals.roi * 100).toFixed(1)}%</strong></div>
       </section>
 
@@ -1648,26 +1464,13 @@ export function BetTrackerPage() {
         <h2>Insights</h2>
         <div className="bet-tracker-page__insights-grid">
           <article className="bet-tracker-page__insight-card">
-            <h3>Performance by Bookmaker</h3>
-            <ul>
-              {bookmakerPerformance.map((row) => (
-                <li key={row.name}>
-                  <span>{row.name} ({row.bets})</span>
-                  <strong className={row.profit >= 0 ? "bet-tracker-page__pl is-profit" : "bet-tracker-page__pl is-loss"}>
-                    {fmtSignedMoney(row.profit)} ({(row.roi * 100).toFixed(1)}%)
-                  </strong>
-                </li>
-              ))}
-            </ul>
-          </article>
-          <article className="bet-tracker-page__insight-card">
             <h3>Performance by Odds Range</h3>
             <ul>
               {oddsRangePerformance.map((row) => (
                 <li key={row.label}>
                   <span>{row.label} ({row.bets})</span>
                   <strong className={row.profit >= 0 ? "bet-tracker-page__pl is-profit" : "bet-tracker-page__pl is-loss"}>
-                    {fmtSignedMoney(row.profit)} • {(row.winRate * 100).toFixed(1)}%
+                    {fmtSignedUnits(row.profit)} • {(row.winRate * 100).toFixed(1)}%
                   </strong>
                 </li>
               ))}
@@ -1684,16 +1487,16 @@ export function BetTrackerPage() {
           <article className="bet-tracker-page__insight-card">
             <h3>Best / Worst Bets</h3>
             <ul>
-              <li><span>Highest profit</span><strong>{bestWorst.best ? `${bestWorst.best.matchLabel} (${fmtSignedMoney(bestWorst.best.returnAmount - bestWorst.best.stake)})` : "—"}</strong></li>
-              <li><span>Biggest loss</span><strong>{bestWorst.worst ? `${bestWorst.worst.matchLabel} (${fmtSignedMoney(getBetProfit(bestWorst.worst))})` : "—"}</strong></li>
+              <li><span>Highest profit</span><strong>{bestWorst.best ? `${bestWorst.best.matchLabel} (${fmtSignedUnits(getBetProfit(bestWorst.best))})` : "—"}</strong></li>
+              <li><span>Biggest loss</span><strong>{bestWorst.worst ? `${bestWorst.worst.matchLabel} (${fmtSignedUnits(getBetProfit(bestWorst.worst))})` : "—"}</strong></li>
               <li><span>Highest odds win</span><strong>{bestWorst.highestOddsWin ? `${bestWorst.highestOddsWin.matchLabel} (${bestWorst.highestOddsWin.oddsTaken.toFixed(2)})` : "—"}</strong></li>
             </ul>
           </article>
           <article className="bet-tracker-page__insight-card">
             <h3>Recent Performance</h3>
             <ul>
-              <li><span>Last 5</span><strong>{fmtSignedMoney(recentPerformance.last5.profit)} • {(recentPerformance.last5.winRate * 100).toFixed(1)}%</strong></li>
-              <li><span>Last 10</span><strong>{fmtSignedMoney(recentPerformance.last10.profit)} • {(recentPerformance.last10.winRate * 100).toFixed(1)}%</strong></li>
+              <li><span>Last 5</span><strong>{fmtSignedUnits(recentPerformance.last5.profit)} • {(recentPerformance.last5.winRate * 100).toFixed(1)}%</strong></li>
+              <li><span>Last 10</span><strong>{fmtSignedUnits(recentPerformance.last10.profit)} • {(recentPerformance.last10.winRate * 100).toFixed(1)}%</strong></li>
             </ul>
           </article>
         </div>
@@ -1748,82 +1551,6 @@ export function BetTrackerPage() {
         ) : null}
       </section>
 
-      <section className="bet-tracker-page__section">
-        <h2>Bookmakers</h2>
-        <div className="bet-tracker-page__bookmaker-form">
-          <input
-            type="text"
-            placeholder="Bookmaker name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-          />
-          <input
-            type="number"
-            min={0}
-            step={0.01}
-            placeholder="Starting balance"
-            value={startingBalance}
-            onChange={(e) => setStartingBalance(e.target.value)}
-          />
-          <button type="button" onClick={onAddBookmaker}>Add bookmaker</button>
-        </div>
-        {error && <p className="bet-tracker-page__error">{error}</p>}
-
-        {bookmakers.length === 0 ? (
-          <p className="bet-tracker-page__empty">No bookmakers yet. Add one to start tracking placed bets.</p>
-        ) : (
-          <div className="bet-tracker-page__bookmaker-cards">
-            {bookmakers.map((b) => (
-              <article key={b.bookmakerId} className="bet-tracker-page__bookmaker-card">
-                <h3>{b.bookmakerName}</h3>
-                <p className="bet-tracker-page__bookmaker-balance-flow">
-                  Available: <strong className="bet-tracker-page__bookmaker-current-balance">£{fmtMoney(b.availableBalance)}</strong>
-                </p>
-                <p className="bet-tracker-page__bookmaker-current">Current Balance: £{fmtMoney(b.currentBalance)}</p>
-                <p className="bet-tracker-page__bookmaker-pending">Pending: -£{fmtMoney(b.pendingStake)}</p>
-                <p className={`bet-tracker-page__bookmaker-pl ${b.realizedProfit > 0 ? "is-profit" : b.realizedProfit < 0 ? "is-loss" : "is-neutral"}`}>
-                  {fmtSignedMoney(b.realizedProfit)}
-                </p>
-                <p className="bet-tracker-page__bookmaker-roi">Units: {b.totalUnitsProfit > 0 ? "+" : ""}{b.totalUnitsProfit.toFixed(2)}u</p>
-                <p className="bet-tracker-page__bookmaker-roi">ROI: {(b.roi * 100).toFixed(1)}%</p>
-                <p className="bet-tracker-page__bookmaker-potential">
-                  Potential Profit:{" "}
-                  <span className={b.potentialProfit > 0 ? "profit-positive" : b.potentialProfit < 0 ? "profit-negative" : "profit-neutral"}>
-                    {fmtSignedMoney(b.potentialProfit)}
-                  </span>
-                </p>
-                <p className="bet-tracker-page__bookmaker-potential-balance">
-                  Potential Balance: £{fmtMoney(b.potentialBalance)}
-                </p>
-                <p>Bets: {b.betCount} (settled {b.settledCount}, pending {b.pendingCount})</p>
-                <button
-                  type="button"
-                  className="bet-tracker-page__adjust-balance-btn"
-                  onClick={() => openAdjustBalance(b.bookmakerId)}
-                >
-                  Adjust Balance
-                </button>
-                <details className="bet-tracker-page__adjustments-details">
-                  <summary>Balance adjustments ({getAdjustmentsForBookmaker(b.bookmakerId).length})</summary>
-                  {getAdjustmentsForBookmaker(b.bookmakerId).length === 0 ? (
-                    <p className="bet-tracker-page__adjustments-empty">No adjustments yet.</p>
-                  ) : (
-                    <div className="bet-tracker-page__adjustments-list">
-                      {getAdjustmentsForBookmaker(b.bookmakerId).map((a) => (
-                        <div key={a.id} className="bet-tracker-page__adjustment-row">
-                          <span className="bet-tracker-page__adjustment-line">{fmtAdjustmentLine(a)}</span>
-                          {a.note ? <span className="bet-tracker-page__adjustment-note"> — {a.note}</span> : null}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </details>
-              </article>
-            ))}
-          </div>
-        )}
-      </section>
-
       <section className="bet-tracker-page__section" id="bet-tracker-all-bets">
         <h2>All Bets</h2>
         <div className="bet-tracker-page__filters">
@@ -1835,17 +1562,6 @@ export function BetTrackerPage() {
               <option value="win">Win</option>
               <option value="loss">Loss</option>
               <option value="cashed_out">Cashed out</option>
-            </select>
-          </label>
-          <label>
-            Bookmaker
-            <select value={selectedBookmakerId} onChange={(e) => setSelectedBookmakerId(e.target.value)}>
-              <option value="all">All</option>
-              {bookmakers.map((bk) => (
-                <option key={bk.bookmakerId} value={bk.bookmakerId}>
-                  {bk.bookmakerName}
-                </option>
-              ))}
             </select>
           </label>
           <label>
@@ -1870,20 +1586,6 @@ export function BetTrackerPage() {
               <option value="plDesc">P/L (high-low)</option>
               <option value="plAsc">P/L (low-high)</option>
             </select>
-          </label>
-          <label>
-            Unit Size (£)
-            <input
-              type="number"
-              min={0.01}
-              step={0.01}
-              value={unitSizeInput}
-              onChange={(e) => {
-                setUnitSizeInput(e.target.value);
-                const v = Number(e.target.value);
-                if (Number.isFinite(v) && v > 0) setUnitSize(v);
-              }}
-            />
           </label>
         </div>
         {message && <p className="bet-tracker-page__message">{message}</p>}
@@ -1948,20 +1650,8 @@ export function BetTrackerPage() {
               const cashOutAmount = b.cashOutAmount ?? b.returnAmount;
               const cashOutInputValue = Number(cashOutInput);
               const hasCashOutInput = Number.isFinite(cashOutInputValue) && cashOutInputValue > 0;
-              const cashOutProfit = hasCashOutInput ? cashOutInputValue - b.stake : 0;
+              const cashOutProfit = hasCashOutInput ? cashOutInputValue - getBetStakeUnits(b) : 0;
 
-                  const canonicalUnitSize =
-                    Number.isFinite(b.unitSizeAtBet as number) && (b.unitSizeAtBet as number) > 0
-                      ? (b.unitSizeAtBet as number)
-                      : (b.stake > 0 && Number.isFinite(b.stakeUnits as number) && (b.stakeUnits as number) > 0)
-                        ? b.stake / (b.stakeUnits as number)
-                        : null;
-                  const displayReturnUnits =
-                    Number.isFinite(b.returnUnits as number)
-                      ? (b.returnUnits as number)
-                      : canonicalUnitSize && canonicalUnitSize > 0
-                        ? b.returnAmount / canonicalUnitSize
-                        : null;
                   return (
                     <article
                       key={b.id}
@@ -1981,7 +1671,7 @@ export function BetTrackerPage() {
                           <h3 className="bet-tracker-page__bet-match">
                             {b.matchLabel}
                             <span className="bet-tracker-page__bet-meta-inline">
-                              {b.bookmakerName} · {fmtRelativeDate(b.createdAt)}
+                              {fmtRelativeDate(b.createdAt)}
                             </span>
                           </h3>
                           {isExpanded && b.sourceType === "manualMulti" && <span className="bet-tracker-page__source-tag">Custom Multi</span>}
@@ -1993,12 +1683,12 @@ export function BetTrackerPage() {
                           </span>
                           <span className="bet-tracker-page__metric-stack">
                             <span className="bet-tracker-page__metric-label">STAKE</span>
-                            <span className="bet-tracker-page__inline-value">£{fmtMoney(b.stake)}</span>
+                            <span className="bet-tracker-page__inline-value">{fmtUnits(getBetStakeUnits(b))}</span>
                           </span>
                           <span className="bet-tracker-page__metric-stack" title="Profit / Loss">
                             <span className="bet-tracker-page__metric-label">P/L</span>
                             <span className={`bet-tracker-page__inline-value bet-tracker-page__inline-value--pl ${pl > 0 ? "bet-tracker-page__pl is-profit" : pl < 0 ? "bet-tracker-page__pl is-loss" : "bet-tracker-page__pl is-pending"}`}>
-                              {fmtSignedMoney(pl)}
+                              {fmtSignedUnits(pl)}
                             </span>
                           </span>
                           <button
@@ -2059,7 +1749,7 @@ export function BetTrackerPage() {
                           </span>
                         )}{isExpanded && (
                           <span className="bet-tracker-page__bet-badge">
-                            Return £{fmtMoney(b.returnAmount)}{displayReturnUnits != null ? ` (${displayReturnUnits.toFixed(2)}u)` : ""}
+                            Return {fmtUnits(getBetReturnUnits(b))}
                           </span>
                         )}{b.status === "cashed_out" && (
                           <span className="bet-tracker-page__bet-badge bet-tracker-page__bet-badge--cashout">
@@ -2067,11 +1757,11 @@ export function BetTrackerPage() {
                           </span>
                         )}{b.status === "cashed_out" && (
                           <span className="bet-tracker-page__bet-badge bet-tracker-page__bet-badge--cashout">
-                            Cashed Out: £{fmtMoney(cashOutAmount)}
+                            Cashed Out: {fmtUnits(cashOutAmount)}
                           </span>
                         )}{b.status === "cashed_out" && (
                           <span className="bet-tracker-page__bet-badge bet-tracker-page__bet-badge--cashout">
-                            Profit: {fmtSignedMoney(getBetProfit(b))}
+                            Profit: {fmtSignedUnits(getBetProfit(b))}
                           </span>
                         )}{duplicateBetIds.has(b.id) && (
                           <span className="bet-tracker-page__bet-badge bet-tracker-page__bet-badge--duplicate">
@@ -2124,7 +1814,7 @@ export function BetTrackerPage() {
                           aria-label="Cash out bet"
                         >
                           <label>
-                            Cash out amount (£)
+                            Cash out amount (units)
                             <input
                               type="number"
                               min={0.01}
@@ -2152,7 +1842,7 @@ export function BetTrackerPage() {
                           </label>
                           {hasCashOutInput && (
                             <div className="bet-tracker-page__cashout-preview">
-                              {cashOutProfit >= 0 ? "Profit" : "Loss"}: {fmtSignedMoney(cashOutProfit)}
+                              {cashOutProfit >= 0 ? "Profit" : "Loss"}: {fmtSignedUnits(cashOutProfit)}
                             </div>
                           )}
                           {cashOutError && <span className="bet-tracker-page__error-inline">{cashOutError}</span>}
@@ -2160,7 +1850,7 @@ export function BetTrackerPage() {
                             <div className="bet-tracker-page__cashout-confirm">
                               <p>
                                 Are you sure you want to cash out this bet for{" "}
-                                <strong>{hasCashOutInput ? toMoneyString(cashOutInputValue) : "£0.00"}</strong>?
+                                <strong>{hasCashOutInput ? toUnitsString(cashOutInputValue) : "0.00u"}</strong>?
                               </p>
                               <div className="bet-tracker-page__cashout-actions">
                                 <button
@@ -2213,19 +1903,7 @@ export function BetTrackerPage() {
             </div>
             <div className="bet-tracker-page__quick-add-grid">
               <label>
-                Bookmaker
-                <select ref={quickAddBookmakerRef} value={quickAddBookmakerId} onChange={(e) => setQuickAddBookmakerId(e.target.value)}>
-                  <option value="">Select bookmaker</option>
-                  {availableBookmakers.map((bk) => (
-                    <option key={bk.id} value={bk.id}>
-                      {bk.name}
-                    </option>
-                  ))}
-                </select>
-                {quickAddErrors.bookmakerId && <span className="bet-tracker-page__error-inline">{quickAddErrors.bookmakerId}</span>}
-              </label>
-              <label>
-                Stake (GBP)
+                Stake (units)
                 <input
                   type="number"
                   min={0.01}
@@ -2234,19 +1912,6 @@ export function BetTrackerPage() {
                   onChange={(e) => {
                     const nextStake = e.target.value;
                     setQuickAddStake(nextStake);
-                    const stakeVal = Number(nextStake);
-                    if (quickAddLastEdited === "return") {
-                      const returnVal = Number(quickAddReturnInput);
-                      if (Number.isFinite(stakeVal) && stakeVal > 0 && Number.isFinite(returnVal) && returnVal > 0) {
-                        setQuickAddOddsTaken((returnVal / stakeVal).toFixed(2));
-                      }
-                    } else {
-                      const oddsVal = Number(quickAddOddsTaken);
-                      if (Number.isFinite(stakeVal) && stakeVal > 0 && Number.isFinite(oddsVal) && oddsVal > 0) {
-                        setQuickAddReturnInput((stakeVal * oddsVal).toFixed(2));
-                      }
-                    }
-                    setQuickAddLastEdited("stake");
                   }}
                 />
                 {quickAddErrors.stake && <span className="bet-tracker-page__error-inline">{quickAddErrors.stake}</span>}
@@ -2261,34 +1926,9 @@ export function BetTrackerPage() {
                   onChange={(e) => {
                     const nextOdds = e.target.value;
                     setQuickAddOddsTaken(nextOdds);
-                    const oddsVal = Number(nextOdds);
-                    const stakeVal = Number(quickAddStake);
-                    if (Number.isFinite(stakeVal) && stakeVal > 0 && Number.isFinite(oddsVal) && oddsVal > 0) {
-                      setQuickAddReturnInput((stakeVal * oddsVal).toFixed(2));
-                    }
-                    setQuickAddLastEdited("odds");
                   }}
                 />
                 {quickAddErrors.oddsTaken && <span className="bet-tracker-page__error-inline">{quickAddErrors.oddsTaken}</span>}
-              </label>
-              <label>
-                Return (GBP)
-                <input
-                  type="number"
-                  min={0.01}
-                  step={0.01}
-                  value={quickAddReturnInput}
-                  onChange={(e) => {
-                    const nextReturn = sanitizeCashOutInput(e.target.value);
-                    setQuickAddReturnInput(nextReturn);
-                    const returnVal = Number(nextReturn);
-                    const stakeVal = Number(quickAddStake);
-                    if (Number.isFinite(stakeVal) && stakeVal > 0 && Number.isFinite(returnVal) && returnVal > 0) {
-                      setQuickAddOddsTaken((returnVal / stakeVal).toFixed(2));
-                    }
-                    setQuickAddLastEdited("return");
-                  }}
-                />
               </label>
               <label>
                 Status
@@ -2300,9 +1940,8 @@ export function BetTrackerPage() {
               </label>
             </div>
             <div className="bet-tracker-page__quick-add-derived">
-              <span>Return: <strong>£{fmtMoney(quickAddReturnValue)}</strong></span>
-              <span>Stake Units: <strong>{quickAddStakeUnits.toFixed(2)}u</strong></span>
-              <span>Return Units: <strong>{quickAddReturnUnits.toFixed(2)}u</strong></span>
+              <span>Return: <strong>{fmtUnits(quickAddReturnValue)}</strong></span>
+              <span>Stake: <strong>{fmtUnits(quickAddStakeValue || 0)}</strong></span>
             </div>
             <label className="bet-tracker-page__quick-add-notes">
               Notes (optional)
@@ -2496,7 +2135,7 @@ export function BetTrackerPage() {
                 <div className="bet-tracker-page__duplicate-warning">
                   <p className="bet-tracker-page__duplicate-title">⚠️ You already have a similar bet tracked.</p>
                   <p className="bet-tracker-page__duplicate-sub">
-                    Existing: £{fmtMoney(quickAddDuplicate.match.existingBet.stake)} @ {quickAddDuplicate.match.existingBet.oddsTaken.toFixed(2)} • {quickAddDuplicate.match.existingBet.bookmakerName}
+                    Existing: {fmtUnits(getBetStakeUnits(quickAddDuplicate.match.existingBet))} @ {quickAddDuplicate.match.existingBet.oddsTaken.toFixed(2)}
                   </p>
                   <div className="bet-tracker-page__duplicate-actions">
                     <button type="button" className="secondary" onClick={() => setQuickAddDuplicate(null)}>
@@ -2527,62 +2166,7 @@ export function BetTrackerPage() {
         </div>
       ) : null}
 
-      {adjustModalOpen && (
-        <div className="bet-tracker-page__adjust-balance-overlay" role="dialog" aria-modal="true" aria-label="Adjust Balance">
-          <div className="bet-tracker-page__adjust-balance-modal">
-            <div className="bet-tracker-page__quick-add-head">
-              <h2>Adjust Balance</h2>
-              <button type="button" onClick={closeAdjustBalance}>Close</button>
-            </div>
-
-            <div className="bet-tracker-page__quick-add-grid">
-              <label>
-                Amount (GBP)
-                <input
-                  ref={adjustAmountRef}
-                  type="number"
-                  step={0.01}
-                  value={adjustAmount}
-                  onChange={(e) => setAdjustAmount(e.target.value)}
-                />
-              </label>
-              <label>
-                Adjustment Type
-                <select value={adjustType} onChange={(e) => setAdjustType(e.target.value as BalanceAdjustmentType)}>
-                  <option value="deposit">Deposit</option>
-                  <option value="withdrawal">Withdrawal</option>
-                  <option value="correction">Correction</option>
-                </select>
-              </label>
-              <label className="bet-tracker-page__quick-add-notes">
-                Note (optional)
-                <textarea rows={2} value={adjustNote} onChange={(e) => setAdjustNote(e.target.value)} placeholder="Optional note" />
-              </label>
-            </div>
-
-            {adjustError && <p className="bet-tracker-page__error-inline">{adjustError}</p>}
-
-            <div className="bet-tracker-page__quick-add-actions">
-              <button type="button" className="secondary" onClick={closeAdjustBalance}>Cancel</button>
-              <button type="button" onClick={onConfirmAdjustBalance}>Confirm Adjustment</button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
 
-/**
- * Whether the bet tracker has at least one saved bookmaker.
- * Data source: `getBookmakers()` from `../services/betTrackerService.js` (same named export used above in this file).
- */
-export function hasAnyBookmakers(): boolean {
-  try {
-    const bookmakers = getBookmakers();
-    if (!Array.isArray(bookmakers)) return false;
-    return bookmakers.some((b) => b != null && typeof b === "object" && typeof b.id === "string" && b.id.trim() !== "");
-  } catch {
-    return false;
-  }
-}

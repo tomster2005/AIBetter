@@ -2,33 +2,15 @@ import type { BuildCombo, BuildLeg } from "../lib/valueBetBuilder.js";
 import { resolveLegsToResult } from "./comboPerformanceService.js";
 import { fetchFixtureResolutionData } from "./comboResolutionDataService.js";
 
-const BOOKMAKERS_STORAGE_KEY = "betTracker:bookmakers:v1";
 const TRACKED_BETS_STORAGE_KEY = "betTracker:trackedBets:v1";
-const BALANCE_ADJUSTMENTS_STORAGE_KEY = "betTracker:balanceAdjustments:v1";
 const UNIT_SIZE_STORAGE_KEY = "bet_tracker_unit_size";
 const TRACKED_BETS_BACKUP_KEY = "betTracker_backup";
 
+const DEFAULT_BOOKMAKER_ID = "units";
+const DEFAULT_BOOKMAKER_NAME = "Units";
+
 export type TrackedBetStatus = "pending" | "win" | "loss" | "cashed_out";
 export type TrackedBetSourceType = "valueBetBuilder" | "manualMulti";
-
-export type BalanceAdjustmentType = "deposit" | "withdrawal" | "correction";
-
-export interface BalanceAdjustment {
-  id: string;
-  bookmakerId: string;
-  amount: number;
-  type: BalanceAdjustmentType;
-  note?: string;
-  /** epoch ms */
-  createdAt: number;
-}
-
-export interface TrackedBookmaker {
-  id: string;
-  name: string;
-  startingBalance: number;
-  createdAt: string;
-}
 
 export interface TrackedBetLeg {
   legId?: string;
@@ -55,8 +37,8 @@ export interface TrackedBetRecord {
   sourceType: TrackedBetSourceType;
   createdAt: string;
   updatedAt: string;
-  bookmakerId: string;
-  bookmakerName: string;
+  bookmakerId?: string;
+  bookmakerName?: string;
   stake: number;
   unitSizeAtBet?: number;
   stakeUnits?: number;
@@ -76,23 +58,6 @@ export interface TrackedBetRecord {
     modelScore?: number;
     normalizedScore?: number;
   };
-}
-
-export interface BookmakerStats {
-  bookmakerId: string;
-  bookmakerName: string;
-  startingBalance: number;
-  currentBalance: number;
-  availableBalance: number;
-  realizedProfit: number;
-  totalUnitsProfit: number;
-  potentialProfit: number;
-  potentialBalance: number;
-  pendingStake: number;
-  betCount: number;
-  settledCount: number;
-  pendingCount: number;
-  roi: number;
 }
 
 export interface TrackedBetStats {
@@ -125,10 +90,6 @@ let lastSyncSource: "server" | "local-fallback" | "merged" = "local-fallback";
 
 let trackedBetsCache: TrackedBetRecord[] = [];
 let trackedBetsLoaded = false;
-let bookmakersCache: TrackedBookmaker[] = [];
-let bookmakersLoaded = false;
-let balanceAdjustmentsCache: BalanceAdjustment[] = [];
-let balanceAdjustmentsLoaded = false;
 let unitSizeCache: number | null = null;
 
 function canUseStorage(): boolean {
@@ -169,42 +130,6 @@ function toNumber(value: unknown, fallback = 0): number {
 function round2(n: number): number {
   if (!Number.isFinite(n)) return 0;
   return Math.round((n + Number.EPSILON) * 100) / 100;
-}
-
-function sanitizeBookmaker(value: unknown): TrackedBookmaker | null {
-  if (!value || typeof value !== "object") return null;
-  const raw = value as Partial<TrackedBookmaker>;
-  const id = normalizeText(raw.id);
-  const name = normalizeText(raw.name);
-  if (!id || !name) return null;
-  return {
-    id,
-    name,
-    startingBalance: toNumber(raw.startingBalance, 0),
-    createdAt: normalizeText(raw.createdAt) || new Date(0).toISOString(),
-  };
-}
-
-function sanitizeBalanceAdjustment(value: unknown): BalanceAdjustment | null {
-  if (!value || typeof value !== "object") return null;
-  const raw = value as Partial<BalanceAdjustment>;
-  const id = normalizeText(raw.id);
-  const bookmakerId = normalizeText(raw.bookmakerId);
-  const type = raw.type;
-  const validType = type === "deposit" || type === "withdrawal" || type === "correction";
-  const note = normalizeText(raw.note);
-  const createdAt = typeof raw.createdAt === "number" && Number.isFinite(raw.createdAt) ? raw.createdAt : Date.parse(String((raw as any).createdAt)) || Date.now();
-  const amount = round2(toNumber(raw.amount, 0));
-  if (!id || !bookmakerId || !validType) return null;
-  if (!Number.isFinite(amount) || Number.isNaN(amount)) return null;
-  return {
-    id,
-    bookmakerId,
-    amount,
-    type,
-    note: note ? note : undefined,
-    createdAt,
-  };
 }
 
 function sanitizeTrackedLeg(value: unknown): TrackedBetLeg | null {
@@ -271,8 +196,8 @@ function sanitizeTrackedBet(value: unknown): TrackedBetRecord | null {
     sourceType: raw.sourceType === "manualMulti" ? "manualMulti" : "valueBetBuilder",
     createdAt: normalizeText(raw.createdAt) || new Date(0).toISOString(),
     updatedAt: normalizeText(raw.updatedAt) || normalizeText(raw.createdAt) || new Date(0).toISOString(),
-    bookmakerId: normalizeText(raw.bookmakerId),
-    bookmakerName: normalizeText(raw.bookmakerName) || "Unknown bookmaker",
+    bookmakerId: normalizeText(raw.bookmakerId) || DEFAULT_BOOKMAKER_ID,
+    bookmakerName: normalizeText(raw.bookmakerName) || DEFAULT_BOOKMAKER_NAME,
     stake: Math.max(0, toNumber(raw.stake, 0)),
     unitSizeAtBet: Number.isFinite(raw.unitSizeAtBet as number) && toNumber(raw.unitSizeAtBet, 0) > 0 ? toNumber(raw.unitSizeAtBet, 0) : undefined,
     stakeUnits: Number.isFinite(raw.stakeUnits as number) ? Math.max(0, toNumber(raw.stakeUnits, 0)) : undefined,
@@ -406,76 +331,6 @@ export function setUnitSize(value: number): number {
     // ignore
   }
   return safe;
-}
-
-function readBookmakers(): TrackedBookmaker[] {
-  return read<TrackedBookmaker>(BOOKMAKERS_STORAGE_KEY)
-    .map(sanitizeBookmaker)
-    .filter((b): b is TrackedBookmaker => b != null);
-}
-
-function writeBookmakers(value: TrackedBookmaker[]): void {
-  bookmakersCache = value;
-  bookmakersLoaded = true;
-  write(BOOKMAKERS_STORAGE_KEY, value);
-}
-
-function readBalanceAdjustments(): BalanceAdjustment[] {
-  return read<BalanceAdjustment>(BALANCE_ADJUSTMENTS_STORAGE_KEY)
-    .map(sanitizeBalanceAdjustment)
-    .filter((a): a is BalanceAdjustment => a != null)
-    .sort((a, b) => b.createdAt - a.createdAt);
-}
-
-function writeBalanceAdjustments(value: BalanceAdjustment[]): void {
-  balanceAdjustmentsCache = value;
-  balanceAdjustmentsLoaded = true;
-  write(BALANCE_ADJUSTMENTS_STORAGE_KEY, value);
-}
-
-export function getBalanceAdjustments(): BalanceAdjustment[] {
-  if (balanceAdjustmentsLoaded) return balanceAdjustmentsCache;
-  return readBalanceAdjustments();
-}
-
-export function getBalanceAdjustmentsForBookmaker(bookmakerId: string): BalanceAdjustment[] {
-  const source = balanceAdjustmentsLoaded ? balanceAdjustmentsCache : readBalanceAdjustments();
-  return source.filter((a) => a.bookmakerId === bookmakerId);
-}
-
-export function adjustBalance(
-  bookmakerId: string,
-  input: { amount: number; type: BalanceAdjustmentType; note?: string }
-): BalanceAdjustment | null {
-  const bookmakers = getBookmakers();
-  const bookmaker = bookmakers.find((b) => b.id === bookmakerId);
-  if (!bookmaker) return null;
-
-  const rawAmount = toNumber(input.amount, 0);
-  if (!Number.isFinite(rawAmount)) return null;
-
-  let normalized: number;
-  if (input.type === "deposit") normalized = Math.abs(rawAmount);
-  else if (input.type === "withdrawal") normalized = -Math.abs(rawAmount);
-  else normalized = rawAmount;
-
-  normalized = round2(normalized);
-  if (!Number.isFinite(normalized) || normalized === 0) return null;
-
-  const note = normalizeText(input.note);
-  const now = Date.now();
-  const adj: BalanceAdjustment = {
-    id: `adj-${now}-${Math.random().toString(36).slice(2, 9)}`,
-    bookmakerId,
-    amount: normalized,
-    type: input.type,
-    note: note ? note : undefined,
-    createdAt: now,
-  };
-
-  const current = readBalanceAdjustments();
-  writeBalanceAdjustments([adj, ...current]);
-  return adj;
 }
 
 function readTrackedBets(): TrackedBetRecord[] {
@@ -814,9 +669,8 @@ function toManualTrackedLeg(sel: ManualTrackedSelectionInput, legId: string): Tr
 }
 
 function getSettledProfit(record: TrackedBetRecord): number {
-  if (record.status === "win" || record.status === "cashed_out") return record.returnAmount - record.stake;
-  if (record.status === "loss") return -record.stake;
-  return 0;
+  if (record.status === "pending") return 0;
+  return getBetProfitUnits(record);
 }
 
 function getSettledOutcome(record: TrackedBetRecord): "win" | "loss" | null {
@@ -826,34 +680,12 @@ function getSettledOutcome(record: TrackedBetRecord): "win" | "loss" | null {
   return null;
 }
 
-export function getBookmakers(): TrackedBookmaker[] {
-  if (bookmakersLoaded) return bookmakersCache;
-  return readBookmakers();
-}
-
-export function addBookmaker(name: string, startingBalance: number): TrackedBookmaker | null {
-  const cleanName = normalizeText(name);
-  if (!cleanName) return null;
-  const balance = Math.max(0, toNumber(startingBalance, 0));
-  const existing = getBookmakers();
-  if (existing.some((b) => b.name.toLowerCase() === cleanName.toLowerCase())) return null;
-  const next: TrackedBookmaker = {
-    id: `book-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    name: cleanName,
-    startingBalance: balance,
-    createdAt: new Date().toISOString(),
-  };
-  writeBookmakers([...existing, next]);
-  return next;
-}
-
 export function getTrackedBets(): TrackedBetRecord[] {
   if (trackedBetsLoaded) return trackedBetsCache;
   return readTrackedBets();
 }
 
 export interface AddTrackedBetInput {
-  bookmakerId: string;
   stake: number;
   oddsTaken: number;
   status?: TrackedBetStatus;
@@ -887,7 +719,6 @@ export type DuplicateCheckLeg = {
 };
 
 export type DuplicateCheckInput = {
-  bookmakerId?: string;
   fixtureId?: number;
   matchLabel?: string;
   legs: DuplicateCheckLeg[];
@@ -940,7 +771,6 @@ export function findDuplicateTrackedBet(input: DuplicateCheckInput, existingBets
   const bets = existingBets ?? getTrackedBets();
   if (!Array.isArray(input.legs) || input.legs.length === 0) return null;
   for (const bet of bets) {
-    if (input.bookmakerId && bet.bookmakerId !== input.bookmakerId) continue;
     if (!isSameFixture(bet, input.fixtureId, input.matchLabel)) continue;
     for (let i = 0; i < input.legs.length; i++) {
       const incoming = input.legs[i];
@@ -955,7 +785,6 @@ export function findDuplicateTrackedBet(input: DuplicateCheckInput, existingBets
 }
 
 export interface AddManualMultiBetInput {
-  bookmakerId: string;
   stake: number;
   oddsTaken: number;
   status?: TrackedBetStatus;
@@ -964,7 +793,6 @@ export interface AddManualMultiBetInput {
 }
 
 export type ManualMultiBetSaveFailureUI = {
-  bookmakerId?: string;
   stake?: string;
   oddsTaken?: string;
   selections?: string;
@@ -978,11 +806,6 @@ export type ManualMultiBetSaveFailureUI = {
  */
 export function explainManualMultiBetFailure(input: AddManualMultiBetInput): ManualMultiBetSaveFailureUI {
   const selections = Array.isArray(input.selections) ? input.selections : [];
-  const bookmakers = getBookmakers();
-  const bookmaker = bookmakers.find((b) => b.id === input.bookmakerId);
-  if (!bookmaker) {
-    return { bookmakerId: "That bookmaker was not found. Refresh the page and select a bookmaker again." };
-  }
   const stake = Math.max(0, toNumber(input.stake, 0));
   const oddsTaken = Math.max(0, toNumber(input.oddsTaken, 0));
   if (stake <= 0) return { stake: "Stake must be greater than 0." };
@@ -1006,10 +829,6 @@ export function explainManualMultiBetFailure(input: AddManualMultiBetInput): Man
 }
 
 export function addManualMultiBet(input: AddManualMultiBetInput): TrackedBetRecord | null {
-  const bookmakers = getBookmakers();
-  const bookmaker = bookmakers.find((b) => b.id === input.bookmakerId);
-  if (!bookmaker) return null;
-
   const stake = Math.max(0, toNumber(input.stake, 0));
   const oddsTaken = Math.max(0, toNumber(input.oddsTaken, 0));
   if (stake <= 0 || oddsTaken <= 1) return null;
@@ -1032,15 +851,14 @@ export function addManualMultiBet(input: AddManualMultiBetInput): TrackedBetReco
   const leagueName = hasManyFixtures ? "Multiple" : normalizeText(firstLeg.leagueName) || "-";
 
   const returnAmount = stake * oddsTaken;
-  const unitSize = getUnitSize();
-  const stakeUnits = unitSize > 0 ? stake / unitSize : 0;
-  const returnUnits = unitSize > 0 ? returnAmount / unitSize : 0;
+  const stakeUnits = stake;
+  const returnUnits = returnAmount;
   const status = input.status ?? "pending";
   const profitUnits =
     status === "win" || status === "cashed_out"
-      ? (returnAmount - stake) / unitSize
+      ? returnUnits - stakeUnits
       : status === "loss"
-        ? (-stake) / unitSize
+        ? -stakeUnits
         : 0;
   const now = new Date().toISOString();
   const record: TrackedBetRecord = {
@@ -1048,10 +866,10 @@ export function addManualMultiBet(input: AddManualMultiBetInput): TrackedBetReco
     sourceType: "manualMulti",
     createdAt: now,
     updatedAt: now,
-    bookmakerId: bookmaker.id,
-    bookmakerName: bookmaker.name,
+    bookmakerId: DEFAULT_BOOKMAKER_ID,
+    bookmakerName: DEFAULT_BOOKMAKER_NAME,
     stake,
-    unitSizeAtBet: Number(unitSize.toFixed(6)),
+    unitSizeAtBet: 1,
     stakeUnits: Number(stakeUnits.toFixed(4)),
     oddsTaken,
     returnAmount,
@@ -1069,7 +887,6 @@ export function addManualMultiBet(input: AddManualMultiBetInput): TrackedBetReco
 
   if (import.meta.env.DEV) {
     console.log("[bet-tracker quick-add]", {
-      bookmaker: bookmaker.name,
       stake: record.stake,
       oddsTaken: record.oddsTaken,
       selectionCount: record.legs.length,
@@ -1084,22 +901,18 @@ export async function addManualMultiBetShared(input: AddManualMultiBetInput): Pr
 }
 
 export function addTrackedBet(input: AddTrackedBetInput): TrackedBetRecord | null {
-  const bookmakers = getBookmakers();
-  const bookmaker = bookmakers.find((b) => b.id === input.bookmakerId);
-  if (!bookmaker) return null;
   const stake = Math.max(0, toNumber(input.stake, 0));
   const oddsTaken = Math.max(0, toNumber(input.oddsTaken, 0));
   if (stake <= 0 || oddsTaken <= 1) return null;
   const returnAmount = stake * oddsTaken;
-  const unitSize = getUnitSize();
-  const stakeUnits = unitSize > 0 ? stake / unitSize : 0;
-  const returnUnits = unitSize > 0 ? returnAmount / unitSize : 0;
+  const stakeUnits = stake;
+  const returnUnits = returnAmount;
   const status = input.status ?? "pending";
   const profitUnits =
     status === "win" || status === "cashed_out"
-      ? (returnAmount - stake) / unitSize
+      ? returnUnits - stakeUnits
       : status === "loss"
-        ? (-stake) / unitSize
+        ? -stakeUnits
         : 0;
   const now = new Date().toISOString();
   const record: TrackedBetRecord = {
@@ -1107,10 +920,10 @@ export function addTrackedBet(input: AddTrackedBetInput): TrackedBetRecord | nul
     sourceType: "valueBetBuilder",
     createdAt: now,
     updatedAt: now,
-    bookmakerId: bookmaker.id,
-    bookmakerName: bookmaker.name,
+    bookmakerId: DEFAULT_BOOKMAKER_ID,
+    bookmakerName: DEFAULT_BOOKMAKER_NAME,
     stake,
-    unitSizeAtBet: Number(unitSize.toFixed(6)),
+    unitSizeAtBet: 1,
     stakeUnits: Number(stakeUnits.toFixed(4)),
     oddsTaken,
     returnAmount,
@@ -1131,7 +944,6 @@ export function addTrackedBet(input: AddTrackedBetInput): TrackedBetRecord | nul
   writeTrackedBets([record, ...current]);
   if (import.meta.env.DEV) {
     console.log("[bet-tracker add]", {
-      bookmaker: bookmaker.name,
       fixtureId: input.fixtureId ?? null,
       match: record.matchLabel,
       oddsTaken: record.oddsTaken,
@@ -1152,28 +964,8 @@ export function updateTrackedBetStatus(id: string, status: TrackedBetStatus): Tr
   const now = new Date().toISOString();
   const next = current.map((r) => {
     if (r.id !== id) return r;
-    const hasUnitSizeAtBet = Number.isFinite(r.unitSizeAtBet as number) && (r.unitSizeAtBet as number) > 0;
-    const inferredUnitSize =
-      r.stake > 0 && Number.isFinite(r.stakeUnits as number) && (r.stakeUnits as number) > 0
-        ? r.stake / (r.stakeUnits as number)
-        : undefined;
-    const canonicalUnitSize = hasUnitSizeAtBet
-      ? (r.unitSizeAtBet as number)
-      : inferredUnitSize && Number.isFinite(inferredUnitSize) && inferredUnitSize > 0
-        ? inferredUnitSize
-        : undefined;
-    const stableStakeUnits =
-      canonicalUnitSize && canonicalUnitSize > 0
-        ? r.stake / canonicalUnitSize
-        : Number.isFinite(r.stakeUnits as number)
-          ? (r.stakeUnits as number)
-          : 0;
-    const stableReturnUnits =
-      canonicalUnitSize && canonicalUnitSize > 0
-        ? r.returnAmount / canonicalUnitSize
-        : Number.isFinite(r.returnUnits as number)
-          ? (r.returnUnits as number)
-          : 0;
+    const stableStakeUnits = getStakeUnits(r);
+    const stableReturnUnits = getReturnUnits(r);
     const profitUnits =
       status === "win" || status === "cashed_out"
         ? stableReturnUnits - stableStakeUnits
@@ -1184,7 +976,7 @@ export function updateTrackedBetStatus(id: string, status: TrackedBetStatus): Tr
       ...r,
       status,
       updatedAt: now,
-      unitSizeAtBet: canonicalUnitSize != null && canonicalUnitSize > 0 ? Number(canonicalUnitSize.toFixed(6)) : r.unitSizeAtBet,
+      unitSizeAtBet: r.unitSizeAtBet,
       stakeUnits: Number(stableStakeUnits.toFixed(4)),
       returnUnits: Number(stableReturnUnits.toFixed(4)),
       profitUnits: Number(profitUnits.toFixed(4)),
@@ -1207,28 +999,8 @@ export async function updateTrackedBetCashOutShared(id: string, cashOutAmount: n
   if (!Number.isFinite(amount) || amount <= 0) return null;
 
   const now = new Date().toISOString();
-  const hasUnitSizeAtBet = Number.isFinite(existing.unitSizeAtBet as number) && (existing.unitSizeAtBet as number) > 0;
-  const inferredUnitSize =
-    existing.stake > 0 && Number.isFinite(existing.stakeUnits as number) && (existing.stakeUnits as number) > 0
-      ? existing.stake / (existing.stakeUnits as number)
-      : undefined;
-  const canonicalUnitSize = hasUnitSizeAtBet
-    ? (existing.unitSizeAtBet as number)
-    : inferredUnitSize && Number.isFinite(inferredUnitSize) && inferredUnitSize > 0
-      ? inferredUnitSize
-      : undefined;
-  const stableStakeUnits =
-    canonicalUnitSize && canonicalUnitSize > 0
-      ? existing.stake / canonicalUnitSize
-      : Number.isFinite(existing.stakeUnits as number)
-        ? (existing.stakeUnits as number)
-        : 0;
-  const stableReturnUnits =
-    canonicalUnitSize && canonicalUnitSize > 0
-      ? amount / canonicalUnitSize
-      : Number.isFinite(existing.returnUnits as number)
-        ? (existing.returnUnits as number)
-        : 0;
+  const stableStakeUnits = getStakeUnits(existing);
+  const stableReturnUnits = getReturnUnits(existing, amount);
   const profitUnits = stableReturnUnits - stableStakeUnits;
 
   const updated: TrackedBetRecord = {
@@ -1237,7 +1009,7 @@ export async function updateTrackedBetCashOutShared(id: string, cashOutAmount: n
     returnAmount: amount,
     cashOutAmount: amount,
     updatedAt: now,
-    unitSizeAtBet: canonicalUnitSize != null && canonicalUnitSize > 0 ? Number(canonicalUnitSize.toFixed(6)) : existing.unitSizeAtBet,
+    unitSizeAtBet: existing.unitSizeAtBet,
     stakeUnits: Number(stableStakeUnits.toFixed(4)),
     returnUnits: Number(stableReturnUnits.toFixed(4)),
     profitUnits: Number(profitUnits.toFixed(4)),
@@ -1267,57 +1039,13 @@ export async function clearAllTrackedBetsShared(): Promise<boolean> {
   return true;
 }
 
-export function getTrackedBetsByBookmaker(bookmakerId: string): TrackedBetRecord[] {
-  return getTrackedBets().filter((b) => b.bookmakerId === bookmakerId);
-}
-
-export function getBookmakerStats(bookmakerId: string): BookmakerStats | null {
-  const bookmaker = getBookmakers().find((b) => b.id === bookmakerId);
-  if (!bookmaker) return null;
-  const bets = getTrackedBetsByBookmaker(bookmakerId);
-  const settled = bets.filter((b) => b.status !== "pending");
-  const pending = bets.filter((b) => b.status === "pending");
-  const realizedProfit = settled.reduce((sum, b) => sum + getSettledProfit(b), 0);
-  const totalUnitsProfit = settled.reduce((sum, b) => sum + (Number.isFinite(b.profitUnits as number) ? (b.profitUnits as number) : 0), 0);
-  const potentialProfit = pending.reduce((sum, b) => sum + (b.returnAmount - b.stake), 0);
-  const pendingStake = pending.reduce((sum, b) => sum + b.stake, 0);
-  const settledStake = settled.reduce((sum, b) => sum + b.stake, 0);
-  const adjustmentsSum = getBalanceAdjustmentsForBookmaker(bookmakerId).reduce((sum, a) => sum + (Number.isFinite(a.amount) ? a.amount : 0), 0);
-  const currentBalance = bookmaker.startingBalance + realizedProfit + adjustmentsSum;
-  const availableBalance = currentBalance - pendingStake;
-  const potentialBalance = currentBalance + potentialProfit;
-  return {
-    bookmakerId: bookmaker.id,
-    bookmakerName: bookmaker.name,
-    startingBalance: bookmaker.startingBalance,
-    currentBalance,
-    availableBalance,
-    realizedProfit,
-    totalUnitsProfit,
-    potentialProfit,
-    potentialBalance,
-    pendingStake,
-    betCount: bets.length,
-    settledCount: settled.length,
-    pendingCount: bets.length - settled.length,
-    roi: settledStake > 0 ? realizedProfit / settledStake : 0,
-  };
-}
-
-export function getAllBookmakerStats(): BookmakerStats[] {
-  return getBookmakers()
-    .map((b) => getBookmakerStats(b.id))
-    .filter((s): s is BookmakerStats => s != null)
-    .sort((a, b) => b.currentBalance - a.currentBalance);
-}
-
 export function getTrackedBetStats(): TrackedBetStats {
   const bets = getTrackedBets();
   const settled = bets.filter((b) => b.status !== "pending");
   const wins = settled.filter((b) => getSettledOutcome(b) === "win").length;
   const losses = settled.filter((b) => getSettledOutcome(b) === "loss").length;
   const totalProfit = settled.reduce((sum, b) => sum + getSettledProfit(b), 0);
-  const totalStakeSettled = settled.reduce((sum, b) => sum + b.stake, 0);
+  const totalStakeSettled = settled.reduce((sum, b) => sum + getStakeUnits(b), 0);
   return {
     totalBets: bets.length,
     settledBets: settled.length,
@@ -1330,46 +1058,21 @@ export function getTrackedBetStats(): TrackedBetStats {
 }
 
 export function getBankrollTimeline(bookmakerId?: string): BankrollTimelinePoint[] {
-  const bookmakers = getBookmakers();
   const tracked = getTrackedBets();
-
-  const bookmakerFilter = bookmakerId && bookmakerId.trim() !== "" ? bookmakerId : null;
-  const relevantBookmakers = bookmakerFilter ? bookmakers.filter((b) => b.id === bookmakerFilter) : bookmakers;
-  const startingBalance = relevantBookmakers.reduce((sum, b) => sum + b.startingBalance, 0);
   const settled = tracked
     .filter((b) => b.status !== "pending")
-    .filter((b) => (bookmakerFilter ? b.bookmakerId === bookmakerFilter : true))
     .sort((a, b) => Date.parse(a.updatedAt || a.createdAt) - Date.parse(b.updatedAt || b.createdAt));
 
-  const adjustments = getBalanceAdjustments()
-    .filter((a) => (bookmakerFilter ? a.bookmakerId === bookmakerFilter : true))
-    .sort((a, b) => a.createdAt - b.createdAt);
-
-  type Event =
-    | { kind: "bet"; date: number; delta: number; label: string }
-    | { kind: "adjustment"; date: number; delta: number; label: string };
-
-  const events: Event[] = [];
+  const points: BankrollTimelinePoint[] = [];
+  let balance = 0;
+  points.push({ date: "Start", balance });
   for (const bet of settled) {
     const d = Date.parse(bet.updatedAt || bet.createdAt);
+    if (!Number.isFinite(d)) continue;
     const delta = getSettledProfit(bet);
-    events.push({ kind: "bet", date: d, delta, label: bet.updatedAt || bet.createdAt });
-  }
-  for (const a of adjustments) {
-    events.push({ kind: "adjustment", date: a.createdAt, delta: a.amount, label: new Date(a.createdAt).toISOString() });
-  }
-  events.sort((a, b) => a.date - b.date);
-
-  const points: BankrollTimelinePoint[] = [];
-  let balance = startingBalance;
-  points.push({ date: "Start", balance });
-  for (const e of events) {
-    if (!Number.isFinite(e.delta)) continue;
-    balance += e.delta;
-    points.push({
-      date: e.label,
-      balance,
-    });
+    if (!Number.isFinite(delta)) continue;
+    balance += delta;
+    points.push({ date: bet.updatedAt || bet.createdAt, balance });
   }
   return points;
 }
@@ -1410,4 +1113,25 @@ export function getScoreBandAnalysis(): ScoreBandAnalysisRow[] {
       profit,
     };
   });
+}
+
+function getStakeUnits(record: TrackedBetRecord): number {
+  if (Number.isFinite(record.stakeUnits as number)) return record.stakeUnits as number;
+  return record.stake;
+}
+
+function getReturnUnits(record: TrackedBetRecord, overrideReturn?: number): number {
+  if (Number.isFinite(record.returnUnits as number) && overrideReturn == null) return record.returnUnits as number;
+  return overrideReturn != null ? overrideReturn : record.returnAmount;
+}
+
+function getBetProfitUnits(record: TrackedBetRecord): number {
+  if (Number.isFinite(record.profitUnits as number)) return record.profitUnits as number;
+  const stakeUnits = getStakeUnits(record);
+  if (record.status === "win" || record.status === "cashed_out") {
+    const returnUnits = getReturnUnits(record);
+    return returnUnits - stakeUnits;
+  }
+  if (record.status === "loss") return -stakeUnits;
+  return 0;
 }
