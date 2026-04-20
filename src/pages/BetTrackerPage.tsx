@@ -8,6 +8,7 @@ import {
   getScoreBandAnalysis,
   getTrackedBetStats,
   getTrackedBets,
+  getUnitSize,
   deleteTrackedBetShared,
   findDuplicateTrackedBet,
   updateTrackedBetStatusShared,
@@ -1183,8 +1184,10 @@ export function BetTrackerPage() {
       return;
     }
 
+    const unitSize = getUnitSize();
+    const stakeUnits = unitSize > 0 ? stake / unitSize : stake;
     const savePayload = {
-      stake,
+      stake: stakeUnits,
       oddsTaken,
       status: quickAddStatus,
       notes: quickAddNotes.trim() || undefined,
@@ -2119,7 +2122,14 @@ export function BetTrackerPage() {
                 <div className="bet-tracker-page__duplicate-warning">
                   <p className="bet-tracker-page__duplicate-title">⚠️ You already have a similar bet tracked.</p>
                   <p className="bet-tracker-page__duplicate-sub">
-                    Existing: {fmtPounds(getBetStakeUnits(quickAddDuplicate.match.existingBet))} @ {quickAddDuplicate.match.existingBet.oddsTaken.toFixed(2)}
+                    Existing: {(() => {
+                      const bet = quickAddDuplicate.match.existingBet;
+                      const baseUnits = getBetStakeUnits(bet);
+                      const unitSizeAtBet = Number.isFinite(bet.unitSizeAtBet as number) && (bet.unitSizeAtBet as number) > 0
+                        ? (bet.unitSizeAtBet as number)
+                        : getUnitSize();
+                      return fmtPounds(baseUnits * unitSizeAtBet);
+                    })()} @ {quickAddDuplicate.match.existingBet.oddsTaken.toFixed(2)}
                   </p>
                   <div className="bet-tracker-page__duplicate-actions">
                     <button type="button" className="secondary" onClick={() => setQuickAddDuplicate(null)}>
