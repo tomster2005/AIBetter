@@ -2830,9 +2830,16 @@ function lookupPlayerH2hStatForExplanation(
   return null;
 }
 
-function formatPlayerH2hLine(values: number[], statLabel: string): string {
-  const trimmed = values.filter((v) => typeof v === "number" && Number.isFinite(v)).slice(0, 5);
-  if (trimmed.length === 0) return "";
+function formatPlayerH2hLine(values: number[], statLabel: string, cat: MarketCat | null): string {
+  const filtered = values.filter((v) => typeof v === "number" && Number.isFinite(v));
+  if (filtered.length === 0) return "";
+  const trimmed = filtered.slice(0, 5);
+  if (cat) {
+    const stopIndex = trimmed.findIndex((v) => v === 0);
+    const truncated = stopIndex >= 0 ? trimmed.slice(0, stopIndex) : trimmed;
+    if (truncated.length === 0) return "";
+    return `Last H2H (${truncated.length}): ${truncated.join(", ")} ${statLabel}.`;
+  }
   return `Last H2H (${trimmed.length}): ${trimmed.join(", ")} ${statLabel}.`;
 }
 
@@ -3021,7 +3028,7 @@ function buildPlayerLegTipsterExplanation(
   const fromReason = extractTipsterContextFromReason(leg.reason);
   out.push(fromReason ?? shortFallbackContextLine(cat));
   if (h2hEntry && Array.isArray(h2hEntry.values) && h2hEntry.values.length > 0) {
-    const line = formatPlayerH2hLine(h2hEntry.values, statLabel);
+    const line = formatPlayerH2hLine(h2hEntry.values, statLabel, cat);
     if (line) out.push(line);
   }
   if (leg.opponentContextLine) out.push(leg.opponentContextLine);

@@ -575,7 +575,7 @@ export function BuildValueBetsModal({
     const stake = Number(trackerStake);
     const oddsTaken = Number(trackerOddsTaken);
     if (!Number.isFinite(stake) || stake <= 0) {
-      setTrackerError("Enter a valid stake in units.");
+      setTrackerError("Enter a valid stake in £.");
       return;
     }
     if (!Number.isFinite(oddsTaken) || oddsTaken <= 1) {
@@ -821,7 +821,7 @@ export function BuildValueBetsModal({
                         <div className="build-value-bets-modal__tracker-panel">
                           <>
                             <label>
-                              Stake (units)
+                              Stake (£)
                               <input
                                 type="number"
                                 min={0}
@@ -849,8 +849,8 @@ export function BuildValueBetsModal({
                               Return: {(() => {
                                 const s = Number(trackerStake);
                                 const o = Number(trackerOddsTaken);
-                                if (!Number.isFinite(s) || !Number.isFinite(o) || s <= 0 || o <= 0) return "0.00u";
-                                return `${(s * o).toFixed(2)}u`;
+                                if (!Number.isFinite(s) || !Number.isFinite(o) || s <= 0 || o <= 0) return "£0.00";
+                                return `£${(s * o).toFixed(2)}`;
                               })()}
                             </p>
                             {trackerStakeTouched && <p className="build-value-bets-modal__tracker-override">Manual override</p>}
@@ -858,7 +858,7 @@ export function BuildValueBetsModal({
                               <div className="build-value-bets-modal__tracker-duplicate">
                                 <p>⚠️ You already have a similar bet tracked.</p>
                                 <p>
-                                  Existing: {trackerDuplicate.match.existingBet.stake.toFixed(2)}u @ {trackerDuplicate.match.existingBet.oddsTaken.toFixed(2)}
+                                  Existing: £{trackerDuplicate.match.existingBet.stake.toFixed(2)} @ {trackerDuplicate.match.existingBet.oddsTaken.toFixed(2)}
                                 </p>
                                 <div className="build-value-bets-modal__tracker-duplicate-actions">
                                   <button
