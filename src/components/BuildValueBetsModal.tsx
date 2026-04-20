@@ -376,10 +376,18 @@ export function BuildValueBetsModal({
             }
           }
           for (const [pid, playerRow] of playerRowsById.entries()) {
-            const statRow = byId.get(pid);
-            if (!statRow) continue;
             const playerName = playerRow.playerName;
             if (!playerName) continue;
+            const statRow = byId.get(pid);
+            if (!statRow) {
+              // If the player is missing from H2H stats, record zeros to keep fixture counts aligned.
+              addValue(playerName, "shots", 0, fixtureRow.startingAt);
+              addValue(playerName, "shotsOnTarget", 0, fixtureRow.startingAt);
+              addValue(playerName, "foulsCommitted", 0, fixtureRow.startingAt);
+              addValue(playerName, "foulsWon", 0, fixtureRow.startingAt);
+              addValue(playerName, "tackles", 0, fixtureRow.startingAt);
+              continue;
+            }
             // Treat missing stat fields as zero so H2H lines still show 0 instead of dropping the entry.
             addValue(playerName, "shots", statRow.shots ?? 0, fixtureRow.startingAt);
             addValue(playerName, "shotsOnTarget", statRow.shotsOnTarget ?? 0, fixtureRow.startingAt);
