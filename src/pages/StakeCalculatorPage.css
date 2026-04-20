@@ -34,8 +34,9 @@
 
 .stake-calculator-page__inputs {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 0.8rem;
+  align-items: end;
 }
 
 .stake-calculator-page__inputs label {
@@ -56,6 +57,27 @@
   font-size: 0.95rem;
   color: #0f172a;
   background: #fff;
+}
+
+.stake-calculator-page__save-btn {
+  border: none;
+  border-radius: 8px;
+  padding: 0.62rem 1.1rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+  transition: transform 0.08s ease, box-shadow 0.16s ease, background 0.15s ease;
+}
+
+.stake-calculator-page__save-btn:hover {
+  background: var(--accent-hover);
+  box-shadow: 0 2px 10px rgba(37, 99, 235, 0.2);
+}
+
+.stake-calculator-page__save-btn:active {
+  transform: scale(0.98);
 }
 
 .stake-calculator-page__inputs input:focus,

@@ -233,7 +233,7 @@ export default function App() {
             className={`app-nav__tab ${activeTab === "stakeCalculator" ? "app-nav__tab--active" : ""}`}
             onClick={() => setActiveTab("stakeCalculator")}
           >
-            Stake Calculator
+            Set Unit
           </button>
         </div>
 

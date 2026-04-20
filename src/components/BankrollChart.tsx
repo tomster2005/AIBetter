@@ -8,8 +8,8 @@ function fmtDate(value: string): string {
   return new Date(ts).toLocaleDateString();
 }
 
-function fmtMoney(value: number): string {
-  return Number.isFinite(value) ? value.toFixed(2) : "0.00";
+function fmtUnits(value: number): string {
+  return Number.isFinite(value) ? `${value.toFixed(2)}u` : "0.00u";
 }
 
 export function BankrollChart({ points }: { points: BankrollTimelinePoint[] }) {
@@ -49,13 +49,13 @@ export function BankrollChart({ points }: { points: BankrollTimelinePoint[] }) {
         />
         {points.map((p, i) => (
           <circle key={`${p.date}-${i}`} cx={toX(i)} cy={toY(p.balance)} r={3} className="bankroll-chart__dot">
-            <title>{`${fmtDate(p.date)} - £${fmtMoney(p.balance)}`}</title>
+            <title>{`${fmtDate(p.date)} - ${fmtUnits(p.balance)}`}</title>
           </circle>
         ))}
       </svg>
       <div className="bankroll-chart__meta">
-        <span>Start: £{fmtMoney(points[0]!.balance)}</span>
-        <span>Now: £{fmtMoney(points[points.length - 1]!.balance)}</span>
+        <span>Start: {fmtUnits(points[0]!.balance)}</span>
+        <span>Now: {fmtUnits(points[points.length - 1]!.balance)}</span>
       </div>
     </div>
   );

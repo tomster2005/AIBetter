@@ -380,11 +380,12 @@ export function BuildValueBetsModal({
             if (!statRow) continue;
             const playerName = playerRow.playerName;
             if (!playerName) continue;
-            addValue(playerName, "shots", statRow.shots, fixtureRow.startingAt);
-            addValue(playerName, "shotsOnTarget", statRow.shotsOnTarget, fixtureRow.startingAt);
-            addValue(playerName, "foulsCommitted", statRow.foulsCommitted, fixtureRow.startingAt);
-            addValue(playerName, "foulsWon", statRow.foulsWon, fixtureRow.startingAt);
-            addValue(playerName, "tackles", statRow.tackles, fixtureRow.startingAt);
+            // Treat missing stat fields as zero so H2H lines still show 0 instead of dropping the entry.
+            addValue(playerName, "shots", statRow.shots ?? 0, fixtureRow.startingAt);
+            addValue(playerName, "shotsOnTarget", statRow.shotsOnTarget ?? 0, fixtureRow.startingAt);
+            addValue(playerName, "foulsCommitted", statRow.foulsCommitted ?? 0, fixtureRow.startingAt);
+            addValue(playerName, "foulsWon", statRow.foulsWon ?? 0, fixtureRow.startingAt);
+            addValue(playerName, "tackles", statRow.tackles ?? 0, fixtureRow.startingAt);
           }
         }
 
