@@ -29,6 +29,10 @@ function fmtUnits(v: number): string {
   return Number.isFinite(v) ? `${v.toFixed(2)}u` : "0.00u";
 }
 
+function fmtPounds(v: number): string {
+  return Number.isFinite(v) ? `£${v.toFixed(2)}` : "£0.00";
+}
+
 function fmtSignedUnits(v: number): string {
   if (!Number.isFinite(v) || v === 0) return "0.00u";
   return `${v > 0 ? "+" : "-"}${Math.abs(v).toFixed(2)}u`;
@@ -1883,7 +1887,7 @@ export function BetTrackerPage() {
             </div>
             <div className="bet-tracker-page__quick-add-grid">
               <label>
-                Stake (units)
+                Stake (£)
                 <input
                   type="number"
                   min={0.01}
@@ -1920,8 +1924,8 @@ export function BetTrackerPage() {
               </label>
             </div>
             <div className="bet-tracker-page__quick-add-derived">
-              <span>Return: <strong>{fmtUnits(quickAddReturnValue)}</strong></span>
-              <span>Stake: <strong>{fmtUnits(quickAddStakeValue || 0)}</strong></span>
+              <span>Return: <strong>{fmtPounds(quickAddReturnValue)}</strong></span>
+              <span>Stake: <strong>{fmtPounds(quickAddStakeValue || 0)}</strong></span>
             </div>
             <label className="bet-tracker-page__quick-add-notes">
               Notes (optional)
