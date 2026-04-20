@@ -2119,7 +2119,7 @@ export function BetTrackerPage() {
                 <div className="bet-tracker-page__duplicate-warning">
                   <p className="bet-tracker-page__duplicate-title">⚠️ You already have a similar bet tracked.</p>
                   <p className="bet-tracker-page__duplicate-sub">
-                    Existing: {fmtUnits(getBetStakeUnits(quickAddDuplicate.match.existingBet))} @ {quickAddDuplicate.match.existingBet.oddsTaken.toFixed(2)}
+                    Existing: {fmtPounds(getBetStakeUnits(quickAddDuplicate.match.existingBet))} @ {quickAddDuplicate.match.existingBet.oddsTaken.toFixed(2)}
                   </p>
                   <div className="bet-tracker-page__duplicate-actions">
                     <button type="button" className="secondary" onClick={() => setQuickAddDuplicate(null)}>
